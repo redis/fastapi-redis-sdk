@@ -28,7 +28,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "redis>=6.0.0,<7.3.0",  # fakeredis <=2.35.1 incompatible with redis 7.3+ (ResponseError moved)
+    "redis>=6.0.0,<8.1.0",  # fakeredis <=2.35.1 incompatible with redis 7.3+ (ResponseError moved)
     "fastapi[standard]>=0.115.0",
     "pydantic-settings>=2.0.0",
     "pydantic>=2.12.5",
