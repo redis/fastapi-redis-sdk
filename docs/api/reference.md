@@ -65,6 +65,11 @@ async def dashboard(user_id: int, cache: CacheBackendDep):
 
 `Annotated[CacheBackend, Depends(get_cache_backend)]` — async cache backend with `get`/`set`/`delete`/`has`/`delete_group`. Use for conditional caching, cascade invalidation, and dynamic TTL.
 
+`CacheBackend(redis, coder=...)` accepts any `Coder`. Use `FastAPIJsonCoder`
+for values supported by FastAPI's `jsonable_encoder()`, or
+`pydantic_model_coder(Model)` when cache hits should decode back into Pydantic
+model instances.
+
 ### `SyncCacheBackendDep`
 
 ```python
@@ -165,4 +170,3 @@ def default_key_builder(request: Request, eviction_group: str = "", prefix: str 
 ```
 
 Builds a cache key from the request path (slashes → colons) and sorted query params. Eviction group is wrapped in Redis hash-tag braces (`{eviction_group}`) for Cluster slot consistency.
-

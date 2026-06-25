@@ -296,6 +296,49 @@ pattern (get → miss → compute → set → return) is exactly what `cache()` 
 automatically.  Use `CacheBackendDep` when you need control that the DI
 factories cannot express:
 
+### FastAPI-aware serialization
+
+By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
+`json.dumps()` / `json.loads()`. Use `FastAPIJsonCoder` when cached values
+contain objects FastAPI already knows how to serialize, such as Pydantic
+models, `datetime`, `UUID`, enums, or dataclasses:
+
+```python
+from redis_fastapi import CacheBackend, FastAPIJsonCoder
+
+cache = CacheBackend(redis, coder=FastAPIJsonCoder)
+```
+
+For typed model round-trips, create a model-specific coder. Decoded cache hits
+come back as Pydantic model instances:
+
+```python
+from typing import Annotated
+from fastapi import Depends
+from pydantic import BaseModel
+from redis_fastapi import AsyncRedisDep, CacheBackend, pydantic_model_coder
+
+class Product(BaseModel):
+    id: int
+    name: str
+
+ProductCoder = pydantic_model_coder(Product)
+
+async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
+    return CacheBackend(redis, coder=ProductCoder)
+
+ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
+
+@app.get("/products/{product_id}")
+async def get_product(product_id: int, cache: ProductCacheDep) -> Product:
+    cached = await cache.get(f"product:{product_id}", eviction_group="products")
+    if cached is not None:
+        return cached
+    product = await db.get_product(product_id)
+    await cache.set(f"product:{product_id}", product, ttl=300, eviction_group="products")
+    return product
+```
+
 ### Conditional caching
 
 Cache only when business rules are met - `@cache` always caches the result:
