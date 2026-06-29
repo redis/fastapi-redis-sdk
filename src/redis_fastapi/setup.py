@@ -26,6 +26,9 @@ from redis_fastapi.lifespan import redis_lifespan
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from redis_fastapi.rate import Rate
+    from redis_fastapi.ratelimit import Identifier, OnLimitExceeded, SkipWhen
+
 
 class FastAPIRedis:
     """Fluent builder for fastapi-redis-sdk app setup.
@@ -89,11 +92,50 @@ class FastAPIRedis:
 
         Calling this method more than once on the same app is a no-op.
         """
-        from redis_fastapi.cache import CacheResponseCaptureMiddleware  # noqa: PLC0415
+        from redis_fastapi.cache import CacheResponseCaptureMiddleware
 
         if self._has_middleware(CacheResponseCaptureMiddleware):
             return self
         add_redis_caching(self._app)
+        return self
+
+    def rate_limiting(
+        self,
+        *,
+        global_rate: str | Rate | tuple[int, int] | None = None,
+        identifier: Identifier | None = None,
+        scope: str = "",
+        skip_when: SkipWhen | None = None,
+        on_limit_exceeded: OnLimitExceeded | None = None,
+        ietf_headers: bool | None = None,
+        fail_closed: bool | None = None,
+    ) -> FastAPIRedis:
+        """Register the ``RateLimitExceeded`` handler and rate-limit middleware.
+
+        Required for the ``rate_limit()`` dependency to work.  Passing
+        *global_rate* (e.g. ``"1000/minute"``) — or setting
+        ``REDIS_RATE_LIMIT_DEFAULT_LIMIT`` — also enables an app-wide limiter
+        applied to every route.
+
+        Calling this method more than once on the same app is a no-op.
+        """
+        from redis_fastapi.ratelimit import (
+            RateLimitMiddleware,
+            add_redis_rate_limiting,
+        )
+
+        if self._has_middleware(RateLimitMiddleware):
+            return self
+        add_redis_rate_limiting(
+            self._app,
+            global_rate=global_rate,
+            identifier=identifier,
+            scope=scope,
+            skip_when=skip_when,
+            on_limit_exceeded=on_limit_exceeded,
+            ietf_headers=ietf_headers,
+            fail_closed=fail_closed,
+        )
         return self
 
     def otel(self) -> FastAPIRedis:
@@ -106,7 +148,7 @@ class FastAPIRedis:
 
         Requires ``pip install fastapi-redis-sdk[otel]``.
         """
-        from redis_fastapi.telemetry import enable_telemetry  # noqa: PLC0415
+        from redis_fastapi.telemetry import enable_telemetry
 
         enable_telemetry()
         return self

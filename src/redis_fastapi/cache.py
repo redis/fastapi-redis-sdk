@@ -458,7 +458,7 @@ async def _evict_by_group(
     eviction_group: str,
 ) -> None:
     """Clear all keys in *eviction_group* via :class:`CacheBackend`."""
-    from redis_fastapi.cache_backend import CacheBackend  # noqa: PLC0415
+    from redis_fastapi.cache_backend import CacheBackend
 
     with cache_span(
         "cache.evict",

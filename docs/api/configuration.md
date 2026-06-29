@@ -106,7 +106,7 @@ Activate OpenTelemetry instrumentation for cache operations.
 Requires `pip install fastapi-redis-sdk[otel]`.  If the `opentelemetry` packages
 are not installed, a warning is logged and telemetry remains disabled.
 
-Safe to call multiple times — subsequent calls are no-ops.
+Safe to call multiple times - subsequent calls are no-ops.
 
 Typically you don't call this directly; use the builder instead:
 
@@ -116,7 +116,7 @@ FastAPIRedis(app).lifespan().caching().otel()  # calls enable_telemetry() intern
 
 Or set the environment variable `REDIS_OTEL_ENABLED=true`.
 
-See the [Configuration guide — OpenTelemetry](../guide/configuration.md#opentelemetry) for full details.
+See the [Configuration guide - OpenTelemetry](../guide/configuration.md#opentelemetry) for full details.
 
 ## Types
 
@@ -146,7 +146,7 @@ Creates a `Coder` class for one Pydantic model type. Encoded values can be
 model instances or data that Pydantic can validate into that model; decoded
 values are returned as model instances.
 
-Because the coder is model-specific, select it the DI-native way — declare a
+Because the coder is model-specific, select it the DI-native way - declare a
 model-specific `CacheBackend` provider and inject it (the default
 `CacheBackendDep` keeps `JsonCoder`):
 

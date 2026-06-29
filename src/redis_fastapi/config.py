@@ -135,6 +135,44 @@ class RedisSettings(BaseSettings):
         ),
     )
 
+    # -- Rate limiting ---------------------------------------------------------
+    rate_limit_default_limit: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Default request limit for the app-wide global rate limiter. "
+            "0 disables the global limiter (per-route rate_limit() dependencies "
+            "still work).  Set a positive value to limit every route."
+        ),
+    )
+    rate_limit_default_window: int = Field(
+        default=60,
+        ge=1,
+        description="Default rate-limit window in seconds for the global limiter.",
+    )
+    rate_limit_fail_closed: bool = Field(
+        default=False,
+        description=(
+            "When Redis is unreachable, reject requests (503/429) instead of "
+            "failing open (allowing them).  Defaults to fail-open."
+        ),
+    )
+    rate_limit_emit_headers: bool = Field(
+        default=True,
+        description="Emit X-RateLimit-Limit/-Remaining/-Reset response headers.",
+    )
+    rate_limit_ietf_headers: bool = Field(
+        default=False,
+        description=("Emit IETF draft RateLimit / RateLimit-Policy response headers."),
+    )
+    rate_limit_trust_proxy: bool = Field(
+        default=False,
+        description=(
+            "Trust the X-Forwarded-For header when deriving the client IP "
+            "(enable only behind a trusted proxy/load balancer)."
+        ),
+    )
+
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(
         default=False,

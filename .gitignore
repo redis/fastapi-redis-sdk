@@ -4,4 +4,14 @@
 /site/
 /bandit-report.json
 /coverage.xml
+/out/
+/.nox/
+/htmlcov/
+
+# Python bytecode / caches
 __pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

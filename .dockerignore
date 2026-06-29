@@ -1,0 +1,16 @@
+# Keep the Docker build context small (used by examples/observability).
+.venv/
+venv/
+.nox/
+out/
+dist/
+htmlcov/
+site/
+.git/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+bandit-report.json

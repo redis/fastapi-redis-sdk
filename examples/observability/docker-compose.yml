@@ -1,0 +1,46 @@
+# One-command observability showcase:
+#
+#   docker compose up --build
+#
+# Then generate traffic and open Grafana at http://localhost:3000 — traces land
+# in Tempo, metrics in Prometheus (both bundled in the grafana/otel-lgtm image).
+services:
+  redis:
+    # Redis 8.8+ serves the rate limiter via the atomic INCREX command
+    # (ratelimit.backend="increx"); older tags fall back to Lua ("lua").
+    # Internal-only: the app reaches it over the compose network, so no host
+    # port is published (avoids clashing with a local Redis on 6379).
+    image: redis:8
+
+  lgtm:
+    # All-in-one: OpenTelemetry Collector + Tempo (traces) + Prometheus
+    # (metrics) + Grafana (UI), pre-provisioned. Grafana allows anonymous
+    # access; the OTLP receiver listens on 4317 (gRPC) / 4318 (HTTP) inside
+    # the compose network. Only the Grafana UI is published to the host.
+    image: grafana/otel-lgtm:latest
+    ports:
+      - "3000:3000"   # Grafana UI
+
+  app:
+    build:
+      # Repo root, so the image can COPY ./src and ./examples.
+      context: ../..
+      dockerfile: examples/observability/Dockerfile
+    depends_on:
+      - redis
+      - lgtm
+    ports:
+      - "8000:8000"
+    environment:
+      # --- fastapi-redis-sdk ------------------------------------------------
+      REDIS_URL: redis://redis:6379/0
+      REDIS_OTEL_REDIS_ENABLED: "true"        # Layer 3 — Redis command spans
+      # --- OpenTelemetry SDK / OTLP export (read by opentelemetry-instrument)
+      OTEL_SERVICE_NAME: fastapi-redis-observability-demo
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: none
+      # Export metrics every 5s so they show up quickly in the demo.
+      OTEL_METRIC_EXPORT_INTERVAL: "5000"

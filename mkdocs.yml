@@ -82,6 +82,8 @@ nav:
   - User Guide:
     - Architecture: guide/architecture.md
     - Caching: guide/caching.md
+    - Rate Limiting: guide/rate-limiting.md
+    - Observability: guide/observability.md
     - Configuration: guide/configuration.md
     - Benchmarks: guide/benchmarks.md
   - API Reference:

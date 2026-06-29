@@ -285,7 +285,7 @@ REDIS_MAX_CONNECTIONS=100
 [FastAPI Cloud](https://fastapicloud.com/) has a built-in
 [Redis Cloud integration](https://fastapicloud.com/docs/integrations/redis-integration/).
 When you connect a Redis Cloud database to your app, FastAPI Cloud automatically
-injects the connection string as the `REDIS_URL` environment variable — which is
+injects the connection string as the `REDIS_URL` environment variable - which is
 exactly what `fastapi-redis-sdk` reads by default. No extra configuration is needed:
 
 1. In the FastAPI Cloud dashboard, go to your app's **Storage** tab.
@@ -337,7 +337,7 @@ cache_prefix = settings.pattern_prefix("cache")
 ## OpenTelemetry
 
 fastapi-redis-sdk can emit spans and metrics for every cache operation via
-[OpenTelemetry](https://opentelemetry.io/).  Telemetry is **opt-in** — when
+[OpenTelemetry](https://opentelemetry.io/).  Telemetry is **opt-in** - when
 disabled (the default) all instrumentation is a zero-cost no-op.
 
 ### Install the optional dependency
@@ -362,7 +362,7 @@ FastAPIRedis(app).lifespan().caching().otel()
 export REDIS_OTEL_ENABLED=true
 ```
 
-When `REDIS_OTEL_ENABLED=true`, calling `.otel()` is not required — the
+When `REDIS_OTEL_ENABLED=true`, calling `.otel()` is not required - the
 telemetry module is activated automatically at startup.
 
 ### redis-py native OTel
@@ -387,7 +387,7 @@ If you already use `opentelemetry-instrumentation-redis` externally, leave
 
 ### What is emitted
 
-**Spans** — one per cache operation (`cache.get`, `cache.set`, `cache.evict`,
+**Spans** - one per cache operation (`cache.get`, `cache.set`, `cache.evict`,
 `cache.put`, and the `cache.backend.*` equivalents).  Each span carries
 attributes such as `cache.key`, `cache.hit`, `cache.eviction_group`, and
 `cache.ttl`.
@@ -407,8 +407,9 @@ A failure inside the telemetry layer **never** breaks a cache operation or HTTP
 response.  All OTel calls are wrapped in `try/except` and errors are logged at
 `DEBUG` level only.
 
-For a deeper look at how the three observability layers compose, see the
-[Telemetry section in the Architecture guide](architecture.md#telemetry).
+For a deeper look at how the three observability layers compose - and the full
+span and metric reference for caching and rate limiting - see the
+[Observability guide](observability.md).
 
 ---
 

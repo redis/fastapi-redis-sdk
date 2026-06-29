@@ -1,6 +1,6 @@
 # FastAPI Redis
 
-**Official FastAPI integration for Redis** — connection management and DI-based
+**Official FastAPI integration for Redis** - connection management and DI-based
 caching with automatic key consistency.
 
 [![Integration](https://github.com/redis/fastapi-redis-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/redis/fastapi-redis-sdk/actions/workflows/ci.yml)
@@ -18,110 +18,45 @@ caching with automatic key consistency.
 [![YouTube](https://img.shields.io/youtube/channel/views/UCD78lHSwYqMlyetR0_P4Vig?style=social)](https://www.youtube.com/redisinc)
 [![Twitter](https://img.shields.io/twitter/follow/redisinc?style=social)](https://twitter.com/redisinc)
 [![Stack Exchange questions](https://img.shields.io/stackexchange/stackoverflow/t/fastapi-redis-sdk?style=social&logo=stackoverflow&label=Stackoverflow)](https://stackoverflow.com/questions/tagged/fastapi-redis-sdk)
+
 ---
 
-## Features
+Idiomatic Redis for FastAPI: manage connection pools through the app lifespan,
+cache responses and rate-limit endpoints with native `Depends()` factories, and
+get OpenTelemetry instrumentation out of the box. Install with
+`pip install fastapi-redis-sdk` (Python 3.10+, Redis 7.4+).
 
-- **Fluent setup** — `FastAPIRedis(app).lifespan().caching()` configures pools and caching in one chain, attaching to the [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
-- **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
-- **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
-- **Testable** — full `dependency_overrides` support; no need for monkey-patching
-- **Pydantic-validated configuration** — fully configurable via environment variables or via an `.env` file
+## Documentation
 
-## Installation
+### Getting Started
 
-```bash
-pip install fastapi-redis-sdk
-```
+- [**Installation**](getting-started/installation.md) - supported versions and
+  how to install with pip, uv, or Poetry.
+- [**Quick Start**](getting-started/quick-start.md) - wire up Redis and cache
+  your first endpoint in a handful of lines.
 
-Requires Python 3.10+ and a Redis 7.4+ server.
+### User Guide
 
-See the [Installation](getting-started/installation.md) page for full
-requirements and alternative package managers.
+- [**Architecture**](guide/architecture.md) - the decisions behind the library:
+  why dependency injection over decorators, the connection lifecycle, the
+  strings-vs-hashes storage model, and the telemetry layers.
+- [**Caching**](guide/caching.md) - the `cache()` / `cache_evict()` /
+  `cache_put()` factories, the imperative `CacheBackend`, caching Pydantic
+  models, and HTTP cache headers (`ETag`, `Cache-Control`, `304`).
+- [**Rate Limiting**](guide/rate-limiting.md) - distributed per-client limits:
+  the per-route dependency and global limiter, the fluent rate language,
+  identifiers, and `X-RateLimit-*` / `Retry-After` headers.
+- [**Observability**](guide/observability.md) - OpenTelemetry spans and metrics
+  for cache and rate-limit operations, and how to enable each layer.
+- [**Configuration**](guide/configuration.md) - Pydantic-Settings configuration
+  and the full `REDIS_*` environment variable reference.
+- [**Benchmarks**](guide/benchmarks.md) - performance measured against popular
+  caching libraries.
 
-## Quick start
+### API Reference
 
-```python
-from fastapi import FastAPI
-from redis_fastapi import FastAPIRedis, AsyncRedisDep
-
-app = FastAPI()
-FastAPIRedis(app).lifespan()
-
-@app.get("/items")
-async def get_items(redis: AsyncRedisDep):
-    return {"items": await redis.get("items")}
-```
-
-Connection pools are managed automatically and closed on shutdown. The builder
-wraps any existing lifespan — multiple libraries can each register their own
-without conflicting.
-
-## Caching
-
-Two caching patterns for different needs, sharing the same connection pool:
-
-| Pattern                                     | Best for                                 |
-|---------------------------------------------|------------------------------------------|
-| `cache()`, `cache_evict()`, `cache_put()`   | Most endpoints — read/write/invalidate   |
-| **CacheBackend**                            | Complex invalidation, conditional logic  |
-
-```python
-from fastapi import Depends
-from redis_fastapi import FastAPIRedis, cache, cache_evict, cache_put, default_key_builder
-
-app = FastAPI()
-FastAPIRedis(app).lifespan().caching()
-
-
-# READ — cache GET responses
-@app.get("/products/{product_id}", dependencies=[Depends(cache(ttl=300, eviction_group="products"))])
-async def get_product(product_id: int):
-    return await db.get_product(product_id)
-
-
-# INVALIDATE — evict the cached entry on delete
-@app.delete(
-    "/products/{product_id}",
-    dependencies=[Depends(cache_evict(eviction_group="products", key_builder=default_key_builder))],
-)
-async def delete_product(product_id: int):
-    await db.delete(product_id)
-
-
-# WRITE-THROUGH — update the cache so the next GET is a HIT
-@app.put(
-    "/products/{product_id}",
-    dependencies=[Depends(cache_put(eviction_group="products", key_builder=default_key_builder, ttl=300))],
-)
-async def replace_product(product_id: int, body: Product):
-    return await db.update(product_id, body)
-```
-
-All three factories share the same `key_builder`, so GET, DELETE, and PUT on the
-same path target the exact same cache key. Responses include `X-Redis-Cache`
-(HIT/MISS), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control), and [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag) headers with [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304) support.
-
-See the [Caching Guide](guide/caching.md) for detailed examples, feature
-comparison, and best practices.
-
-## Configuration
-
-All settings are read from environment variables (prefixed `REDIS_`) or a
-`.env` file:
-
-```bash
-export REDIS_URL=redis://user:pass@host:6379/0
-```
-
-Or configure individual fields:
-
-```bash
-export REDIS_HOST=redis.example.com
-export REDIS_PORT=6380
-export REDIS_PASSWORD=secret
-```
-
-See the [Configuration Guide](guide/configuration.md) for the full environment
-variable reference.
+- [**API Reference**](api/reference.md) - public functions, DI dependencies, and
+  classes.
+- [**Configuration API**](api/configuration.md) - `RedisSettings` fields plus the
+  `Coder` and `KeyBuilder` types.
 

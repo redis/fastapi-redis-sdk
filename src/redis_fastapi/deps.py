@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING, Annotated, TypeAlias
 
 if TYPE_CHECKING:
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
+    from redis_fastapi.ratelimit_backend import (
+        RateLimitBackend,
+        SyncRateLimitBackend,
+        _BackendCapabilities,
+    )
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
@@ -33,6 +38,14 @@ class _PoolState:
     async_pool: AsyncConnectionPool | None = None
     async_cluster: AsyncRedisCluster | None = None
     _async_client: AsyncRedis | None = None
+
+    # Shared, pool-lifetime rate-limit capability cache (INCREX / EVAL support
+    # and the registered Lua script).  Lazily created by
+    # ``get_rate_limit_backend`` and reset on shutdown so detection is paid
+    # once per process, not per request.  The type is a TYPE_CHECKING-only
+    # forward ref (annotations are lazy here), so this needs no runtime import
+    # and there is no import cycle: ratelimit_backend never imports deps.
+    ratelimit_capabilities: _BackendCapabilities | None = None
 
     # -- pool / cluster builders (static) -----------------------------------
 
@@ -92,6 +105,7 @@ class _PoolState:
     def clear(self) -> None:
         """Reset cached clients (called during lifespan shutdown)."""
         self._async_client = None
+        self.ratelimit_capabilities = None
 
 
 def _get_pool_state(app: FastAPI) -> _PoolState:
@@ -119,7 +133,7 @@ async def get_async_redis(request: Request) -> AsyncClient:
 
 async def get_cache_backend(request: Request) -> CacheBackend:
     """Return a :class:`CacheBackend` backed by the shared async pool."""
-    from redis_fastapi.cache_backend import CacheBackend  # noqa: WPS433
+    from redis_fastapi.cache_backend import CacheBackend
 
     client = await get_async_redis(request)
     return CacheBackend(client)
@@ -132,12 +146,48 @@ async def get_sync_cache_backend(request: Request) -> SyncCacheBackend:
     loop; the returned wrapper bridges each call back via
     :func:`anyio.from_thread.run`.
     """
-    from redis_fastapi.cache_backend import SyncCacheBackend  # noqa: WPS433
+    from redis_fastapi.cache_backend import SyncCacheBackend
 
     backend = await get_cache_backend(request)
     return SyncCacheBackend(backend)
 
 
+async def get_rate_limit_backend(request: Request) -> RateLimitBackend:
+    """Return a :class:`RateLimitBackend` backed by the shared async pool.
+
+    The backend is constructed per request, but its server-capability cache is
+    sourced from (and stored on) the pool state so INCREX / EVAL detection is
+    paid once per process rather than re-probed on every request.
+    """
+    from redis_fastapi.ratelimit_backend import (
+        RateLimitBackend,
+        _BackendCapabilities,
+    )
+
+    state = _get_pool_state(request.app)
+    if state.ratelimit_capabilities is None:
+        state.ratelimit_capabilities = _BackendCapabilities()
+    client = await get_async_redis(request)
+    return RateLimitBackend(client, capabilities=state.ratelimit_capabilities)
+
+
+async def get_sync_rate_limit_backend(request: Request) -> SyncRateLimitBackend:
+    """Return a :class:`SyncRateLimitBackend` for use in sync endpoints.
+
+    The underlying async :class:`RateLimitBackend` is resolved on the event
+    loop; the returned wrapper bridges each call back via
+    :func:`anyio.from_thread.run`.
+    """
+    from redis_fastapi.ratelimit_backend import SyncRateLimitBackend
+
+    backend = await get_rate_limit_backend(request)
+    return SyncRateLimitBackend(backend)
+
+
 AsyncRedisDep = Annotated[AsyncClient, Depends(get_async_redis)]
 CacheBackendDep = Annotated["CacheBackend", Depends(get_cache_backend)]
 SyncCacheBackendDep = Annotated["SyncCacheBackend", Depends(get_sync_cache_backend)]
+RateLimitBackendDep = Annotated["RateLimitBackend", Depends(get_rate_limit_backend)]
+SyncRateLimitBackendDep = Annotated[
+    "SyncRateLimitBackend", Depends(get_sync_rate_limit_backend)
+]

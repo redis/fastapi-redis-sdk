@@ -48,6 +48,10 @@ class _OTelState:
     cache_writes: Any = None
     cache_latency: Any = None
 
+    # Rate-limit metric instruments
+    ratelimit_requests: Any = None
+    ratelimit_latency: Any = None
+
 
 _state = _OTelState()
 
@@ -106,6 +110,16 @@ def enable_telemetry() -> None:
         description="Cache operation duration",
         unit="s",
     )
+    _state.ratelimit_requests = _state.meter.create_counter(
+        name="redis_fastapi.ratelimit.requests",
+        description="Rate-limit checks by result",
+        unit="1",
+    )
+    _state.ratelimit_latency = _state.meter.create_histogram(
+        name="redis_fastapi.ratelimit.latency",
+        description="Rate-limit check duration",
+        unit="s",
+    )
 
     _state.enabled = True
     logger.info("fastapi-redis-sdk OpenTelemetry instrumentation enabled")
@@ -116,7 +130,7 @@ def disable_telemetry() -> None:
 
     Primarily useful in tests to restore a clean slate between runs.
     """
-    global _state  # noqa: PLW0603
+    global _state
     _state = _OTelState()
 
 
@@ -234,3 +248,51 @@ def timed_operation(operation: str, eviction_group: str = "") -> Iterator[None]:
         record_cache_latency(
             duration=duration, operation=operation, eviction_group=eviction_group
         )
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit helpers
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def ratelimit_span(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    """Create a span for a rate-limit operation.  No-op when OTel is disabled."""
+    if not _state.enabled or _state.tracer is None:
+        yield None
+        return
+    with _state.tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+        yield span
+
+
+def record_rate_limit_request(*, result: str, scope: str = "") -> None:
+    """Record a rate-limit check (allowed / limited / bypass / error)."""
+    if not _state.enabled or _state.ratelimit_requests is None:
+        return
+    try:
+        _state.ratelimit_requests.add(1, {"result": result, "scope": scope})
+    except Exception:
+        logger.debug("Error recording rate-limit request metric", exc_info=True)
+
+
+def record_rate_limit_latency(*, duration: float, scope: str = "") -> None:
+    """Record rate-limit check latency in seconds."""
+    if not _state.enabled or _state.ratelimit_latency is None:
+        return
+    try:
+        _state.ratelimit_latency.record(duration, {"scope": scope})
+    except Exception:
+        logger.debug("Error recording rate-limit latency metric", exc_info=True)
+
+
+@contextlib.contextmanager
+def timed_rate_limit(scope: str = "") -> Iterator[None]:
+    """Context manager that records latency for a rate-limit check."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        record_rate_limit_latency(duration=time.monotonic() - start, scope=scope)

@@ -1,0 +1,13 @@
+# Runtime deps for the observability demo container.  The redis_fastapi
+# package itself is imported straight from ../../src (see app.py), so only its
+# third-party runtime deps plus the OTel SDK/exporters are installed here.
+fastapi[standard]>=0.115.0
+redis>=6.4.0
+pydantic-settings>=2.0.0
+anyio>=4.13.0
+
+# OpenTelemetry: distro provides the `opentelemetry-instrument` launcher and
+# auto-configures OTLP exporters from OTEL_* env vars.
+opentelemetry-distro>=0.48b0
+opentelemetry-exporter-otlp>=1.27.0
+opentelemetry-instrumentation-fastapi>=0.48b0

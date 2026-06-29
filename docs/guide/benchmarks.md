@@ -4,9 +4,9 @@
 
 fastapi-redis-sdk is benchmarked against popular caching libraries
 on identical workloads. All numbers are **median latency in microseconds (µs)**
-— lower is better.
+- lower is better.
 
-**Caching** — compared with fastapi-cache2 and cashews:
+**Caching** - compared with fastapi-cache2 and cashews:
 
 - On **small payloads** (~550 B), all three libraries perform within 10% of each
   other (~650–700 µs per HIT). There is no clear winner.
@@ -49,7 +49,7 @@ Compared libraries: **fastapi-redis-sdk** (dev), **fastapi-cache2** 0.2.2,
 
 ### Standout results
 
-#### 🏆 Large-payload HIT — fastapi-redis-sdk is 5.6× faster than fastapi-cache2
+#### 🏆 Large-payload HIT - fastapi-redis-sdk is 5.6× faster than fastapi-cache2
 
 ```
 fastapi-redis-sdk       1,165 µs
@@ -59,14 +59,14 @@ fastapi-cache2          6,530 µs   (5.6× slower)
 
 fastapi-cache2's `JsonCoder.decode` runs `json.loads()` with a custom
 `object_hook` that inspects every dict for `_spec_type` markers. On 200
-product objects that hook fires 1,000+ times. cashews uses pickle — faster
+product objects that hook fires 1,000+ times. cashews uses pickle - faster
 than JSON but still slower than raw bytes.
 
 fastapi-redis-sdk stores the JSON body as raw bytes and returns it **without
 re-parsing or re-serializing** on HIT, making coder overhead effectively
 zero regardless of payload size.
 
-#### ⚠️ Write-through — fastapi-cache2 is 2.8× faster
+#### ⚠️ Write-through - fastapi-cache2 is 2.8× faster
 
 ```
 fastapi-cache2          254 µs
@@ -74,12 +74,12 @@ cashews                 619 µs   (2.4× slower)
 fastapi-redis-sdk       700 µs   (2.8× slower)
 ```
 
-fastapi-cache2's `@cache` decorator caches the return value directly — one
+fastapi-cache2's `@cache` decorator caches the return value directly - one
 function call, one Redis write. fastapi-redis-sdk's `cache_put()` goes through
 the full DI pipeline and response-capture middleware (buffer the ASGI
 response, serialize, write to Redis).
 
-#### ⚠️ Group eviction — cashews is 5.5× slower
+#### ⚠️ Group eviction - cashews is 5.5× slower
 
 ```
 fastapi-cache2           728 µs
@@ -90,7 +90,7 @@ cashews               12,319 µs   (5.5× slower than fastapi-redis-sdk)
 fastapi-cache2 uses a Lua script with `KEYS` (fast but
 [discouraged in production](https://redis.io/commands/keys/)). fastapi-redis-sdk
 uses a Lua script with `SCAN` + `UNLINK` (production-safe, slightly slower).
-cashews uses Python-side `scan_iter` + `delete_match` — multiple network
+cashews uses Python-side `scan_iter` + `delete_match` - multiple network
 round-trips per SCAN batch.
 
 ### Default coders
@@ -114,7 +114,7 @@ All latency-scaled benchmarks use a TCP proxy
 (`performance/redis_latency_proxy.py`) that injects configurable round-trip
 delay between the benchmark app and Redis.
 
-### Caching — fastapi-redis-sdk HIT/MISS by added RTT
+### Caching - fastapi-redis-sdk HIT/MISS by added RTT
 
 | Added RTT            | Cache HIT | Cache MISS |
 |----------------------|----------:|-----------:|
@@ -138,7 +138,7 @@ plus middleware overhead. The MISS path adds a second round-trip for the
 
 Each additional millisecond of RTT adds roughly **1.5–3 ms per
 request** depending on the cache path (HIT vs MISS). With a 5 ms RTT, even
-a cache HIT takes ~9 ms — making local response caching or edge caching
+a cache HIT takes ~9 ms - making local response caching or edge caching
 worth considering for latency-sensitive endpoints.
 
 ---
@@ -157,7 +157,7 @@ worth considering for latency-sensitive endpoints.
 
 All benchmarks use `TestClient` (synchronous), which runs the ASGI app
 in-process. This measures the **full request-response cycle** including
-middleware, dependency injection, Redis I/O, and serialization — not just
+middleware, dependency injection, Redis I/O, and serialization - not just
 the caching logic in isolation.
 
 Latency-scaled benchmarks use a Python asyncio TCP proxy that adds half the

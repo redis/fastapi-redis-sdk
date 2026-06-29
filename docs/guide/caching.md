@@ -25,7 +25,7 @@ decision, see the [Architecture](architecture.md) section.
 |-----------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `cache()`       | Cache GET responses (read path)                                                                                                              |
 | `cache_evict()` | [Invalidate](https://redis.io/glossary/cache-invalidation/) cache entries after a write succeeds                                             |
-| `cache_put()`   | [Write-through](https://redis.io/blog/three-ways-to-maintain-cache-consistency/) — store the return value so subsequent reads see fresh data |
+| `cache_put()`   | [Write-through](https://redis.io/blog/three-ways-to-maintain-cache-consistency/) - store the return value so subsequent reads see fresh data |
 
 ### Setup
 
@@ -40,18 +40,18 @@ app = FastAPI()
 FastAPIRedis(app).lifespan().caching()
 ```
 
-The builder wraps any existing lifespan — multiple libraries can each
+The builder wraps any existing lifespan - multiple libraries can each
 register their own without conflicting.
 
 ### Basic usage
 
 ```python
-# READ — cache the response
+# READ - cache the response
 @app.get("/products/{product_id}", dependencies=[Depends(cache(ttl=300, eviction_group="products"))])
 async def get_product(product_id: int):
     return await db.get_product(product_id)
 
-# INVALIDATE — evict the cached entry when the resource is deleted
+# INVALIDATE - evict the cached entry when the resource is deleted
 @app.delete(
     "/products/{product_id}",
     dependencies=[Depends(cache_evict(eviction_group="products", key_builder=default_key_builder))],
@@ -60,7 +60,7 @@ async def delete_product(product_id: int):
     await db.delete(product_id)
     return {"deleted": product_id}
 
-# WRITE-THROUGH — update the cached entry so the next GET is a HIT
+# WRITE-THROUGH - update the cached entry so the next GET is a HIT
 @app.put(
     "/products/{product_id}",
     dependencies=[Depends(cache_put(eviction_group="products", key_builder=default_key_builder, ttl=300))],
@@ -74,7 +74,7 @@ cache operations happen **after** success.
 
 ### Options
 
-**cache()** — read-path caching:
+**cache()** - read-path caching:
 
 ```python
 Depends(cache(
@@ -86,7 +86,7 @@ Depends(cache(
 ))
 ```
 
-**cache_evict()** — invalidation on write:
+**cache_evict()** - invalidation on write:
 
 ```python
 Depends(cache_evict(
@@ -96,7 +96,7 @@ Depends(cache_evict(
 ))
 ```
 
-**cache_put()** — write-through on write:
+**cache_put()** - write-through on write:
 
 ```python
 Depends(cache_put(
@@ -108,7 +108,7 @@ Depends(cache_put(
 ))
 ```
 
-`private=True` works the same way here as on `cache()` — it adds the
+`private=True` works the same way here as on `cache()` - it adds the
 [`Cache-Control: private`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private)
 directive so CDNs and shared proxies do not store the response.  The
 entry is still written to Redis for fast subsequent reads; only
@@ -116,7 +116,7 @@ intermediate HTTP caches are told to stay out.  See
 [Response directives](#http-cache-headers) for more detail.
 
 ```python
-# User updates their own profile — cache the result in Redis,
+# User updates their own profile - cache the result in Redis,
 # but prevent CDNs from serving Alice's profile to Bob.
 @app.put(
     "/me/profile",
@@ -152,7 +152,7 @@ Without an eviction group, no hash tag is added:
 All three factories use the same `key_builder` function (defaulting to
 `default_key_builder`), which builds the key from the incoming `Request`.
 This means the GET, DELETE, and PUT on the same path all resolve to the
-**exact same cache key** automatically — no manual key matching required.
+**exact same cache key** automatically - no manual key matching required.
 
 |                 | Omit `key_builder`           | Pass `default_key_builder` | Pass custom  |
 |-----------------|------------------------------|----------------------------|--------------|
@@ -170,14 +170,14 @@ async def clear_products():
 
 For complex invalidation that doesn't map to a single URL path (cross-path
 eviction, multi-key invalidation, conditional logic), use `CacheBackend`
-directly — see [section 2](#2-cachebackend).
+directly - see [section 2](#2-cachebackend).
 
 #### Eviction groups and Redis Cluster
 
 In Redis Cluster, keys are distributed across nodes based on their hash
 slot (CRC16 of the key modulo 16384).  Without hash tags, keys in the
 same logical eviction group would be scattered across multiple nodes, making
-bulk operations like `delete_group()` unreliable — `SCAN` only sees
+bulk operations like `delete_group()` unreliable - `SCAN` only sees
 keys on the node it runs on, and Lua scripts cannot touch keys in
 different slots.
 
@@ -187,7 +187,7 @@ computing the slot.  Because all keys in an eviction group share the same
 slot**.  This makes the Lua-based `SCAN` + `UNLINK` script used by
 `delete_group()` correct and atomic.
 
-**Trade-off — hot slots:** All keys in one eviction group concentrate on a
+**Trade-off - hot slots:** All keys in one eviction group concentrate on a
 single node.  For typical HTTP response caching this is not a problem
 (eviction groups are small-to-moderate in size).  If an eviction group grows very
 large, consider splitting it into multiple smaller eviction groups to
@@ -203,24 +203,24 @@ Every `cache()` response includes these headers automatically:
 | [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) | `max-age=<remaining_ttl>` when TTL > 0, or `no-cache` when TTL = 0 (always revalidate via ETag). Adds `private` prefix when `private=True`. |
 | [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag) | Weak ETag of the cached body |
 
-**Request directives** — the following `Cache-Control` directives sent by the
+**Request directives** - the following `Cache-Control` directives sent by the
 client are respected:
 
 - [`If-None-Match`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-None-Match) with a matching ETag returns [**304 Not Modified**](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304).
 - `Cache-Control: no-cache` forces a cache refresh.
 - `Cache-Control: no-store` bypasses caching entirely.
-- `Cache-Control: max-age=N` — a cached entry older than *N* seconds is
+- `Cache-Control: max-age=N` - a cached entry older than *N* seconds is
   treated as a cache miss and the endpoint re-executes.
   `max-age=0` is equivalent to `no-cache`.
 
-**Response directives** — use `private=True` on the factory to emit
+**Response directives** - use `private=True` on the factory to emit
 `Cache-Control: private, max-age=…`.  This tells CDNs and shared proxies
-**not** to store the response — only the end-user's browser may cache it. See
+**not** to store the response - only the end-user's browser may cache it. See
 [MDN: Cache-Control: private](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#private) and
 [MDN: Private caches](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches)
 
 ```python
-# User-specific data — must not be cached by a CDN
+# User-specific data - must not be cached by a CDN
 @app.get("/me/profile", dependencies=[Depends(cache(ttl=60, private=True))])
 async def my_profile(user: User = Depends(get_current_user)):
     return user.profile
@@ -269,7 +269,7 @@ DI factories cannot express: conditional caching, intermediate result caching,
 cross-group cascade invalidation, dynamic TTL, and atomic
 read-modify-write.
 
-`CacheBackend` only needs a Redis connection — `.caching()` is **not**
+`CacheBackend` only needs a Redis connection - `.caching()` is **not**
 required.  If you're only using `CacheBackend` (no `cache()` / `cache_evict()`
 / `cache_put()`), setup is just:
 
@@ -305,7 +305,7 @@ By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
 JSON encoder on write and validates back into a model instance on read, so cache
 hits come back fully typed.
 
-Because a coder is model-specific, you select it the **DI-native** way — by
+Because a coder is model-specific, you select it the **DI-native** way - by
 declaring a model-specific `CacheBackend` provider and injecting it, exactly as
 you would with `get_db` or `get_current_user`. The default `CacheBackendDep`
 stays on `JsonCoder`; this provider is a parallel dependency that carries the
@@ -575,20 +575,20 @@ async def checkout(cart: Cart, cache: CacheBackendDep):
 ## Best practices
 
 1. **Use `FastAPIRedis(app).lifespan().caching()`** for app setup.
-2. **Start with `cache()`** for GET endpoints — it is the simplest option.
+2. **Start with `cache()`** for GET endpoints - it is the simplest option.
 3. **Add `cache_evict()`** on write endpoints that should invalidate cached reads.
 4. **Use `cache_put()`** when the write result should immediately warm the cache.
 5. **Switch to CacheBackend** when you need conditional logic or complex flows.
-6. **Always set explicit TTLs** — see [TTL defaults](#ttl-defaults) below.
+6. **Always set explicit TTLs** - see [TTL defaults](#ttl-defaults) below.
 8. **Use eviction groups** to group related keys and enable bulk invalidation.
-9. **Use `dependency_overrides`** in tests — no monkey-patching needed.
-10. **Do not over-cache** — cache only what is expensive to recompute.
+9. **Use `dependency_overrides`** in tests - no monkey-patching needed.
+10. **Do not over-cache** - cache only what is expensive to recompute.
 
 ---
 
 ## TTL defaults
 
-By default, `default_ttl` is **0** — cache entries have **no automatic
+By default, `default_ttl` is **0** - cache entries have **no automatic
 expiration** and persist until explicitly evicted (via `cache_evict()`,
 `delete_group()`, or Redis memory eviction policies like `allkeys-lru`).
 
@@ -596,7 +596,7 @@ This is a deliberate design choice:
 
 1. **A caching library's job is to cache, not to expire.** Expiry is an
    application-level policy decision. Only you know whether your data changes
-   every second or every month — a library-imposed default (e.g. 60 seconds,
+   every second or every month - a library-imposed default (e.g. 60 seconds,
    5 minutes) is wrong for most use cases. The library should provide excellent
    TTL *support*, not impose a TTL *opinion*.
 

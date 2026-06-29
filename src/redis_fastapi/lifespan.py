@@ -78,7 +78,7 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # -- cache-layer OTel (optional) ---------------------------------------
     if settings.otel_enabled:
-        from redis_fastapi.telemetry import enable_telemetry  # noqa: PLC0415
+        from redis_fastapi.telemetry import enable_telemetry
 
         enable_telemetry()
 
