@@ -80,6 +80,7 @@ test = [
     "coverage[toml]>=7.10.1",
     "fakeredis>=2.35.0",
     "httpx>=0.23.0,<1.0.0",
+    "lupa>=2.8",
     "pytest>=9.0.0",
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",

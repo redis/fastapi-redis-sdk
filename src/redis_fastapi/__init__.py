@@ -21,6 +21,11 @@ from redis_fastapi.deps import (
     get_sync_cache_backend,
 )
 from redis_fastapi.lifespan import redis_lifespan
+from redis_fastapi.rate_limit import (
+    RateLimitResult,
+    default_rate_limit_key_builder,
+    rate_limit,
+)
 from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import Coder, JsonCoder, KeyBuilder
@@ -42,11 +47,14 @@ __all__ = [
     "cache_evict",
     "cache_put",
     "default_key_builder",
+    "default_rate_limit_key_builder",
     "disable_telemetry",
     "enable_telemetry",
     "get_async_redis",
     "get_cache_backend",
     "get_settings",
     "get_sync_cache_backend",
+    "RateLimitResult",
+    "rate_limit",
     "redis_lifespan",
 ]

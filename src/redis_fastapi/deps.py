@@ -6,6 +6,8 @@ import logging
 from typing import TYPE_CHECKING, Annotated, TypeAlias
 
 if TYPE_CHECKING:
+    from redis.commands.core import AsyncScript
+
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
 
 from fastapi import Depends, FastAPI, Request
@@ -33,6 +35,11 @@ class _PoolState:
     async_pool: AsyncConnectionPool | None = None
     async_cluster: AsyncRedisCluster | None = None
     _async_client: AsyncRedis | None = None
+
+    # Rate-limit INCREX capability state (unknown/supported/unsupported)
+    increx_supported: str = "unknown"
+    # Cached redis-py AsyncScript object for the Lua rate-limit fallback
+    _rate_limit_script: AsyncScript | None = None
 
     # -- pool / cluster builders (static) -----------------------------------
 
@@ -92,6 +99,8 @@ class _PoolState:
     def clear(self) -> None:
         """Reset cached clients (called during lifespan shutdown)."""
         self._async_client = None
+        self.increx_supported = "unknown"
+        self._rate_limit_script = None
 
 
 def _get_pool_state(app: FastAPI) -> _PoolState:

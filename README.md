@@ -22,6 +22,7 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 
 - **Fluent setup** — `FastAPIRedis(app).lifespan().caching()` configures pools and caching in one chain, attaching to the [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 - **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
+- **Rate limiting** — `rate_limit()` as `Depends()` factory with INCREX and atomic Lua fallback
 - **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
 - **Testable** — full `dependency_overrides` support; no need for monkey-patching
 - **Pydantic-validated configuration** — fully configurable via environment variables or via an `.env` file
@@ -121,6 +122,29 @@ async def dashboard(user_id: int, cache: CacheBackendDep):
 Provides `get`/`set`/`delete`/`has`/`delete_group` with automatic JSON serialization. Use it for conditional caching, cascade invalidation, dynamic TTL, and intermediate result caching.
 
 See the [Caching Guide](docs/guide/caching.md) for detailed examples, feature comparison, and best practices.
+
+## Rate Limiting
+
+Redis-backed fixed-window rate limiting as a FastAPI dependency:
+
+```python
+from fastapi import Depends
+from redis_fastapi import FastAPIRedis, rate_limit
+
+app = FastAPI()
+FastAPIRedis(app).lifespan()
+
+@app.get("/items", dependencies=[Depends(rate_limit(limit=100, window=60))])
+async def get_items():
+    return {"ok": True}
+```
+
+Uses [`INCREX`](https://redis.io/docs/latest/commands/increx/) when available (Redis 8.8+)
+and falls back to an atomic Lua script for older versions. Supports custom key builders,
+sync endpoints, and OpenTelemetry instrumentation.
+
+See the [Rate Limiting Guide](docs/guide/rate-limiting.md) for detailed configuration,
+OTel setup, and testing patterns.
 
 ## Configuration
 

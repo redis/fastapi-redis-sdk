@@ -25,6 +25,7 @@ caching with automatic key consistency.
 - **Fluent setup** — `FastAPIRedis(app).lifespan().caching()` configures pools and caching in one chain, attaching to the [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 - **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
 - **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
+- **Rate limiting** — `rate_limit()` as `Depends()` factory with INCREX and atomic Lua fallback
 - **Testable** — full `dependency_overrides` support; no need for monkey-patching
 - **Pydantic-validated configuration** — fully configurable via environment variables or via an `.env` file
 

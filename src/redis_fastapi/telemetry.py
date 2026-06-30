@@ -20,8 +20,12 @@ import contextlib
 import dataclasses
 import logging
 import time
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Generator, Iterator
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from opentelemetry.metrics import Counter
+    from opentelemetry.trace import Span
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,9 @@ class _OTelState:
     cache_evictions: Any = None
     cache_writes: Any = None
     cache_latency: Any = None
+
+    # Rate-limit metric instruments
+    rate_limit_requests: Counter | None = None
 
 
 _state = _OTelState()
@@ -105,6 +112,12 @@ def enable_telemetry() -> None:
         name="redis_fastapi.cache.latency",
         description="Cache operation duration",
         unit="s",
+    )
+
+    _state.rate_limit_requests = _state.meter.create_counter(
+        name="redis_fastapi.rate_limit.requests",
+        description="Total rate limit checks",
+        unit="1",
     )
 
     _state.enabled = True
@@ -221,6 +234,43 @@ def record_cache_latency(
         )
     except Exception:
         logger.debug("Error recording cache latency metric", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit helpers
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def rate_limit_span(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+) -> Generator[Span | None, None, None]:
+    """Create a span for a rate-limit operation.
+
+    No-op context manager when OTel is disabled or not installed.
+    """
+    if not _state.enabled or _state.tracer is None:
+        yield None
+        return
+    with _state.tracer.start_as_current_span(
+        name,
+        attributes=attributes or {},
+    ) as span:
+        yield span
+
+
+def record_rate_limit_request(
+    *,
+    result: str,
+) -> None:
+    """Record a rate-limit check result (allowed / blocked / error)."""
+    if not _state.enabled or _state.rate_limit_requests is None:
+        return
+    try:
+        _state.rate_limit_requests.add(1, {"result": result})
+    except Exception:
+        logger.debug("Error recording rate limit request metric", exc_info=True)
 
 
 @contextlib.contextmanager
