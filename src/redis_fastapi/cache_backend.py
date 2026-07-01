@@ -311,7 +311,7 @@ class CacheBackend:
             pattern: Glob pattern matching the keys to delete.
             scan_count: Hint for ``SCAN``'s ``COUNT`` option.
         """
-        result = await self._redis.eval(  # type: ignore[misc]
+        result = await self._redis.eval(
             _DELETE_BY_PATTERN_SCRIPT,
             0,  # numkeys - pattern is passed as ARGV
             pattern,

@@ -28,10 +28,17 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "redis>=6.0.0,<7.3.0",  # fakeredis <=2.35.1 incompatible with redis 7.3+ (ResponseError moved)
+    "redis>=6.0.0",
     "fastapi[standard]>=0.115.0",
     "pydantic-settings>=2.0.0",
     "pydantic>=2.12.5",
+    "safety>=3.7.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest>=9.0.2",
+    "coverage>=7.13.5",
+    "anyio>=4.13.0",
+    "ruff>=0.15.9",
+    "mypy>=2.1.0",
 ]
 
 [project.optional-dependencies]
@@ -67,18 +74,19 @@ skips = ["*_test.py", "*/test_*.py"]
 [dependency-groups]
 dev = [
     { include-group = "test" },
-    "bandit[toml]>=1.8.6",
-    "mypy>=1.17.0",
+    { include-group = "lint" },
+    { include-group = "typecheck" },
+    { include-group = "security" },
+    { include-group = "docs" },
     "nox>=2026.4.10",
-    "ruff>=0.12.5",
-    "safety>=3.6.0",
+    "safety>=3.8.1",
     "twine>=4.0",
 ]
 
 test = [
     "anyio[trio]>=3.2.1,<5.0.0",
     "coverage[toml]>=7.10.1",
-    "fakeredis>=2.35.0",
+    "fakeredis>=2.36.2",
     "httpx>=0.23.0,<1.0.0",
     "lupa>=2.8",
     "pytest>=9.0.0",
@@ -86,6 +94,24 @@ test = [
     "pytest-cov>=6.2.1",
     "pytest-mock>=3.12.0",
     "pytest-timeout>=2.4.0",
+]
+
+lint = [
+    "ruff>=0.12.5",
+]
+
+typecheck = [
+    "mypy>=2.1.0",
+]
+
+security = [
+    "bandit[toml]>=1.8.6",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocs-git-revision-date-localized-plugin>=1.2.0",
 ]
 
 # Testing configuration

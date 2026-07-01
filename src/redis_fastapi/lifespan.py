@@ -21,7 +21,7 @@ def _init_redis_otel() -> Any:
         # redis-py >=7.4 re-exports from redis.observability directly;
         # 7.x keeps them in submodules.
         try:
-            from redis.observability import (  # type: ignore[attr-defined]
+            from redis.observability import (
                 OTelConfig,
                 get_observability_instance,
             )
