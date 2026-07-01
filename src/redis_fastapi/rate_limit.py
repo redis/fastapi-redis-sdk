@@ -19,10 +19,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request
-from redis.asyncio import Redis as AsyncRedis_
 from redis.exceptions import RedisError, ResponseError
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
@@ -85,6 +84,26 @@ async def _check_increx_supported(redis: AsyncClient) -> bool:
         return False
 
 
+async def _run_lua(
+    redis: AsyncClient,
+    key: str,
+    limit: int,
+    window: int,
+) -> tuple[int, int, int]:
+    result = await redis.execute_command(
+        "EVAL",
+        _RATE_LIMIT_LUA,
+        1,
+        key,
+        str(limit),
+        str(window),
+    )
+    if result is None:
+        raise RedisError("Lua rate-limit script returned None")
+    raw_current, raw_actual_incr, raw_ttl = result
+    return int(raw_current), int(raw_actual_incr), int(raw_ttl)
+
+
 async def _check_rate_limit(
     redis: AsyncClient,
     key: str,
@@ -129,19 +148,7 @@ async def _check_rate_limit(
         except ResponseError:
             pool_state.increx_supported = "unsupported"
 
-    if pool_state._rate_limit_script is None:
-        pool_state._rate_limit_script = cast(AsyncRedis_, redis).register_script(
-            _RATE_LIMIT_LUA
-        )
-
-    raw_current, raw_actual_incr, raw_ttl = await pool_state._rate_limit_script(
-        keys=[key],
-        args=[str(limit), str(window)],
-    )
-    current_val = int(raw_current)
-    actual_incr = int(raw_actual_incr)
-    ttl = int(raw_ttl)
-
+    current_val, actual_incr, ttl = await _run_lua(redis, key, limit, window)
     allowed = actual_incr == 1
     remaining = max(0, limit - current_val)
     retry_after = max(0, ttl) if ttl >= 0 else window
@@ -160,7 +167,7 @@ def rate_limit(
     *,
     key_builder: RateLimitKeyBuilder | None = None,
     prefix: str | None = None,
-) -> Any:
+) -> Callable[..., Awaitable[None]]:
     if limit < 1:
         raise ValueError("limit must be >= 1")
     if window < 1:
