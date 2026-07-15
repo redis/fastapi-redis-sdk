@@ -25,7 +25,6 @@ from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
     Coder,
-    FastAPIJsonCoder,
     JsonCoder,
     KeyBuilder,
     pydantic_model_coder,
@@ -37,7 +36,6 @@ __all__ = [
     "CacheBackendDep",
     "CacheHitException",
     "Coder",
-    "FastAPIJsonCoder",
     "JsonCoder",
     "KeyBuilder",
     "FastAPIRedis",

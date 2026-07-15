@@ -134,23 +134,6 @@ class Coder(Protocol):
 
 Default `Coder` implementation using `json.dumps` / `json.loads`.
 
-### `FastAPIJsonCoder`
-
-```python
-from redis_fastapi import FastAPIJsonCoder
-```
-
-JSON coder that runs values through FastAPI's `jsonable_encoder()` before
-calling `json.dumps()`. Use it for cache values containing Pydantic models,
-`datetime`, `UUID`, enums, dataclasses, and other FastAPI-compatible values.
-
-```python
-from redis_fastapi import CacheBackend, FastAPIJsonCoder
-
-cache = CacheBackend(redis, coder=FastAPIJsonCoder)
-await cache.set("item:1", item)
-```
-
 ### `pydantic_model_coder()`
 
 ```python
@@ -162,6 +145,10 @@ ProductCoder = pydantic_model_coder(Product)
 Creates a `Coder` class for one Pydantic model type. Encoded values can be
 model instances or data that Pydantic can validate into that model; decoded
 values are returned as model instances.
+
+Because the coder is model-specific, select it the DI-native way — declare a
+model-specific `CacheBackend` provider and inject it (the default
+`CacheBackendDep` keeps `JsonCoder`):
 
 ```python
 from typing import Annotated
@@ -176,7 +163,7 @@ class Product(BaseModel):
 ProductCoder = pydantic_model_coder(Product)
 
 async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
-    return CacheBackend(redis, coder=ProductCoder)
+    return CacheBackend(redis, coder=ProductCoder, eviction_group="products")
 
 ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
 ```

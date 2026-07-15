@@ -23,7 +23,6 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 - **Fluent setup** — `FastAPIRedis(app).lifespan().caching()` configures pools and caching in one chain, attaching to the [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 - **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
 - **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
-- **FastAPI-aware serialization** — optional coders for Pydantic models, datetimes, UUIDs, and other `jsonable_encoder`-compatible values
 - **Testable** — full `dependency_overrides` support; no need for monkey-patching
 - **Pydantic-validated configuration** — fully configurable via environment variables or via an `.env` file
 
@@ -120,37 +119,6 @@ async def dashboard(user_id: int, cache: CacheBackendDep):
 ```
 
 Provides `get`/`set`/`delete`/`has`/`delete_group` with automatic JSON serialization. Use it for conditional caching, cascade invalidation, dynamic TTL, and intermediate result caching.
-
-For values that FastAPI can serialize but stdlib `json.dumps()` cannot
-handle directly, use `FastAPIJsonCoder`. For typed model round-trips, create a
-Pydantic model coder:
-
-```python
-from typing import Annotated
-from fastapi import Depends
-from pydantic import BaseModel
-from redis_fastapi import AsyncRedisDep, CacheBackend, pydantic_model_coder
-
-class Product(BaseModel):
-    id: int
-    name: str
-
-ProductCoder = pydantic_model_coder(Product)
-
-async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
-    return CacheBackend(redis, coder=ProductCoder)
-
-ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
-
-@app.get("/products/{product_id}")
-async def product(product_id: int, cache: ProductCacheDep) -> Product:
-    cached = await cache.get(f"product:{product_id}")
-    if cached is not None:
-        return cached
-    product = await db.get_product(product_id)
-    await cache.set(f"product:{product_id}", product, ttl=300)
-    return product
-```
 
 See the [Caching Guide](docs/guide/caching.md) for detailed examples, feature comparison, and best practices.
 
