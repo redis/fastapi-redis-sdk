@@ -4,4 +4,4 @@
 /site/
 /bandit-report.json
 /coverage.xml
-.worktrees/
+__pycache__/

@@ -6,7 +6,10 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
+<<<<<<< HEAD
 from fastapi.encoders import jsonable_encoder
+=======
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 from pydantic import BaseModel
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -35,6 +38,7 @@ class JsonCoder:
         return json.loads(value)
 
 
+<<<<<<< HEAD
 class FastAPIJsonCoder:
     """JSON coder that first converts values with FastAPI's encoder."""
 
@@ -47,6 +51,8 @@ class FastAPIJsonCoder:
         return json.loads(value)
 
 
+=======
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 def pydantic_model_coder(model_type: type[ModelT]) -> type[Coder]:
     """Create a coder that decodes cached JSON back into *model_type*.
 

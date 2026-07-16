@@ -65,8 +65,7 @@ async def dashboard(user_id: int, cache: CacheBackendDep):
 
 `Annotated[CacheBackend, Depends(get_cache_backend)]` — async cache backend with `get`/`set`/`delete`/`has`/`delete_group`. Use for conditional caching, cascade invalidation, and dynamic TTL.
 
-`CacheBackend(redis, coder=...)` accepts any `Coder`. Use `FastAPIJsonCoder`
-for values supported by FastAPI's `jsonable_encoder()`, or
+`CacheBackend(redis, coder=...)` accepts any `Coder`. Use
 `pydantic_model_coder(Model)` when cache hits should decode back into Pydantic
 model instances.
 

@@ -296,6 +296,7 @@ pattern (get → miss → compute → set → return) is exactly what `cache()` 
 automatically.  Use `CacheBackendDep` when you need control that the DI
 factories cannot express:
 
+<<<<<<< HEAD
 ### FastAPI-aware serialization
 
 By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
@@ -314,11 +315,34 @@ come back as Pydantic model instances:
 
 ```python
 from typing import Annotated
+=======
+### Caching Pydantic models
+
+By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
+`json.dumps()` / `json.loads()`, which cannot serialize Pydantic models,
+`datetime`, `UUID`, enums, or `Decimal`. To cache a Pydantic model, wrap it with
+`pydantic_model_coder()`: the resulting coder serializes with the model's own
+JSON encoder on write and validates back into a model instance on read, so cache
+hits come back fully typed.
+
+Because a coder is model-specific, you select it the **DI-native** way — by
+declaring a model-specific `CacheBackend` provider and injecting it, exactly as
+you would with `get_db` or `get_current_user`. The default `CacheBackendDep`
+stays on `JsonCoder`; this provider is a parallel dependency that carries the
+`Product` coder (and its eviction group):
+
+```python
+from typing import Annotated
+from datetime import datetime
+from uuid import UUID
+
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 from fastapi import Depends
 from pydantic import BaseModel
 from redis_fastapi import AsyncRedisDep, CacheBackend, pydantic_model_coder
 
 class Product(BaseModel):
+<<<<<<< HEAD
     id: int
     name: str
 
@@ -326,10 +350,22 @@ ProductCoder = pydantic_model_coder(Product)
 
 async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
     return CacheBackend(redis, coder=ProductCoder)
+=======
+    id: UUID
+    name: str
+    created_at: datetime
+
+# Wire the coder into a model-specific CacheBackend provider, then alias it.
+ProductCoder = pydantic_model_coder(Product)
+
+async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
+    return CacheBackend(redis, coder=ProductCoder, eviction_group="products")
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 
 ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
 
 @app.get("/products/{product_id}")
+<<<<<<< HEAD
 async def get_product(product_id: int, cache: ProductCacheDep) -> Product:
     cached = await cache.get(f"product:{product_id}", eviction_group="products")
     if cached is not None:
@@ -339,6 +375,21 @@ async def get_product(product_id: int, cache: ProductCacheDep) -> Product:
     return product
 ```
 
+=======
+async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
+    cached = await cache.get(f"product:{product_id}")
+    if cached is not None:
+        return cached                          # a real Product instance, fully typed
+    product = await db.get_product(product_id)
+    await cache.set(f"product:{product_id}", product, ttl=300)
+    return product
+```
+
+`get_product_cache` reuses the shared connection pool via `AsyncRedisDep`, so the
+model-specific backend costs nothing extra beyond the coder. Add one such
+provider per model you cache.
+
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 ### Conditional caching
 
 Cache only when business rules are met - `@cache` always caches the result:

@@ -7,6 +7,10 @@ Serve docs locally:     nox -s docs-serve
 
 CI uses these same sessions so there is a single source of truth
 for linting, type-checking, security scanning, and testing.
+
+Dependency versions live solely in pyproject.toml's [dependency-groups];
+each session installs the group(s) it needs via `uv sync` so there is no
+second copy of the dependency list to keep in step.
 """
 
 from __future__ import annotations
@@ -21,13 +25,28 @@ PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 PYTHON_DEFAULT = "3.12"
 
 
+def uv_sync(session: nox.Session, *args: str) -> None:
+    """Install dependencies into the session venv with ``uv sync``.
+
+    Versions are resolved from pyproject.toml / uv.lock, keeping pyproject.toml
+    the single source of truth. ``--active`` targets the nox-created venv.
+    """
+    session.run_install(
+        "uv",
+        "sync",
+        "--active",
+        *args,
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Lint & format
 # ---------------------------------------------------------------------------
 @nox.session(python=PYTHON_DEFAULT)
 def lint(session: nox.Session) -> None:
     """Run ruff linter and formatter checks."""
-    session.install("ruff>=0.12.5")
+    uv_sync(session, "--only-group", "lint")
     session.run("ruff", "check", *SOURCES)
     session.run("ruff", "format", "--check", *SOURCES)
 
@@ -38,12 +57,7 @@ def lint(session: nox.Session) -> None:
 @nox.session(python=PYTHON_DEFAULT)
 def typecheck(session: nox.Session) -> None:
     """Run mypy on source code."""
-    session.install(
-        ".[otel]",
-        "mypy>=1.17.0",
-        "pydantic>=2.12.5",
-        "pydantic-settings>=2.0.0",
-    )
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "typecheck")
     session.run("mypy", "src/")
 
 
@@ -53,7 +67,7 @@ def typecheck(session: nox.Session) -> None:
 @nox.session(python=PYTHON_DEFAULT)
 def security(session: nox.Session) -> None:
     """Run bandit security scanner."""
-    session.install("bandit[toml]>=1.8.6")
+    uv_sync(session, "--only-group", "security")
     # JSON report for CI artifact upload (non-fatal); text report (fatal).
     session.run(
         "bandit", "-r", "src/",
@@ -69,42 +83,24 @@ def security(session: nox.Session) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def tests(session: nox.Session) -> None:
     """Run the full test suite with coverage."""
-    session.install("-e", ".[otel]")
-    session.install(
-        "pytest>=9.0.0",
-        "pytest-asyncio>=1.1.0",
-        "pytest-cov>=6.2.1",
-        "pytest-mock>=3.12.0",
-        "pytest-timeout>=2.4.0",
-        "fakeredis>=2.35.0",
-        "httpx>=0.23.0,<1.0.0",
-        "anyio[trio]>=3.2.1,<5.0.0",
-        "coverage[toml]>=7.10.1",
-    )
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
     session.run("pytest", "tests/", "-v", *session.posargs)
 
 
 # ---------------------------------------------------------------------------
 # Documentation
 # ---------------------------------------------------------------------------
-DOCS_DEPS = [
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocs-git-revision-date-localized-plugin>=1.2.0",
-]
-
-
 @nox.session(python=PYTHON_DEFAULT, default=False)
 def docs_build(session: nox.Session) -> None:
     """Build the documentation site in strict mode (CI parity)."""
-    session.install(*DOCS_DEPS)
+    uv_sync(session, "--only-group", "docs")
     session.run("mkdocs", "build", "--strict", *session.posargs)
 
 
 @nox.session(python=PYTHON_DEFAULT, default=False)
 def docs_serve(session: nox.Session) -> None:
     """Serve the documentation site locally with live reload."""
-    session.install(*DOCS_DEPS)
+    uv_sync(session, "--only-group", "docs")
     session.run("mkdocs", "serve", *session.posargs)
 
 
@@ -114,6 +110,6 @@ def docs_serve(session: nox.Session) -> None:
 @nox.session(python=PYTHON_DEFAULT, default=False)
 def fix(session: nox.Session) -> None:
     """Auto-fix lint and format issues."""
-    session.install("ruff>=0.12.5")
+    uv_sync(session, "--only-group", "lint")
     session.run("ruff", "check", "--fix", *SOURCES)
     session.run("ruff", "format", *SOURCES)

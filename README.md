@@ -47,17 +47,13 @@ pip install fastapi-redis-sdk
 
 ```python
 from fastapi import FastAPI
-from redis_fastapi import FastAPIRedis, RedisDep, AsyncRedisDep
+from redis_fastapi import FastAPIRedis, AsyncRedisDep
 
 app = FastAPI()
 FastAPIRedis(app).lifespan()
 
 @app.get("/items")
-def get_items(redis: RedisDep):
-    return {"items": redis.get("items")}
-
-@app.get("/async-items")
-async def get_items_async(redis: AsyncRedisDep):
+async def get_items(redis: AsyncRedisDep):
     return {"items": await redis.get("items")}
 ```
 

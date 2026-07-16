@@ -161,7 +161,7 @@ export REDIS_CLUSTER=true
 export REDIS_URL=redis://node1:6379,node2:6379,node3:6379
 ```
 
-When enabled, `RedisDep` yields a `RedisCluster` and `AsyncRedisDep` yields an `AsyncRedisCluster`.
+When enabled, `AsyncRedisDep` yields an `AsyncRedisCluster`.
 
 ## Key Prefix
 

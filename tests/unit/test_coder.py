@@ -72,6 +72,7 @@ class Product(BaseModel):
 
 
 @pytest.mark.unit
+<<<<<<< HEAD
 class TestFastAPIJsonCoder:
     def test_encodes_fastapi_json_compatible_values(self) -> None:
         data = {
@@ -106,6 +107,8 @@ class TestFastAPIJsonCoder:
 
 
 @pytest.mark.unit
+=======
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 class TestPydanticModelCoder:
     def test_decodes_to_pydantic_model(self) -> None:
         product = Product(
@@ -144,10 +147,16 @@ class TestPydanticModelCoder:
 
 @pytest.mark.unit
 class TestCoderExports:
+<<<<<<< HEAD
     def test_fastapi_coders_exported_from_package_root(self) -> None:
         from redis_fastapi import FastAPIJsonCoder, pydantic_model_coder
 
         assert FastAPIJsonCoder is types.FastAPIJsonCoder
+=======
+    def test_coders_exported_from_package_root(self) -> None:
+        from redis_fastapi import pydantic_model_coder
+
+>>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
         assert pydantic_model_coder is types.pydantic_model_coder
 
 

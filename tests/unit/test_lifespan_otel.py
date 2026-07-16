@@ -92,6 +92,76 @@ class TestShutdownRedisOtel:
 
 
 # ===================================================================
+# Lifespan with otel_enabled (cache-layer telemetry)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestLifespanCacheOtelEnabled:
+    def test_enable_telemetry_called_when_otel_enabled(self):
+        """Lifespan calls enable_telemetry when otel_enabled=True."""
+        custom = RedisSettings(otel_enabled=True)
+
+        with (
+            patch("redis_fastapi.lifespan.get_settings", return_value=custom),
+            patch("redis_fastapi.deps.get_settings", return_value=custom),
+            patch("redis_fastapi.telemetry.enable_telemetry") as mock_enable,
+        ):
+            app = FastAPI()
+            FastAPIRedis(app).lifespan()
+
+            @app.get("/ping")
+            async def ping() -> dict:
+                return {"ok": True}
+
+            with TestClient(app) as client:
+                client.get("/ping")
+                mock_enable.assert_called_once()
+
+    def test_enable_telemetry_not_called_when_disabled(self):
+        """Lifespan does not call enable_telemetry when otel_enabled=False."""
+        custom = RedisSettings(otel_enabled=False)
+
+        with (
+            patch("redis_fastapi.lifespan.get_settings", return_value=custom),
+            patch("redis_fastapi.deps.get_settings", return_value=custom),
+            patch("redis_fastapi.telemetry.enable_telemetry") as mock_enable,
+        ):
+            app = FastAPI()
+            FastAPIRedis(app).lifespan()
+
+            @app.get("/ping")
+            async def ping() -> dict:
+                return {"ok": True}
+
+            with TestClient(app) as client:
+                client.get("/ping")
+                mock_enable.assert_not_called()
+
+    def test_otel_enabled_activates_is_enabled_on_startup(self):
+        """REDIS_OTEL_ENABLED / otel_enabled=True enables cache telemetry at startup."""
+        import redis_fastapi.telemetry as tel
+
+        custom = RedisSettings(otel_enabled=True)
+        original = tel._state
+        tel.disable_telemetry()
+        try:
+            with (
+                patch("redis_fastapi.lifespan.get_settings", return_value=custom),
+                patch("redis_fastapi.deps.get_settings", return_value=custom),
+            ):
+                app = FastAPI()
+                # Builder only — no explicit .otel(); matches issue #22 reproduction.
+                FastAPIRedis(app).lifespan().caching()
+                assert tel.is_enabled() is False
+
+                with TestClient(app):
+                    assert tel.is_enabled() is True
+        finally:
+            tel._state = original
+
+
+# ===================================================================
 # Lifespan with otel_redis_enabled
 # ===================================================================
 

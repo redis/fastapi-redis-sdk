@@ -21,7 +21,7 @@ def _init_redis_otel() -> Any:
         # redis-py >=7.4 re-exports from redis.observability directly;
         # 7.x keeps them in submodules.
         try:
-            from redis.observability import (  # type: ignore[attr-defined]
+            from redis.observability import (
                 OTelConfig,
                 get_observability_instance,
             )
@@ -67,11 +67,20 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     Supports both standalone and OSS Cluster modes based on
     ``get_settings().cluster``.
 
+    When ``settings.otel_enabled`` is ``True``, activates cache-layer
+    OpenTelemetry instrumentation (same effect as calling ``.otel()``).
+
     When ``settings.otel_redis_enabled`` is ``True``, also initializes
     redis-py's native OpenTelemetry integration on startup and shuts it
     down on teardown.
     """
     settings = get_settings()
+
+    # -- cache-layer OTel (optional) ---------------------------------------
+    if settings.otel_enabled:
+        from redis_fastapi.telemetry import enable_telemetry  # noqa: PLC0415
+
+        enable_telemetry()
 
     # -- redis-py native OTel (optional) -----------------------------------
     otel_instance: Any = None
