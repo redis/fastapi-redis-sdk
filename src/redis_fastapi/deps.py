@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Annotated, TypeAlias
 
 if TYPE_CHECKING:
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
+    from redis_fastapi.pubsub import RedisChannelManager
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
@@ -139,6 +140,18 @@ async def get_sync_cache_backend(request: Request) -> SyncCacheBackend:
     return SyncCacheBackend(backend)
 
 
+async def get_redis_channel_manager(
+    redis: AsyncClient = Depends(get_async_redis),
+) -> RedisChannelManager:
+    """Return a channel manager backed by the shared async Redis client."""
+    from redis_fastapi.pubsub import RedisChannelManager  # noqa: WPS433
+
+    return RedisChannelManager(redis)
+
+
 AsyncRedisDep = Annotated[AsyncClient, Depends(get_async_redis)]
 CacheBackendDep = Annotated["CacheBackend", Depends(get_cache_backend)]
+RedisChannelManagerDep = Annotated[
+    "RedisChannelManager", Depends(get_redis_channel_manager)
+]
 SyncCacheBackendDep = Annotated["SyncCacheBackend", Depends(get_sync_cache_backend)]
