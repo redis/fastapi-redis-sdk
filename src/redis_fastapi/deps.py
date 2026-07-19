@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+from starlette.requests import HTTPConnection
 
 from redis_fastapi.config import get_settings
 
@@ -103,7 +104,7 @@ def _get_pool_state(app: FastAPI) -> _PoolState:
     return state
 
 
-async def get_async_redis(request: Request) -> AsyncClient:
+async def get_async_redis(connection: HTTPConnection) -> AsyncClient:
     """Return an async Redis client backed by the shared connection pool.
 
     Returns a cached client instance - the same wrapper is reused
@@ -114,7 +115,7 @@ async def get_async_redis(request: Request) -> AsyncClient:
     Raises:
         RuntimeError: If no lifespan has initialized the pool.
     """
-    return _get_pool_state(request.app).get_async_client()
+    return _get_pool_state(connection.app).get_async_client()
 
 
 async def get_cache_backend(request: Request) -> CacheBackend:

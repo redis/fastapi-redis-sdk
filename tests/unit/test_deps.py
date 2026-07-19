@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import fakeredis
 import fakeredis.aioredis
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 
 from redis_fastapi.config import RedisSettings
@@ -50,6 +50,26 @@ class TestAsyncDep:
             assert r.json()["result"] == "val"
 
         app.dependency_overrides.clear()
+
+    def test_async_redis_dep_in_websocket(self) -> None:
+        app = FastAPI()
+        pool = MagicMock()
+        redis = MagicMock(connection_pool=pool)
+        state = _get_pool_state(app)
+        state.async_pool = pool
+        state._async_client = redis
+
+        @app.websocket("/ws")
+        async def websocket_endpoint(
+            websocket: WebSocket,
+            injected: AsyncRedisDep,
+        ) -> None:
+            await websocket.accept()
+            await websocket.send_json({"same_client": injected is redis})
+
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as websocket:
+                assert websocket.receive_json() == {"same_client": True}
 
 
 @pytest.mark.unit
