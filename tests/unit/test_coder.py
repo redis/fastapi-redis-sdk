@@ -72,43 +72,6 @@ class Product(BaseModel):
 
 
 @pytest.mark.unit
-<<<<<<< HEAD
-class TestFastAPIJsonCoder:
-    def test_encodes_fastapi_json_compatible_values(self) -> None:
-        data = {
-            "id": UUID("12345678-1234-5678-1234-567812345678"),
-            "created_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
-        }
-
-        decoded = types.FastAPIJsonCoder.decode(types.FastAPIJsonCoder.encode(data))
-
-        assert decoded == {
-            "id": "12345678-1234-5678-1234-567812345678",
-            "created_at": "2026-01-02T03:04:05+00:00",
-        }
-
-    def test_encodes_pydantic_model_to_json_compatible_dict(self) -> None:
-        product = Product(
-            id=UUID("12345678-1234-5678-1234-567812345678"),
-            name="Widget",
-            created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
-        )
-
-        decoded = types.FastAPIJsonCoder.decode(types.FastAPIJsonCoder.encode(product))
-
-        assert decoded == {
-            "id": "12345678-1234-5678-1234-567812345678",
-            "name": "Widget",
-            "created_at": "2026-01-02T03:04:05Z",
-        }
-
-    def test_satisfies_coder_protocol(self) -> None:
-        assert issubclass(types.FastAPIJsonCoder, Coder)
-
-
-@pytest.mark.unit
-=======
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 class TestPydanticModelCoder:
     def test_decodes_to_pydantic_model(self) -> None:
         product = Product(
@@ -147,16 +110,9 @@ class TestPydanticModelCoder:
 
 @pytest.mark.unit
 class TestCoderExports:
-<<<<<<< HEAD
-    def test_fastapi_coders_exported_from_package_root(self) -> None:
-        from redis_fastapi import FastAPIJsonCoder, pydantic_model_coder
-
-        assert FastAPIJsonCoder is types.FastAPIJsonCoder
-=======
     def test_coders_exported_from_package_root(self) -> None:
         from redis_fastapi import pydantic_model_coder
 
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
         assert pydantic_model_coder is types.pydantic_model_coder
 
 

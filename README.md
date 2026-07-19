@@ -22,6 +22,7 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 
 - **Fluent setup** — `FastAPIRedis(app).lifespan().caching()` configures pools and caching in one chain, attaching to the [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 - **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
+- **WebSocket Pub/Sub** — `RedisChannelManagerDep` for transient cross-worker broadcasts with automatic subscriber cleanup
 - **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
 - **FastAPI-aware serialization** — optional coders for Pydantic models, datetimes, UUIDs, and other `jsonable_encoder`-compatible values
 - **Testable** — full `dependency_overrides` support; no need for monkey-patching
@@ -58,6 +59,29 @@ async def get_items(redis: AsyncRedisDep):
 ```
 
 Connection pools are managed automatically and closed on shutdown. The builder wraps any existing lifespan - multiple libraries can each register their own without conflicting. See [Configuration](#configuration) for connection options.
+
+## WebSocket Pub/Sub
+
+```python
+from fastapi import WebSocket
+from redis_fastapi import RedisChannelManagerDep
+
+
+@app.websocket("/notifications")
+async def notifications(
+    websocket: WebSocket,
+    channels: RedisChannelManagerDep,
+):
+    await websocket.accept()
+    async with channels.subscribe("notifications") as messages:
+        async for message in messages:
+            text = message.decode() if isinstance(message, bytes) else message
+            await websocket.send_text(text)
+```
+
+Subscriptions work across processes and workers and close their dedicated
+Redis connection when the context exits. See the
+[WebSocket Pub/Sub Guide](docs/guide/websockets.md).
 
 ## Caching
 

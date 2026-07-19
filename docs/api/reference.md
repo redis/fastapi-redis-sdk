@@ -39,10 +39,66 @@ async def handler(redis: AsyncRedisDep):
 ### `get_async_redis()`
 
 ```python
-async def get_async_redis(request: Request) -> AsyncRedis | AsyncRedisCluster
+async def get_async_redis(connection: HTTPConnection) -> AsyncRedis | AsyncRedisCluster
 ```
 
-Async function underlying `AsyncRedisDep`. Returns the same client instance on every call (no per-request overhead). Raises `RuntimeError` if no lifespan has initialised the pool.
+Async function underlying `AsyncRedisDep`. Accepts the shared Starlette
+`HTTPConnection` base type, so it works in both HTTP and WebSocket endpoints.
+Returns the same client instance on every call (no per-request overhead).
+Raises `RuntimeError` if no lifespan has initialised the pool.
+
+---
+
+## WebSocket Pub/Sub
+
+### `RedisChannelManagerDep`
+
+```python
+from fastapi import WebSocket
+from redis_fastapi import RedisChannelManagerDep
+
+
+@app.websocket("/notifications")
+async def notifications(
+    websocket: WebSocket,
+    channels: RedisChannelManagerDep,
+) -> None:
+    await websocket.accept()
+    async with channels.subscribe("notifications") as messages:
+        async for message in messages:
+            text = message.decode() if isinstance(message, bytes) else message
+            await websocket.send_text(text)
+```
+
+`Annotated[RedisChannelManager, Depends(get_redis_channel_manager)]` — a
+manager backed by the lifespan-managed async Redis client. No setup beyond
+`FastAPIRedis(app).lifespan()` is required.
+
+### `RedisChannelManager.publish()`
+
+```python
+async def publish(
+    channel: str | bytes,
+    message: str | bytes,
+) -> int
+```
+
+Publishes a transient payload and returns Redis' subscriber count.
+
+### `RedisChannelManager.subscribe()`
+
+```python
+def subscribe(
+    channel: str | bytes,
+) -> AsyncContextManager[AsyncIterator[str | bytes]]
+```
+
+Creates one exact-channel subscription. The context yields an async iterator
+of payloads and always closes the dedicated Pub/Sub connection on exit.
+
+Redis Pub/Sub is at-most-once and does not store messages. See the
+[WebSocket Pub/Sub guide](../guide/websockets.md) for concurrent chat-room
+handling, connection sizing, and testing.
 
 ---
 
