@@ -11,7 +11,7 @@ from redis_fastapi.cache import (
     default_key_builder,
 )
 from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
-from redis_fastapi.config import RedisSettings, get_settings
+from redis_fastapi.config import RedisSettings, get_settings, reset_settings
 from redis_fastapi.deps import (
     AsyncRedisDep,
     CacheBackendDep,
@@ -36,9 +36,9 @@ __all__ = [
     "CacheBackendDep",
     "CacheHitException",
     "Coder",
+    "FastAPIRedis",
     "JsonCoder",
     "KeyBuilder",
-    "FastAPIRedis",
     "RedisSettings",
     "SyncCacheBackend",
     "SyncCacheBackendDep",
@@ -55,4 +55,5 @@ __all__ = [
     "get_sync_cache_backend",
     "pydantic_model_coder",
     "redis_lifespan",
+    "reset_settings",
 ]

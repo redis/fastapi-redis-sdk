@@ -471,10 +471,17 @@ class TestCacheEvict:
             r = c.get("/items/1")
             assert r.headers["X-Redis-Cache"] == "HIT"
 
-    def test_evict_no_group_no_key_builder_wipes_all(
+    def test_evict_no_group_no_key_builder_raises(
         self, fake_async_redis: fakeredis.aioredis.FakeRedis
     ) -> None:
-        """cache_evict() with no eviction_group and no key_builder wipes all cache keys."""
+        """cache_evict() with no eviction_group and no key_builder raises ValueError."""
+        with pytest.raises(ValueError, match="cache_evict\\(\\) requires"):
+            cache_evict()
+
+    def test_evict_all_with_explicit_group(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """Use an explicit eviction_group to wipe all keys under a prefix."""
         from redis_fastapi.cache_backend import CacheBackend
 
         backend = CacheBackend(fake_async_redis, eviction_group="ns")
@@ -490,11 +497,9 @@ class TestCacheEvict:
         async def has_key(grp: str, key: str) -> dict:
             return {"exists": await backend.has(key, eviction_group=grp)}
 
-        @app.post(
-            "/wipe-all",
-            dependencies=[Depends(cache_evict())],  # no eviction_group, no key_builder
-        )
-        async def wipe_all() -> dict:
+        @app.post("/wipe/{grp}")
+        async def wipe(grp: str) -> dict:
+            await backend.delete_group(grp)
             return {"ok": True}
 
         async def _fake() -> fakeredis.aioredis.FakeRedis:
@@ -502,16 +507,14 @@ class TestCacheEvict:
 
         app.dependency_overrides[get_async_redis] = _fake
         with TestClient(app) as c:
-            # Seed keys in different groups
             c.post("/seed/alpha/k1")
             c.post("/seed/beta/k2")
             assert c.get("/has/alpha/k1").json()["exists"] is True
             assert c.get("/has/beta/k2").json()["exists"] is True
 
-            # Wipe everything
-            c.post("/wipe-all")
+            c.post("/wipe/alpha")
+            c.post("/wipe/beta")
 
-            # All keys across all groups are gone
             assert c.get("/has/alpha/k1").json()["exists"] is False
             assert c.get("/has/beta/k2").json()["exists"] is False
 

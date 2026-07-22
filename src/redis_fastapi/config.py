@@ -227,6 +227,15 @@ class RedisSettings(BaseSettings):
         return f"{self.prefix}:{pattern}"
 
 
+def reset_settings() -> None:
+    """Clear the cached settings instance.
+
+    Useful in tests to force a fresh reload from environment variables
+    between test cases.
+    """
+    get_settings.cache_clear()
+
+
 @lru_cache
 def get_settings() -> RedisSettings:
     """Get cached RedisSettings instance.

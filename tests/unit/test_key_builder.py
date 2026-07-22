@@ -33,7 +33,7 @@ class TestDefaultKeyBuilder:
     def test_query_params_sorted(self) -> None:
         req = _make_request("/items", query="z=2&a=1")
         key = default_key_builder(req, prefix="pfx")
-        assert key == "pfx:items:a=1:z=2"
+        assert key == "pfx:items:a=1&z=2"
 
     def test_eviction_group_included(self) -> None:
         req = _make_request("/items")

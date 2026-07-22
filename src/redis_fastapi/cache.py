@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from inspect import isawaitable
@@ -53,6 +54,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Key builder
 # ---------------------------------------------------------------------------
+
+
+def _urlencode(value: str) -> str:
+    return value.replace(":", "%3A").replace("&", "%26").replace("=", "%3D")
 
 
 def default_key_builder(
@@ -88,7 +93,9 @@ def default_key_builder(
     if path:
         parts.append(path)
     if request.query_params:
-        qs = ":".join(f"{k}={v}" for k, v in sorted(request.query_params.items()))
+        qs = "&".join(
+            f"{k}={_urlencode(v)}" for k, v in sorted(request.query_params.items())
+        )
         parts.append(qs)
     return ":".join(parts)
 
@@ -331,6 +338,7 @@ def cache(
     cache_prefix: str | None = None,
     key_builder: KeyBuilder | None = None,
     private: bool = False,
+    stampede_protection: bool = False,
 ) -> Any:
     """Return a ``Depends()``-compatible dependency for response caching.
 
@@ -351,6 +359,13 @@ def cache(
         key_builder: Custom key builder (sync or async).  Defaults to
             :func:`default_key_builder`.
         private: Emit ``Cache-Control: private, max-age=N``.
+        stampede_protection: Enable probabilistic early expiration to
+            reduce cache stampede / thundering herd.  When the remaining
+            TTL of a cache hit drops below 10% of the original TTL, the
+            hit is promoted to a miss with probability proportional to
+            how close the entry is to expiry.  Only a fraction of
+            concurrent requests will recompute, keeping the origin load
+            manageable.
 
     Returns:
         An async generator dependency suitable for use with ``Depends()``.
@@ -398,19 +413,35 @@ def cache(
                     force_refresh="no-cache" in cc,
                 )
 
+            # 3b. Stampede protection: probabilistically treat near-expiry
+            #     hits as misses so only a fraction of concurrent requests
+            #     recompute (probabilistic early expiration).
+            if stampede_protection and cached_data and _ttl > 0:
+                threshold = max(_ttl * 0.1, 1.0)
+                if remaining_ttl < threshold:
+                    expiry_ratio = remaining_ttl / threshold
+                    if random.random() > expiry_ratio:
+                        logger.debug(
+                            "Stampede protection promoted HIT to MISS for "
+                            "key '%s' (remaining_ttl=%d, threshold=%.1f)",
+                            cache_key, remaining_ttl, threshold,
+                        )
+                        cached_data = None
+                        remaining_ttl = 0
+
             # 4. HIT: short-circuit via exception — endpoint never runs
             if cached_data:
-                record_cache_request(result="hit", eviction_group=eviction_group)
-                if span is not None:
-                    span.set_attribute("cache.hit", True)
                 try:
-                    raise CacheHitException(
-                        _build_hit_response(
-                            cached_data, remaining_ttl, request, private
-                        )
+                    hit_response = _build_hit_response(
+                        cached_data, remaining_ttl, request, private
                     )
                 except (json.JSONDecodeError, KeyError) as exc:
                     logger.warning("Invalid cache entry for key %s: %s", cache_key, exc)
+                else:
+                    record_cache_request(result="hit", eviction_group=eviction_group)
+                    if span is not None:
+                        span.set_attribute("cache.hit", True)
+                    raise CacheHitException(hit_response)
 
             # 5. MISS: mark pending so the capture middleware stores the response
             record_cache_request(result="miss", eviction_group=eviction_group)
@@ -506,6 +537,14 @@ def cache_evict(
     _settings = get_settings()
     _prefix: str = prefix if prefix is not None else _settings.pattern_prefix("cache")
     _key_builder: KeyBuilder | None = key_builder
+
+    if not eviction_group and _key_builder is None:
+        raise ValueError(
+            "cache_evict() requires at least one of 'eviction_group' or "
+            "'key_builder'. Omitting both deletes ALL cache keys under the "
+            "global prefix — if this is intentional, provide an eviction_group "
+            "explicitly."
+        )
 
     # Flow: yield to endpoint → on success evict key or group
     async def _dependency(
@@ -692,10 +731,16 @@ async def _store_cache_entry(
                 set_kwargs: dict[str, Any] = {}
                 if pending.ttl > 0:
                     set_kwargs["ex"] = pending.ttl
+                else:
+                    logger.warning(
+                        "Caching key '%s' without TTL — entry will persist "
+                        "until explicitly evicted or evicted by Redis policy",
+                        pending.key,
+                    )
                 await redis.set(pending.key, json.dumps(entry), **set_kwargs)
         write_type = "write_through" if pending.write_through else "miss_fill"
         record_cache_write(write_type=write_type)
-    except (RedisError, OSError):
+    except (RedisError, OSError, RuntimeError):
         logger.warning(
             "Error writing cache key '%s':",
             pending.key,
