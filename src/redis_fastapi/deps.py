@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Annotated, TypeAlias
 
 if TYPE_CHECKING:
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
+    from redis_fastapi.pubsub import PubSubManager
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
@@ -138,6 +139,26 @@ async def get_sync_cache_backend(request: Request) -> SyncCacheBackend:
     return SyncCacheBackend(backend)
 
 
+async def get_pubsub_manager(
+    redis: AsyncClient = Depends(get_async_redis),
+) -> PubSubManager:
+    """Return a :class:`PubSubManager` backed by the shared async pool.
+
+    Use for publishing messages from HTTP endpoints.  For WebSocket
+    endpoints, construct ``PubSubManager`` directly::
+
+        from redis_fastapi import PubSubManager
+        from redis_fastapi.deps import _get_pool_state
+
+        redis = _get_pool_state(websocket.app).get_async_client()
+        pubsub = PubSubManager(redis)
+    """
+    from redis_fastapi.pubsub import PubSubManager  # noqa: WPS433
+
+    return PubSubManager(redis)
+
+
 AsyncRedisDep = Annotated[AsyncClient, Depends(get_async_redis)]
 CacheBackendDep = Annotated["CacheBackend", Depends(get_cache_backend)]
 SyncCacheBackendDep = Annotated["SyncCacheBackend", Depends(get_sync_cache_backend)]
+PubSubManagerDep = Annotated["PubSubManager", Depends(get_pubsub_manager)]

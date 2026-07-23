@@ -48,6 +48,9 @@ class _OTelState:
     cache_writes: Any = None
     cache_latency: Any = None
 
+    # PubSub metric instruments
+    pubsub_messages: Any = None
+
 
 _state = _OTelState()
 
@@ -105,6 +108,12 @@ def enable_telemetry() -> None:
         name="redis_fastapi.cache.latency",
         description="Cache operation duration",
         unit="s",
+    )
+
+    _state.pubsub_messages = _state.meter.create_counter(
+        name="redis_fastapi.pubsub.messages",
+        description="PubSub messages published",
+        unit="1",
     )
 
     _state.enabled = True
@@ -221,6 +230,22 @@ def record_cache_latency(
         )
     except Exception:
         logger.debug("Error recording cache latency metric", exc_info=True)
+
+
+def record_pubsub_publish(
+    *,
+    channel: str,
+    subscribers: int = 0,
+) -> None:
+    """Record a PubSub message publication."""
+    if not _state.enabled or _state.pubsub_messages is None:
+        return
+    try:
+        _state.pubsub_messages.add(
+            1, {"channel": channel, "subscribers": str(subscribers)}
+        )
+    except Exception:
+        logger.debug("Error recording pubsub publish metric", exc_info=True)
 
 
 @contextlib.contextmanager
