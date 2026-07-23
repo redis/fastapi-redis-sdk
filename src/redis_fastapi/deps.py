@@ -9,10 +9,11 @@ if TYPE_CHECKING:
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
     from redis_fastapi.pubsub import PubSubManager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+from starlette.requests import HTTPConnection, Request
 
 from redis_fastapi.config import get_settings
 
@@ -104,8 +105,12 @@ def _get_pool_state(app: FastAPI) -> _PoolState:
     return state
 
 
-async def get_async_redis(request: Request) -> AsyncClient:
+async def get_async_redis(connection: HTTPConnection) -> AsyncClient:
     """Return an async Redis client backed by the shared connection pool.
+
+    Accepts both HTTP ``Request`` and ``WebSocket`` instances (both
+    inherit from ``HTTPConnection``), so this dependency works in
+    HTTP endpoints and WebSocket handlers alike.
 
     Returns a cached client instance - the same wrapper is reused
     across calls to avoid per-request overhead.
@@ -115,7 +120,7 @@ async def get_async_redis(request: Request) -> AsyncClient:
     Raises:
         RuntimeError: If no lifespan has initialized the pool.
     """
-    return _get_pool_state(request.app).get_async_client()
+    return _get_pool_state(connection.app).get_async_client()
 
 
 async def get_cache_backend(request: Request) -> CacheBackend:
@@ -144,14 +149,9 @@ async def get_pubsub_manager(
 ) -> PubSubManager:
     """Return a :class:`PubSubManager` backed by the shared async pool.
 
-    Use for publishing messages from HTTP endpoints.  For WebSocket
-    endpoints, construct ``PubSubManager`` directly::
-
-        from redis_fastapi import PubSubManager
-        from redis_fastapi.deps import _get_pool_state
-
-        redis = _get_pool_state(websocket.app).get_async_client()
-        pubsub = PubSubManager(redis)
+    Works in both HTTP endpoints and WebSocket handlers because
+    ``get_async_redis`` accepts ``HTTPConnection``, the common base
+    of ``Request`` and ``WebSocket``.
     """
     from redis_fastapi.pubsub import PubSubManager  # noqa: WPS433
 

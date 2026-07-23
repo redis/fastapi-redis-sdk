@@ -28,7 +28,6 @@ from redis_fastapi import (
     AsyncRedisDep,
     CacheBackendDep,
     FastAPIRedis,
-    PubSubManager,
     PubSubManagerDep,
     cache,
     cache_evict,
@@ -36,7 +35,6 @@ from redis_fastapi import (
     get_settings,
 )
 from redis_fastapi.config import RedisSettings
-from redis_fastapi.deps import _get_pool_state
 
 app = FastAPI(
     title="fastapi-redis-sdk demo",
@@ -141,14 +139,12 @@ async def notify(message: str, pubsub: PubSubManagerDep) -> dict[str, int]:
 
 
 @app.websocket("/ws/chat/{room}")
-async def chat(websocket: WebSocket, room: str) -> None:
+async def chat(websocket: WebSocket, room: str, pubsub: PubSubManagerDep) -> None:
     """WebSocket chat room backed by Redis Pub/Sub.
 
     Connect: ``ws://localhost:8000/ws/chat/lobby``
     """
     await websocket.accept()
-    redis = _get_pool_state(websocket.app).get_async_client()
-    pubsub = PubSubManager(redis)
     channel = f"chat:{room}"
     await pubsub.subscribe(channel)
 

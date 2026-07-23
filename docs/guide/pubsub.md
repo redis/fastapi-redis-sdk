@@ -46,33 +46,26 @@ The returned integer is the number of subscribers that received the message
 
 ## WebSocket subscriptions
 
-For WebSocket endpoints, construct `PubSubManager` directly from the app
-state; FastAPI's dependency injection for WebSocket connections does not
-resolve `Request`-based dependencies:
+``PubSubManagerDep`` works in WebSocket handlers directly because
+``get_async_redis`` accepts ``HTTPConnection``, the common base type
+of both ``Request`` and ``WebSocket``:
 
 ```python
 from fastapi import WebSocket
-from redis_fastapi import PubSubManager
-from redis_fastapi.deps import _get_pool_state
+from redis_fastapi import PubSubManagerDep
 
 @app.websocket("/ws/chat/{room}")
-async def chat(websocket: WebSocket, room: str):
+async def chat(websocket: WebSocket, room: str, pubsub: PubSubManagerDep):
     await websocket.accept()
-
-    # Create PubSubManager from the app's shared pool
-    redis = _get_pool_state(websocket.app).get_async_client()
-    pubsub = PubSubManager(redis)
 
     channel = f"chat:{room}"
     await pubsub.subscribe(channel)
 
     async def forward_to_ws():
-        """Forward Redis messages to the WebSocket client."""
         async for message in pubsub.listen():
             await websocket.send_text(message["data"].decode())
 
     async def forward_to_redis():
-        """Forward WebSocket messages to Redis."""
         async for data in websocket.iter_text():
             await pubsub.publish(channel, data)
 

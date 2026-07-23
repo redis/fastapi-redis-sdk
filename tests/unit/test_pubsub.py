@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import anyio
 import asyncio
-import fakeredis.aioredis
 import gc
+
+import anyio
+import fakeredis.aioredis
 import pytest
 
 from redis_fastapi.pubsub import PubSubManager
