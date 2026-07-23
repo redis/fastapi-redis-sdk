@@ -82,6 +82,7 @@ nav:
   - User Guide:
     - Architecture: guide/architecture.md
     - Caching: guide/caching.md
+    - Pub/Sub: guide/pubsub.md
     - Configuration: guide/configuration.md
     - Benchmarks: guide/benchmarks.md
   - API Reference:

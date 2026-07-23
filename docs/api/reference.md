@@ -39,10 +39,10 @@ async def handler(redis: AsyncRedisDep):
 ### `get_async_redis()`
 
 ```python
-async def get_async_redis(request: Request) -> AsyncRedis | AsyncRedisCluster
+async def get_async_redis(connection: HTTPConnection) -> AsyncRedis | AsyncRedisCluster
 ```
 
-Async function underlying `AsyncRedisDep`. Returns the same client instance on every call (no per-request overhead). Raises `RuntimeError` if no lifespan has initialised the pool.
+Async function underlying `AsyncRedisDep`. Accepts both HTTP ``Request`` and ``WebSocket`` (``HTTPConnection`` is their common base), so it works in both endpoint types. Returns the same client instance on every call (no per-request overhead). Raises ``RuntimeError`` if no lifespan has initialised the pool.
 
 ---
 
@@ -169,3 +169,52 @@ def default_key_builder(request: Request, eviction_group: str = "", prefix: str 
 ```
 
 Builds a cache key from the request path (slashes → colons) and sorted query params. Eviction group is wrapped in Redis hash-tag braces (`{eviction_group}`) for Cluster slot consistency.
+
+---
+
+## Pub/Sub dependencies
+
+### `PubSubManagerDep`
+
+```python
+from redis_fastapi import PubSubManagerDep
+
+@app.post("/notify")
+async def notify(message: str, pubsub: PubSubManagerDep):
+    count = await pubsub.publish("notifications", message)
+    return {"subscribers": count}
+```
+
+`Annotated[PubSubManager, Depends(get_pubsub_manager)]` - publishes messages to Redis channels. Works in both HTTP endpoints and WebSocket handlers because ``get_async_redis`` accepts ``HTTPConnection``.
+
+### `get_pubsub_manager()`
+
+```python
+async def get_pubsub_manager(connection: HTTPConnection) -> PubSubManager
+```
+
+Factory function underlying `PubSubManagerDep`.
+
+### `PubSubManager`
+
+```python
+from redis_fastapi import PubSubManager
+
+pubsub = PubSubManager(redis)
+await pubsub.subscribe("channel")
+async for message in pubsub.listen():
+    ...
+await pubsub.close()
+```
+
+Wraps Redis Pub/Sub for real-time messaging. Uses a dedicated PubSub connection from the shared pool. For WebSocket endpoints, construct directly rather than using `PubSubManagerDep`.
+
+| Method | Description |
+|--------|-------------|
+| `subscribe(*channels)` | Subscribe to one or more Redis channels |
+| `unsubscribe(*channels)` | Unsubscribe from channels |
+| `publish(channel, message) -> int` | Publish a message, returns subscriber count |
+| `listen() -> AsyncIterator[dict]` | Yield `message`-type PubSub events |
+| `close()` | Unsubscribe all and close the connection |
+
+See the [Pub/Sub guide](../guide/pubsub.md) for WebSocket examples and best practices.

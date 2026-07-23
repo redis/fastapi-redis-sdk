@@ -21,12 +21,14 @@ if _src not in sys.path:
 
 from typing import Annotated
 
-from fastapi import Depends, FastAPI
+import anyio
+from fastapi import Depends, FastAPI, WebSocket
 
 from redis_fastapi import (
     AsyncRedisDep,
     CacheBackendDep,
     FastAPIRedis,
+    PubSubManagerDep,
     cache,
     cache_evict,
     default_key_builder,
@@ -127,3 +129,38 @@ async def delete_item(item_id: int, cache: CacheBackendDep) -> dict[str, object]
     """Evict a single item from the cache."""
     deleted = await cache.delete(f"item:{item_id}", eviction_group="items")
     return {"id": item_id, "deleted": deleted}
+
+
+@app.post("/notify")
+async def notify(message: str, pubsub: PubSubManagerDep) -> dict[str, int]:
+    """Publish a message to the ``notifications`` channel."""
+    count = await pubsub.publish("notifications", message)
+    return {"subscribers": count}
+
+
+@app.websocket("/ws/chat/{room}")
+async def chat(websocket: WebSocket, room: str, pubsub: PubSubManagerDep) -> None:
+    """WebSocket chat room backed by Redis Pub/Sub.
+
+    Connect: ``ws://localhost:8000/ws/chat/lobby``
+    """
+    await websocket.accept()
+    channel = f"chat:{room}"
+    await pubsub.subscribe(channel)
+
+    async def _send() -> None:
+        async for message in pubsub.listen():
+            await websocket.send_text(message["data"].decode())
+
+    async def _receive() -> None:
+        async for data in websocket.iter_text():
+            await pubsub.publish(channel, data)
+
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_send)
+            tg.start_soon(_receive)
+    except Exception:
+        pass
+    finally:
+        await pubsub.close()
