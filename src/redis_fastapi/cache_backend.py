@@ -183,16 +183,16 @@ class CacheBackend:
             key: The cache key to store under.
             value: The value to serialize and cache.
             ttl: Time-to-live as seconds (``int``) or a
-                :class:`~datetime.timedelta`.  ``None`` or value below ``1``
-                means the key will not be automatically expired.
+                :class:`~datetime.timedelta`.  ``None`` or a value of ``0``
+                or below means the key will not be automatically expired.
             eviction_group: Override the instance-level eviction group for this call.
-
-        Raises:
-            ValueError: If *ttl* is negative.
         """
         grp = eviction_group if eviction_group is not None else self._eviction_group
         full_key = self._build_key(key, eviction_group)
         ttl_seconds = int(ttl.total_seconds()) if isinstance(ttl, timedelta) else ttl
+        ttl_milliseconds: int | None = (
+            int(ttl / timedelta(milliseconds=1)) if isinstance(ttl, timedelta) else None
+        )
         with cache_span(
             "cache.backend.set",
             attributes={
@@ -204,9 +204,16 @@ class CacheBackend:
             with timed_operation("set", eviction_group=grp):
                 try:
                     encoded = self._coder.encode(value)
-                    if ttl_seconds is not None and ttl_seconds > 0:
+                    if ttl_milliseconds is not None:
+                        await self._redis.set(full_key, encoded, px=ttl_milliseconds)
+                    elif ttl_seconds is not None and ttl_seconds > 0:
                         await self._redis.set(full_key, encoded, ex=ttl_seconds)
                     else:
+                        logger.warning(
+                            "Caching key '%s' without TTL — entry will persist "
+                            "until explicitly evicted or evicted by Redis policy",
+                            full_key,
+                        )
                         await self._redis.set(full_key, encoded)
                     record_cache_write(write_type="miss_fill", eviction_group=grp)
                 except (RedisError, OSError):

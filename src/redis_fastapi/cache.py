@@ -692,6 +692,12 @@ async def _store_cache_entry(
                 set_kwargs: dict[str, Any] = {}
                 if pending.ttl > 0:
                     set_kwargs["ex"] = pending.ttl
+                else:
+                    logger.warning(
+                        "Caching key '%s' without TTL — entry will persist "
+                        "until explicitly evicted or evicted by Redis policy",
+                        pending.key,
+                    )
                 await redis.set(pending.key, json.dumps(entry), **set_kwargs)
         write_type = "write_through" if pending.write_through else "miss_fill"
         record_cache_write(write_type=write_type)
