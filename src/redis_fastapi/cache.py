@@ -400,17 +400,17 @@ def cache(
 
             # 4. HIT: short-circuit via exception — endpoint never runs
             if cached_data:
-                record_cache_request(result="hit", eviction_group=eviction_group)
-                if span is not None:
-                    span.set_attribute("cache.hit", True)
                 try:
-                    raise CacheHitException(
-                        _build_hit_response(
-                            cached_data, remaining_ttl, request, private
-                        )
+                    hit_response = _build_hit_response(
+                        cached_data, remaining_ttl, request, private
                     )
                 except (json.JSONDecodeError, KeyError) as exc:
                     logger.warning("Invalid cache entry for key %s: %s", cache_key, exc)
+                else:
+                    record_cache_request(result="hit", eviction_group=eviction_group)
+                    if span is not None:
+                        span.set_attribute("cache.hit", True)
+                    raise CacheHitException(hit_response)
 
             # 5. MISS: mark pending so the capture middleware stores the response
             record_cache_request(result="miss", eviction_group=eviction_group)

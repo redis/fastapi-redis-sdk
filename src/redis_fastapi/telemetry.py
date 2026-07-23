@@ -185,7 +185,7 @@ def record_cache_request(
             1, {"result": result, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.debug("Error recording cache request metric", exc_info=True)
+        logger.warning("Error recording cache request metric", exc_info=True)
 
 
 def record_cache_eviction(
@@ -201,7 +201,7 @@ def record_cache_eviction(
             1, {"type": evict_type, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.debug("Error recording cache eviction metric", exc_info=True)
+        logger.warning("Error recording cache eviction metric", exc_info=True)
 
 
 def record_cache_write(
@@ -217,7 +217,7 @@ def record_cache_write(
             1, {"type": write_type, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.debug("Error recording cache write metric", exc_info=True)
+        logger.warning("Error recording cache write metric", exc_info=True)
 
 
 def record_cache_latency(
@@ -234,7 +234,7 @@ def record_cache_latency(
             duration, {"operation": operation, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.debug("Error recording cache latency metric", exc_info=True)
+        logger.warning("Error recording cache latency metric", exc_info=True)
 
 
 @contextlib.contextmanager
