@@ -79,8 +79,8 @@ cache operations happen **after** success.
 ```python
 Depends(cache(
     ttl=120,                    # seconds (default: 0 = no expiry)
-    eviction_group="v2",             # extra segment in the cache key
-    prefix="custom:prefix",     # override the default key prefix
+    eviction_group="v2",       # extra segment in the cache key
+    prefix="custom:prefix",    # override the default key prefix
     key_builder=my_key_builder, # custom key function (sync or async)
     private=True,               # emit Cache-Control: private (see below)
 ))
@@ -90,9 +90,9 @@ Depends(cache(
 
 ```python
 Depends(cache_evict(
-    eviction_group="products",               # eviction group to evict from
-    key_builder=default_key_builder,    # evict the matching key (omit to clear entire eviction group)
-    prefix="custom:prefix",             # override the default key prefix
+    eviction_group="products",       # eviction group to evict from
+    key_builder=default_key_builder,  # matching key; omit to clear the group
+    prefix="custom:prefix",           # override the default key prefix
 ))
 ```
 
@@ -100,13 +100,16 @@ Depends(cache_evict(
 
 ```python
 Depends(cache_put(
-    eviction_group="products",               # eviction group to write into
-    key_builder=default_key_builder,    # key builder (default: default_key_builder)
-    prefix="custom:prefix",             # override the default key prefix
-    ttl=300,                            # seconds (default: 0 = no expiry)
-    private=True,                       # emit Cache-Control: private
+    eviction_group="products",      # eviction group to write into
+    key_builder=default_key_builder, # key builder (default: default_key_builder)
+    prefix="custom:prefix",          # override the default key prefix
+    ttl=300,                           # seconds (default: 0 = no expiry)
+    private=True,                      # emit Cache-Control: private
 ))
 ```
+
+`cache_put()` serializes the endpoint's return value using the configured
+cache coder, so the response must be JSON-serializable (or use a custom coder).
 
 `private=True` works the same way here as on `cache()` — it adds the
 [`Cache-Control: private`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private)
@@ -296,26 +299,6 @@ pattern (get → miss → compute → set → return) is exactly what `cache()` 
 automatically.  Use `CacheBackendDep` when you need control that the DI
 factories cannot express:
 
-<<<<<<< HEAD
-### FastAPI-aware serialization
-
-By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
-`json.dumps()` / `json.loads()`. Use `FastAPIJsonCoder` when cached values
-contain objects FastAPI already knows how to serialize, such as Pydantic
-models, `datetime`, `UUID`, enums, or dataclasses:
-
-```python
-from redis_fastapi import CacheBackend, FastAPIJsonCoder
-
-cache = CacheBackend(redis, coder=FastAPIJsonCoder)
-```
-
-For typed model round-trips, create a model-specific coder. Decoded cache hits
-come back as Pydantic model instances:
-
-```python
-from typing import Annotated
-=======
 ### Caching Pydantic models
 
 By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
@@ -336,21 +319,11 @@ from typing import Annotated
 from datetime import datetime
 from uuid import UUID
 
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 from fastapi import Depends
 from pydantic import BaseModel
 from redis_fastapi import AsyncRedisDep, CacheBackend, pydantic_model_coder
 
 class Product(BaseModel):
-<<<<<<< HEAD
-    id: int
-    name: str
-
-ProductCoder = pydantic_model_coder(Product)
-
-async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
-    return CacheBackend(redis, coder=ProductCoder)
-=======
     id: UUID
     name: str
     created_at: datetime
@@ -360,22 +333,10 @@ ProductCoder = pydantic_model_coder(Product)
 
 async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
     return CacheBackend(redis, coder=ProductCoder, eviction_group="products")
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 
 ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
 
 @app.get("/products/{product_id}")
-<<<<<<< HEAD
-async def get_product(product_id: int, cache: ProductCacheDep) -> Product:
-    cached = await cache.get(f"product:{product_id}", eviction_group="products")
-    if cached is not None:
-        return cached
-    product = await db.get_product(product_id)
-    await cache.set(f"product:{product_id}", product, ttl=300, eviction_group="products")
-    return product
-```
-
-=======
 async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
     cached = await cache.get(f"product:{product_id}")
     if cached is not None:
@@ -389,7 +350,6 @@ async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
 model-specific backend costs nothing extra beyond the coder. Add one such
 provider per model you cache.
 
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 ### Conditional caching
 
 Cache only when business rules are met - `@cache` always caches the result:
