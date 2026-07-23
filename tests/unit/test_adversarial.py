@@ -180,7 +180,7 @@ class TestKeyBuilderSpecialChars:
 
     def test_query_params_with_colons(self) -> None:
         key = default_key_builder(_make_request("/items", "key=a:b:c"), prefix="pfx")
-        assert "key=a:b:c" in key
+        assert "key=a%3Ab%3Ac" in key
 
     def test_query_params_with_glob(self) -> None:
         key = default_key_builder(

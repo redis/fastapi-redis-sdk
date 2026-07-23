@@ -55,6 +55,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _urlencode(value: str) -> str:
+    return value.replace(":", "%3A").replace("&", "%26").replace("=", "%3D")
+
+
 def default_key_builder(
     request: Request,
     eviction_group: str = "",
@@ -88,7 +92,9 @@ def default_key_builder(
     if path:
         parts.append(path)
     if request.query_params:
-        qs = ":".join(f"{k}={v}" for k, v in sorted(request.query_params.items()))
+        qs = "&".join(
+            f"{k}={_urlencode(v)}" for k, v in sorted(request.query_params.items())
+        )
         parts.append(qs)
     return ":".join(parts)
 
@@ -506,6 +512,14 @@ def cache_evict(
     _settings = get_settings()
     _prefix: str = prefix if prefix is not None else _settings.pattern_prefix("cache")
     _key_builder: KeyBuilder | None = key_builder
+
+    if not eviction_group and _key_builder is None:
+        raise ValueError(
+            "cache_evict() requires at least one of 'eviction_group' or "
+            "'key_builder'. Omitting both deletes ALL cache keys under the "
+            "global prefix — if this is intentional, provide an eviction_group "
+            "explicitly."
+        )
 
     # Flow: yield to endpoint → on success evict key or group
     async def _dependency(
