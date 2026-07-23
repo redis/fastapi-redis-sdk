@@ -296,26 +296,6 @@ pattern (get → miss → compute → set → return) is exactly what `cache()` 
 automatically.  Use `CacheBackendDep` when you need control that the DI
 factories cannot express:
 
-<<<<<<< HEAD
-### FastAPI-aware serialization
-
-By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
-`json.dumps()` / `json.loads()`. Use `FastAPIJsonCoder` when cached values
-contain objects FastAPI already knows how to serialize, such as Pydantic
-models, `datetime`, `UUID`, enums, or dataclasses:
-
-```python
-from redis_fastapi import CacheBackend, FastAPIJsonCoder
-
-cache = CacheBackend(redis, coder=FastAPIJsonCoder)
-```
-
-For typed model round-trips, create a model-specific coder. Decoded cache hits
-come back as Pydantic model instances:
-
-```python
-from typing import Annotated
-=======
 ### Caching Pydantic models
 
 By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
@@ -336,21 +316,11 @@ from typing import Annotated
 from datetime import datetime
 from uuid import UUID
 
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 from fastapi import Depends
 from pydantic import BaseModel
 from redis_fastapi import AsyncRedisDep, CacheBackend, pydantic_model_coder
 
 class Product(BaseModel):
-<<<<<<< HEAD
-    id: int
-    name: str
-
-ProductCoder = pydantic_model_coder(Product)
-
-async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
-    return CacheBackend(redis, coder=ProductCoder)
-=======
     id: UUID
     name: str
     created_at: datetime
@@ -360,22 +330,10 @@ ProductCoder = pydantic_model_coder(Product)
 
 async def get_product_cache(redis: AsyncRedisDep) -> CacheBackend:
     return CacheBackend(redis, coder=ProductCoder, eviction_group="products")
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 
 ProductCacheDep = Annotated[CacheBackend, Depends(get_product_cache)]
 
 @app.get("/products/{product_id}")
-<<<<<<< HEAD
-async def get_product(product_id: int, cache: ProductCacheDep) -> Product:
-    cached = await cache.get(f"product:{product_id}", eviction_group="products")
-    if cached is not None:
-        return cached
-    product = await db.get_product(product_id)
-    await cache.set(f"product:{product_id}", product, ttl=300, eviction_group="products")
-    return product
-```
-
-=======
 async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
     cached = await cache.get(f"product:{product_id}")
     if cached is not None:
@@ -389,7 +347,6 @@ async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
 model-specific backend costs nothing extra beyond the coder. Add one such
 provider per model you cache.
 
->>>>>>> 17390442f1a62c19f13004e0ffdd5bff838ae207
 ### Conditional caching
 
 Cache only when business rules are met - `@cache` always caches the result:
