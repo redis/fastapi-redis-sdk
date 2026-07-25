@@ -7,11 +7,13 @@ from typing import TYPE_CHECKING, Annotated, TypeAlias
 
 if TYPE_CHECKING:
     from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
+    from redis_fastapi.pubsub import RedisChannelManager
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+from starlette.requests import HTTPConnection
 
 from redis_fastapi.config import get_settings
 
@@ -103,7 +105,7 @@ def _get_pool_state(app: FastAPI) -> _PoolState:
     return state
 
 
-async def get_async_redis(request: Request) -> AsyncClient:
+async def get_async_redis(connection: HTTPConnection) -> AsyncClient:
     """Return an async Redis client backed by the shared connection pool.
 
     Returns a cached client instance - the same wrapper is reused
@@ -114,7 +116,7 @@ async def get_async_redis(request: Request) -> AsyncClient:
     Raises:
         RuntimeError: If no lifespan has initialized the pool.
     """
-    return _get_pool_state(request.app).get_async_client()
+    return _get_pool_state(connection.app).get_async_client()
 
 
 async def get_cache_backend(request: Request) -> CacheBackend:
@@ -138,6 +140,18 @@ async def get_sync_cache_backend(request: Request) -> SyncCacheBackend:
     return SyncCacheBackend(backend)
 
 
+async def get_redis_channel_manager(
+    redis: AsyncClient = Depends(get_async_redis),
+) -> RedisChannelManager:
+    """Return a channel manager backed by the shared async Redis client."""
+    from redis_fastapi.pubsub import RedisChannelManager  # noqa: WPS433
+
+    return RedisChannelManager(redis)
+
+
 AsyncRedisDep = Annotated[AsyncClient, Depends(get_async_redis)]
 CacheBackendDep = Annotated["CacheBackend", Depends(get_cache_backend)]
+RedisChannelManagerDep = Annotated[
+    "RedisChannelManager", Depends(get_redis_channel_manager)
+]
 SyncCacheBackendDep = Annotated["SyncCacheBackend", Depends(get_sync_cache_backend)]

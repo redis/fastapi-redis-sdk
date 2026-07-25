@@ -5,3 +5,5 @@
 /bandit-report.json
 /coverage.xml
 __pycache__/
+.vscode/
+.pytest_cache/

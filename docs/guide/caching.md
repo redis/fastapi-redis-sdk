@@ -79,8 +79,8 @@ cache operations happen **after** success.
 ```python
 Depends(cache(
     ttl=120,                    # seconds (default: 0 = no expiry)
-    eviction_group="v2",             # extra segment in the cache key
-    prefix="custom:prefix",     # override the default key prefix
+    eviction_group="v2",       # extra segment in the cache key
+    prefix="custom:prefix",    # override the default key prefix
     key_builder=my_key_builder, # custom key function (sync or async)
     private=True,               # emit Cache-Control: private (see below)
 ))
@@ -90,9 +90,9 @@ Depends(cache(
 
 ```python
 Depends(cache_evict(
-    eviction_group="products",               # eviction group to evict from
-    key_builder=default_key_builder,    # evict the matching key (omit to clear entire eviction group)
-    prefix="custom:prefix",             # override the default key prefix
+    eviction_group="products",       # eviction group to evict from
+    key_builder=default_key_builder,  # matching key; omit to clear the group
+    prefix="custom:prefix",           # override the default key prefix
 ))
 ```
 
@@ -100,13 +100,16 @@ Depends(cache_evict(
 
 ```python
 Depends(cache_put(
-    eviction_group="products",               # eviction group to write into
-    key_builder=default_key_builder,    # key builder (default: default_key_builder)
-    prefix="custom:prefix",             # override the default key prefix
-    ttl=300,                            # seconds (default: 0 = no expiry)
-    private=True,                       # emit Cache-Control: private
+    eviction_group="products",      # eviction group to write into
+    key_builder=default_key_builder, # key builder (default: default_key_builder)
+    prefix="custom:prefix",          # override the default key prefix
+    ttl=300,                           # seconds (default: 0 = no expiry)
+    private=True,                      # emit Cache-Control: private
 ))
 ```
+
+`cache_put()` serializes the endpoint's return value using the configured
+cache coder, so the response must be JSON-serializable (or use a custom coder).
 
 `private=True` works the same way here as on `cache()` — it adds the
 [`Cache-Control: private`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private)

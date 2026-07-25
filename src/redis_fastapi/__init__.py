@@ -15,12 +15,15 @@ from redis_fastapi.config import RedisSettings, get_settings
 from redis_fastapi.deps import (
     AsyncRedisDep,
     CacheBackendDep,
+    RedisChannelManagerDep,
     SyncCacheBackendDep,
     get_async_redis,
     get_cache_backend,
+    get_redis_channel_manager,
     get_sync_cache_backend,
 )
 from redis_fastapi.lifespan import redis_lifespan
+from redis_fastapi.pubsub import RedisChannelManager
 from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
@@ -40,6 +43,8 @@ __all__ = [
     "KeyBuilder",
     "FastAPIRedis",
     "RedisSettings",
+    "RedisChannelManager",
+    "RedisChannelManagerDep",
     "SyncCacheBackend",
     "SyncCacheBackendDep",
     "add_redis_caching",
@@ -51,6 +56,7 @@ __all__ = [
     "enable_telemetry",
     "get_async_redis",
     "get_cache_backend",
+    "get_redis_channel_manager",
     "get_settings",
     "get_sync_cache_backend",
     "pydantic_model_coder",

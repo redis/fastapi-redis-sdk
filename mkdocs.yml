@@ -82,6 +82,7 @@ nav:
   - User Guide:
     - Architecture: guide/architecture.md
     - Caching: guide/caching.md
+    - WebSocket Pub/Sub: guide/websockets.md
     - Configuration: guide/configuration.md
     - Benchmarks: guide/benchmarks.md
   - API Reference:
