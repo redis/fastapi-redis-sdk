@@ -6,7 +6,6 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
