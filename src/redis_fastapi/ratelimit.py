@@ -28,7 +28,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import get_rate_limit_backend
 from redis_fastapi.rate import Rate, parse_rate
-from redis_fastapi.ratelimit_backend import RateLimitBackend, RateLimitResult
+from redis_fastapi.ratelimit_backend import (
+    RateLimitBackend,
+    RateLimitResult,
+    _validate_cost,
+)
 from redis_fastapi.telemetry import (
     ratelimit_span,
     record_rate_limit_request,
@@ -204,6 +208,38 @@ async def _build_429(
     return response
 
 
+def _is_more_constraining(new: RateLimitResult, current: RateLimitResult) -> bool:
+    """Is *new* the tighter of two limits applied to the same request?
+
+    A rejection always wins.  Between two allowed results, the one with fewer
+    requests left is the one the client will hit first.
+    """
+    if new.allowed != current.allowed:
+        return not new.allowed
+    return new.remaining < current.remaining
+
+
+def _store_state(request: Request, state: _RateLimitState) -> None:
+    """Stash *state* for header emission, keeping the most constraining limit.
+
+    A request can be checked twice - the global limiter in the middleware, then
+    a per-route ``rate_limit()`` dependency - and only one set of headers goes
+    out.  Last-write-wins would report the route's counter even when the global
+    one is nearly exhausted, so a client would read ``Remaining: 47`` and then
+    take a 429 on its next request with no warning.  The headers describe the
+    limit that binds first, which is what
+    `draft-ietf-httpapi-ratelimit-headers
+    <https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/>`_
+    expects of a single-policy response.
+    """
+    current = getattr(request.state, _STATE_ATTR, None)
+    if isinstance(current, _RateLimitState) and not _is_more_constraining(
+        state.result, current.result
+    ):
+        return
+    setattr(request.state, _STATE_ATTR, state)
+
+
 async def _apply_limit(
     request: Request,
     backend: RateLimitBackend,
@@ -258,10 +294,8 @@ async def _apply_limit(
         if span is not None and result.backend:
             span.set_attribute("ratelimit.backend", result.backend)
 
-    setattr(
-        request.state,
-        _STATE_ATTR,
-        _RateLimitState(result, rate.window, emit_headers, ietf_headers),
+    _store_state(
+        request, _RateLimitState(result, rate.window, emit_headers, ietf_headers)
     )
     record_rate_limit_request(result=_metric_result(result), scope=scope)
     if result.allowed:
@@ -363,7 +397,13 @@ def rate_limit(
         emit_headers: Emit ``X-RateLimit-*`` headers.  Defaults to the setting.
         ietf_headers: Also emit IETF ``RateLimit`` headers.  Defaults to the setting.
         fail_closed: Reject when Redis is unreachable.  Defaults to the setting.
+
+    Raises:
+        ValueError: If *cost* is not at least 1, or the rate arguments are
+            incomplete.  Both are raised at decoration time, so a bad route
+            fails at import rather than on its first request.
     """
+    _validate_cost(cost)
     resolved = _resolve_rate(rate, limit, window)
     _identifier: Identifier = identifier or ip_identifier
     settings = get_settings()
@@ -516,6 +556,11 @@ def add_redis_rate_limiting(
         fail_closed: Reject on Redis errors for the global limiter.  Defaults to setting.
     """
     settings = get_settings()
+
+    # Tells the lifespan that a startup INCREX probe is worth its round trip;
+    # cache-only apps never set it.  Safe before startup: the builder runs at
+    # app-construction time, the lifespan reads it later.
+    app.state._redis_rate_limiting = True
 
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 

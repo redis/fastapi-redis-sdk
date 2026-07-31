@@ -246,3 +246,65 @@ class TestLifespanOtelIntegration:
                 mock_init.assert_called_once()
 
             mock_shutdown.assert_called_once()
+
+
+# ===================================================================
+# Startup INCREX capability probe
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestLifespanRateLimitProbe:
+    """INCREX support is settled once at pool init, not per request."""
+
+    def _app(self, *, rate_limiting: bool) -> FastAPI:
+        app = FastAPI()
+        builder = FastAPIRedis(app).lifespan()
+        if rate_limiting:
+            builder.rate_limiting()
+
+        @app.get("/ping")
+        async def ping() -> dict:
+            return {"ok": True}
+
+        return app
+
+    def test_probe_runs_at_startup_when_rate_limiting_is_wired(self):
+        app = self._app(rate_limiting=True)
+        with patch(
+            "redis_fastapi.ratelimit_backend.probe_increx_support",
+            new=AsyncMock(return_value=True),
+        ) as probe:
+            with TestClient(app) as client:
+                client.get("/ping")
+                # Read before shutdown — teardown clears the pool state.
+                caps = app.state._redis.ratelimit_capabilities
+                assert caps is not None and caps.supports_increx is True
+
+        probe.assert_awaited_once()
+
+    def test_cache_only_app_pays_no_probe(self):
+        # A startup round trip nobody needs also means a boot-time connect to a
+        # Redis that a cache-only app may be happy to reach lazily.
+        app = self._app(rate_limiting=False)
+        with patch(
+            "redis_fastapi.ratelimit_backend.probe_increx_support",
+            new=AsyncMock(return_value=True),
+        ) as probe:
+            with TestClient(app) as client:
+                client.get("/ping")
+
+        probe.assert_not_awaited()
+
+    def test_unreachable_redis_at_boot_does_not_break_startup(self):
+        # The probe is best-effort: detection is deferred, never fatal.
+        app = self._app(rate_limiting=True)
+        with patch(
+            "redis_fastapi.ratelimit_backend.probe_increx_support",
+            new=AsyncMock(side_effect=OSError("no route to host")),
+        ):
+            with TestClient(app) as client:
+                assert client.get("/ping").status_code == 200
+                # Nothing cached, so the first hit re-probes rather than
+                # inheriting a guess made while Redis was down.
+                assert app.state._redis.ratelimit_capabilities is None

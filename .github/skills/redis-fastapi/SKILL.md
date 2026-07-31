@@ -43,7 +43,9 @@ uv sync --all-groups          # Install all deps
 uv run nox                    # Run ALL CI checks locally
 uv run nox -s lint            # Lint + format check only
 uv run nox -s typecheck       # mypy
-uv run nox -s tests-3.12      # Tests on a specific Python version
+uv run nox -s tests-3.12      # Full suite on a specific Python version
+uv run nox -s tests_unit-3.12 # Unit suite only (fakeredis, no server)
+uv run nox -s tests_integration-3.12  # Integration suite only (needs Redis)
 uv run nox -s fix             # Auto-fix lint/format
 uv run nox -s docs_serve      # Live-reload docs at localhost:8000
 ```
@@ -153,7 +155,13 @@ See `docs/guide/architecture.md` § Telemetry for span names and metrics.
 - **Integration tests** (`tests/integration/`): real Redis, decorated with
   `@requires_redis` (auto-skip if server unreachable).
 - `filterwarnings = ["error"]` in pytest config — all warnings are errors.
-- Coverage threshold: 80% (`--cov-fail-under=80`).
+- Coverage threshold: 80% (`--cov-fail-under=80`). The integration-only
+  session lowers this to 70 (`_INTEGRATION_COV_FLOOR` in `noxfile.py`) —
+  83 integration tests alone cover ~78% of `src/`.
+- CI runs the two suites in **separate jobs**: `unit-tests` runs
+  `tests_unit` across 3 OSes x 5 Pythons, `integration-tests` runs
+  `tests_integration` against Redis 8.8 and 7.4. See
+  `docs/guide/compatibility.md` § 4.
 - `asyncio_mode = "auto"` — no need for `@pytest.mark.asyncio`.
 
 ### Test fixtures

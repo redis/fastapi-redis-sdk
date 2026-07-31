@@ -95,7 +95,7 @@ Depends(rate_limit(
 |---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `scope`             | Counter namespace **and** the unit of sharing.  Defaults to the matched route template (`/items/{id}`), giving each route its own per-client counter.  An explicit `scope` shares one counter across every route that uses it (see [Sharing one limit across routes](#sharing-one-limit-across-routes)).  |
 | `identifier`        | Returns the per-client **identity** segment of the key (not the whole key - scope/prefix are added by the library).  `ip_identifier` (default), or your own callable to key by user / API key / tenant.                                                                                                   |
-| `cost`              | How many units one request consumes - e.g. a bulk endpoint may cost more.                                                                                                                                                                                                                                 |
+| `cost`              | How many units one request consumes - e.g. a bulk endpoint may cost more.  Must be at least `1`; anything lower raises `ValueError` at decoration time.                                                                                                                                                   |
 | `skip_when`         | Predicate over the `Request`; when truthy the request is **not counted**.                                                                                                                                                                                                                                 |
 | `on_limit_exceeded` | Callable `(request, result) -> Response` building the 429 (sync or async).                                                                                                                                                                                                                                |
 | `emit_headers`      | Toggle the `X-RateLimit-*` trio for this route.                                                                                                                                                                                                                                                           |
@@ -303,6 +303,13 @@ export REDIS_RATE_LIMIT_DEFAULT_WINDOW=60
 Per-route `rate_limit()` dependencies stack on top of the global limit - a
 request must pass both.
 
+Both checks run, but only one set of `X-RateLimit-*` headers can go out, so the
+response reports **the limit that binds first**: a rejection if either check
+rejected, otherwise whichever has fewer requests remaining.  A route allowing
+100/minute behind a global 1000/minute therefore advertises the global counter
+once the client has spent most of it, rather than a roomy per-route number that
+would leave the next 429 unexplained.
+
 ---
 
 ## 5. `RateLimitBackend` - imperative API
@@ -414,7 +421,7 @@ it in the handler and pass it to `hit`:
 ```python
 @app.post("/complete")
 async def complete(body: CompletionBody, limiter: RateLimitBackendDep):
-    cost = estimate_tokens(body.prompt)                        # known only now
+    cost = max(1, estimate_tokens(body.prompt))                # known only now
     result = await limiter.hit(
         f"tokens:{body.api_key}", limit=100_000, window=86_400, cost=cost,
     )
@@ -422,6 +429,13 @@ async def complete(body: CompletionBody, limiter: RateLimitBackendDep):
         raise HTTPException(429, f"daily budget exhausted; retry in {result.retry_after}s")
     return {"charged": cost, "remaining": result.remaining}
 ```
+
+`cost` must be at least `1`, hence the `max(1, ...)`: an estimator that returns
+`0` for an empty prompt would otherwise raise `ValueError`.  Zero is rejected
+rather than treated as free because the counter reports no increment, which the
+allow/deny rule reads as *rejected* - a request charged nothing would be turned
+away.  Negative values are rejected for the sharper reason that they decrement
+the counter, letting a caller refund requests it already spent.
 
 #### Recipe: multiple limits in one handler (burst + sustained)
 
@@ -528,6 +542,16 @@ that supports neither (scripting disabled) is treated as a backend error and
 takes the [fail-open/closed](#7-error-handling) path rather than counting with a
 race. No configuration or new dependency is needed; pre-8.8 servers
 transparently use the Lua path.
+
+Which tier applies is settled by asking the server (`COMMAND INFO INCREX`) once
+per pool, during startup, and the answer is logged at `INFO`.  Detection is a
+capability lookup rather than "send `INCREX` and interpret the error" because a
+cluster client resolves a command to a hash slot from the server's own command
+table *before* sending it - so on a pre-8.8 cluster `INCREX` is refused
+client-side, with wording no server ever produces.  Guessing from error text
+there would misread an old cluster as an outage and degrade every request.
+An app that starts while Redis is unreachable simply defers the question to its
+first request; nothing is cached until the server actually answers.
 
 ---
 

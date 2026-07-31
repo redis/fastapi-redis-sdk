@@ -56,6 +56,42 @@ def _shutdown_redis_otel(otel: Any) -> None:
         logger.debug("Error shutting down redis-py OTel", exc_info=True)
 
 
+async def _probe_rate_limit_capabilities(ps: _PoolState) -> None:
+    """Settle INCREX support once, at pool init, on the shared capability cache.
+
+    Best-effort by design.  A Redis that is unreachable at boot must not stop
+    the app from starting, so every failure here is swallowed: the cache is
+    left saying "unknown" and the first request re-probes.  Detection is
+    therefore never *wrong*, only sometimes deferred.
+
+    Runs only when rate limiting is wired (:func:`add_redis_rate_limiting`
+    marks the app), so cache-only deployments pay no startup round trip.
+    """
+    from redis_fastapi.ratelimit_backend import (
+        _BackendCapabilities,
+        probe_increx_support,
+    )
+
+    caps = _BackendCapabilities()
+    try:
+        caps.supports_increx = await probe_increx_support(ps.get_async_client())
+    except Exception:
+        logger.debug("Rate-limit capability probe skipped", exc_info=True)
+        return
+
+    ps.ratelimit_capabilities = caps
+    if caps.supports_increx is None:
+        logger.info(
+            "Rate-limit backend undetermined at startup (Redis unreachable); "
+            "will detect on first request"
+        )
+    else:
+        logger.info(
+            "Rate-limit backend: %s",
+            "INCREX" if caps.supports_increx else "Lua (server has no INCREX)",
+        )
+
+
 @asynccontextmanager
 async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage Redis connection pools across the application lifecycle.
@@ -94,6 +130,9 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
         ps.async_cluster = _PoolState.build_async_cluster()
     else:
         ps.async_pool = _PoolState.build_async_pool()
+
+    if getattr(app.state, "_redis_rate_limiting", False):
+        await _probe_rate_limit_capabilities(ps)
 
     try:
         yield

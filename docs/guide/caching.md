@@ -170,7 +170,7 @@ async def clear_products():
 
 For complex invalidation that doesn't map to a single URL path (cross-path
 eviction, multi-key invalidation, conditional logic), use `CacheBackend`
-directly - see [section 2](#2-cachebackend).
+directly - see [section 2](#2-cachebackend-imperative-api).
 
 #### Eviction groups and Redis Cluster
 
@@ -262,41 +262,88 @@ and the endpoint's return value is still delivered to the caller.
 
 ---
 
-## 2. `CacheBackend`
+## 2. `CacheBackend` - imperative API
 
-`CacheBackendDep` injects a `CacheBackend` instance for patterns that the
-DI factories cannot express: conditional caching, intermediate result caching,
-cross-group cascade invalidation, dynamic TTL, and atomic
-read-modify-write.
+For caching that doesn't map to "one endpoint, one response" - a TTL that
+depends on the data, a decision to cache taken after the work is done, or
+sub-computations cached independently of the response - inject
+`CacheBackendDep`.  It needs only a Redis connection; `.caching()` is not
+required for the backend itself.
 
-`CacheBackend` only needs a Redis connection - `.caching()` is **not**
-required.  If you're only using `CacheBackend` (no `cache()` / `cache_evict()`
-/ `cache_put()`), setup is just:
+```python
+from redis_fastapi import CacheBackendDep
+
+@app.get("/items/{item_id}")
+async def get_item(item_id: int, cache: CacheBackendDep):
+    cached = await cache.get(f"item:{item_id}", eviction_group="items")
+    if cached is not None:
+        return cached
+    item = await db.get_item(item_id)
+    await cache.set(f"item:{item_id}", item, ttl=300, eviction_group="items")
+    return item
+```
+
+That is [cache-aside](https://redis.io/learn/howtos/solutions/microservices/caching)
+written by hand - and it is exactly what `cache()` does for you, so if this is
+all you need, use `cache()`.  The recipes below are the cases it cannot express.
+
+If you are using only `CacheBackend` (no `cache()` / `cache_evict()` /
+`cache_put()`), setup is just:
 
 ```python
 app = FastAPI()
 FastAPIRedis(app).lifespan()
 ```
 
-For simple invalidation or write-through, prefer `cache_evict()` /
-`cache_put()` instead (which do require `.caching()`).
+| Method                                              | Description                                                       |
+|-----------------------------------------------------|-------------------------------------------------------------------|
+| `get(key, *, default=None, eviction_group=None)`    | Retrieve and deserialize.  Returns `default` on miss.             |
+| `set(key, value, *, ttl=None, eviction_group=None)` | Serialize and store.  `ttl` accepts `int` seconds or `timedelta`. |
+| `delete(key, *, eviction_group=None)`               | Delete a single entry.  Returns `True` if it existed.             |
+| `has(key, *, eviction_group=None)`                  | Check existence without deserializing (Redis `EXISTS`).           |
+| `delete_group(eviction_group=None)`                 | Delete every key in an eviction group.  Returns the count.        |
 
-### API
+Four things about the semantics are worth knowing before you build on them:
 
-| Method | Description |
-|--------|-------------|
-| `get(key, *, default=None, eviction_group=None)` | Retrieve and deserialize. Returns `default` on miss. |
-| `set(key, value, *, ttl=None, eviction_group=None)` | Serialize and store. `ttl` accepts `int` or `timedelta`. |
-| `delete(key, *, eviction_group=None)` | Delete a single entry. Returns `True` if it existed. |
-| `has(key, *, eviction_group=None)` | Check existence without deserializing (Redis `EXISTS`). |
-| `delete_group(eviction_group=None)` | Delete all keys in an eviction group. Returns the count. |
+* **A miss and an outage look identical.**  `get` returns `default` (`None`
+  unless you pass one) not only on a miss but also on a Redis error or a decode
+  failure, and `set` silently does nothing when Redis is down.  That is
+  deliberate - a cache outage degrades to recomputation instead of a 500 - but
+  unlike `RateLimitResult.degraded` there is no flag distinguishing the two.
+  The failure is logged and visible in the [metrics](observability.md); your
+  handler cannot see it.
+* **`ttl=None` means no expiry**, as does any value below `1`.  The key stays
+  until it is deleted or evicted by Redis' own memory policy.  Pass an explicit
+  TTL unless you mean forever.
+* **`delete_group()` with no group is a full cache wipe.**  With neither a call
+  argument nor an instance-level group, it deletes every key under the cache
+  prefix.  It logs a warning and proceeds.
+* **Keys interoperate with `cache()`.**  Both produce
+  `{prefix}:{eviction_group}:...`, so `delete_group("items")` clears
+  decorator-written and backend-written entries alike - see
+  [Cache keys](#cache-keys).
 
-The basic [cache-aside](https://redis.io/learn/howtos/solutions/microservices/caching)
-pattern (get → miss → compute → set → return) is exactly what `cache()` does
-automatically.  Use `CacheBackendDep` when you need control that the DI
-factories cannot express:
+A `SyncCacheBackend` facade (`SyncCacheBackendDep`) offers the same methods for
+sync endpoints, delegating to the async backend on a worker thread.
 
-### Caching Pydantic models
+### When to reach for the backend
+
+`cache()` fixes everything at decoration time: one TTL, a key derived from the
+request, and "cache whatever the handler returns".  It wraps the handler, so the
+response is the only thing it can see or store, and the handler never learns
+whether a cache was involved.
+
+Reach for the backend when one of those has to change - the TTL, the key, the
+*decision* to cache, or the granularity (part of the work rather than the whole
+response) - or when there is no `Request` at all.  For plain invalidation or
+write-through, prefer `cache_evict()` / `cache_put()`, which do require
+`.caching()`.  The recipes below cover the common cases.
+
+#### Recipe: typed values with Pydantic models
+
+`cache()` stores the serialized HTTP response, so there is nothing to type on the
+way back.  The backend hands values to *your* code, which makes the coder worth
+choosing.
 
 By default, `CacheBackend` uses `JsonCoder`, a thin wrapper around
 `json.dumps()` / `json.loads()`, which cannot serialize Pydantic models,
@@ -347,9 +394,11 @@ async def get_product(product_id: UUID, cache: ProductCacheDep) -> Product:
 model-specific backend costs nothing extra beyond the coder. Add one such
 provider per model you cache.
 
-### Conditional caching
+#### Recipe: conditional caching
 
-Cache only when business rules are met - `@cache` always caches the result:
+Cache only when a business rule is met.  `cache()` has no say in the matter - it
+stores whatever the handler returns - so a draft or a partial result gets cached
+alongside the publishable ones:
 
 ```python
 @app.get("/items/{item_id}")
@@ -366,9 +415,12 @@ async def get_item(item_id: int, cache: CacheBackendDep):
     return item
 ```
 
-### Intermediate result caching
+#### Recipe: intermediate result caching
 
-Cache sub-computations independently so they can be invalidated separately:
+Cache the expensive *parts* rather than the response, so each part carries its
+own TTL and can be invalidated on its own schedule.  `cache()` sees one response
+and one TTL, which means a cheap 60-second fragment and an expensive 2-hour one
+must share whichever number you picked:
 
 ```python
 @app.get("/dashboard/{user_id}")
@@ -386,9 +438,10 @@ async def dashboard(user_id: int, cache: CacheBackendDep):
     return {"orders": orders, "recommendations": recommendations}
 ```
 
-### Cascade invalidation (across eviction groups)
+#### Recipe: cascade invalidation across eviction groups
 
-A single write can invalidate caches in multiple eviction groups:
+One write makes several unrelated caches stale.  `cache_evict()` clears the group
+attached to its own route, so a fan-out across groups needs explicit deletes:
 
 ```python
 @app.put("/profile/{user_id}")
@@ -402,10 +455,11 @@ async def update_profile(user_id: int, body: ProfileUpdate, cache: CacheBackendD
     return {"ok": True}
 ```
 
-### Dynamic TTL
+#### Recipe: TTL from the data
 
-Set TTL based on the data itself - decorators cannot express this because
-TTL is fixed at decoration time:
+Let the value decide how long it lives.  `cache(ttl=...)` is resolved when the
+route is defined, before any data exists, so it cannot tell a premium record from
+a free one:
 
 ```python
 @app.get("/content/{content_id}")
@@ -420,10 +474,11 @@ async def get_content(content_id: int, cache: CacheBackendDep):
     return content
 ```
 
-### Atomic read-modify-write
+#### Recipe: read-modify-write a cached value
 
-Read a cached value, modify it, and write it back. Decorators cannot express
-this because the cache operation depends on the existing cached value:
+Derive the new value from the cached one.  `cache()` never shows the handler what
+is in the cache, so any update that depends on the current value has to be done
+here:
 
 ```python
 @app.post("/products/{product_id}/view")
@@ -434,9 +489,25 @@ async def record_view(product_id: int, cache: CacheBackendDep):
     return {"product_id": product_id, "views": views}
 ```
 
-### Existence check (has)
+!!! warning "This read-modify-write is not atomic"
 
-Avoid expensive work when the cache is warm without deserializing the value:
+    Two concurrent requests can both read `views=5` and both write `6`, losing a
+    view.  That is acceptable for an approximate counter and wrong for anything
+    you bill or audit.  When the count has to be exact, let Redis do the
+    arithmetic with `INCR` on the raw client (`AsyncRedisDep`) instead of a
+    get/set pair - a cache backend is a value store, not a counter:
+
+    ```python
+    @app.post("/products/{product_id}/view")
+    async def record_view(product_id: int, redis: AsyncRedisDep):
+        views = await redis.incr(f"views:{product_id}")   # atomic, one round trip
+        return {"product_id": product_id, "views": views}
+    ```
+
+#### Recipe: skip expensive work when the cache is warm
+
+`has` answers "is this cached?" without transferring or deserializing the value -
+useful when the decision costs less than the payload:
 
 ```python
 @app.get("/warm-check/{product_id}")
@@ -449,26 +520,54 @@ async def check_warm(product_id: int, cache: CacheBackendDep):
     return {"warm": False}
 ```
 
-### Default / fallback values
+#### Recipe: caching outside HTTP
 
-Return a fallback instead of `None` when the cache is empty:
-
-```python
-@app.get("/settings/{key}")
-async def get_setting(key: str, cache: CacheBackendDep):
-    value = await cache.get(f"setting:{key}", default="default-value", eviction_group="settings")
-    return {"key": key, "value": value}
-```
-
-### timedelta TTL
-
-`set()` accepts both `int` (seconds) and `timedelta`:
+There is no `Request` in a background worker, a scheduled job, or a queue
+consumer - but the cache is the same one your endpoints read, so a worker can
+warm it or reuse it.  Construct a `CacheBackend` from any Redis client:
 
 ```python
 from datetime import timedelta
 
-await cache.set("session:abc", data, ttl=timedelta(minutes=30), eviction_group="sessions")
+from redis_fastapi import CacheBackend
+
+async def refresh_exchange_rates(redis):
+    cache = CacheBackend(redis, eviction_group="rates")   # no Request needed
+    rates = await fetch_from_vendor()                     # paid API, called once
+    await cache.set("fx:latest", rates, ttl=timedelta(minutes=15))
+
+@app.get("/rates")
+async def rates(cache: CacheBackendDep):
+    # Endpoints read what the worker wrote — same key, same eviction group.
+    return await cache.get("fx:latest", default={}, eviction_group="rates")
 ```
+
+This is also the shape to use when a value is expensive to produce but cheap to
+serve: pay for it on a schedule rather than on whichever unlucky request finds
+the cache cold.
+
+The `default=` argument keeps the miss path from leaking `None` into your
+response - `default={}` above, or `default=0` in the counter recipe - and `ttl`
+accepts a `timedelta` wherever seconds would do.
+
+Notice what the recipes have in common: each one **reads the cache before
+deciding what to do next**.  That is the structural difference from `cache()`,
+which resolves the cache entirely outside the handler and hands it a decision
+already made.
+
+### Keys and eviction groups
+
+Backend keys follow the same scheme as decorator keys -
+`{prefix}:{eviction_group}:{your key}`, with the group wrapped in Redis hash-tag
+braces so a whole group lands on one cluster slot.  The consequences are covered
+under [Cache keys](#cache-keys); the two that matter most here:
+
+* The `eviction_group` argument can be set per call or once on the instance
+  (`CacheBackend(redis, eviction_group="products")`), which is what the Pydantic
+  provider above does.
+* A group is the unit of bulk eviction.  Keys written by `cache()` and keys
+  written by the backend sit in the same namespace, so grouping them together is
+  what makes one `delete_group()` clear both.
 
 ---
 
@@ -542,7 +641,7 @@ async def checkout(cart: Cart, cache: CacheBackendDep):
 | [Group eviction](#cache-keys)                                                                   |        ❌        |       ✅ (no key_builder)        |      ✅       |
 | [Key-level invalidation](https://redis.io/glossary/cache-invalidation/)                         |        ❌        |          ✅ key_builder          |      ✅       |
 | [Write-through](#options)                                                                       |        ❌        |         ✅ `cache_put()`         |      🔧      |
-| [Conditional caching](#conditional-caching)                                                     |        ❌        |                ❌                |      ✅       |
+| [Conditional caching](#recipe-conditional-caching)                                                     |        ❌        |                ❌                |      ✅       |
 | Custom key builder                                                                              |        ✅        |                ✅                |      ❌       |
 | Custom key prefix                                                                               |        ✅        |                ✅                |      ❌       |
 | Custom coder                                                                                    |        ❌        |                ❌                |      ✅       |
@@ -559,16 +658,20 @@ async def checkout(cart: Cart, cache: CacheBackendDep):
 
 ## Quick reference
 
-| Scenario                                | Recommended                                                    |
-|-----------------------------------------|----------------------------------------------------------------|
-| Most GET endpoints                      | [`cache()`](#1-caching-factories)                              |
-| User-specific / authenticated endpoints | [`cache(private=True)`](#http-cache-headers)                   |
-| POST/PUT that invalidates a GET         | [`cache_evict()`](#basic-usage)                                |
-| Write-through (update cache on write)   | [`cache_put()`](#basic-usage)                                  |
-| Complex multi-step invalidation         | [`CacheBackend`](#cascade-invalidation-across-eviction-groups) |
-| Conditional caching (business rules)    | [`CacheBackend`](#conditional-caching)                         |
-| Cache sub-computations independently    | [`CacheBackend`](#intermediate-result-caching)                 |
-| Public catalog, high traffic            | [`cache()`](#1-caching-factories)                              |
+| Scenario                                 | Recommended                                                           |
+|------------------------------------------|-----------------------------------------------------------------------|
+| Most GET endpoints                       | [`cache()`](#1-caching-factories)                                     |
+| User-specific / authenticated endpoints  | [`cache(private=True)`](#http-cache-headers)                          |
+| POST/PUT that invalidates a GET          | [`cache_evict()`](#basic-usage)                                       |
+| Write-through (update cache on write)    | [`cache_put()`](#basic-usage)                                         |
+| Public catalog, high traffic             | [`cache()`](#1-caching-factories)                                     |
+| Complex multi-step invalidation          | [`CacheBackend`](#recipe-cascade-invalidation-across-eviction-groups)  |
+| Conditional caching (business rules)     | [`CacheBackend`](#recipe-conditional-caching)                          |
+| Cache sub-computations independently     | [`CacheBackend`](#recipe-intermediate-result-caching)                  |
+| TTL that depends on the data             | [`CacheBackend`](#recipe-ttl-from-the-data)                            |
+| Typed values (Pydantic models)           | [`CacheBackend`](#recipe-typed-values-with-pydantic-models)            |
+| Background job / no `Request` available  | [`CacheBackend`](#recipe-caching-outside-http)                         |
+| Exact counters                           | `AsyncRedisDep` + `INCR` - [not a cache](#recipe-read-modify-write-a-cached-value) |
 
 ---
 

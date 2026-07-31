@@ -64,6 +64,59 @@ class _BackendCapabilities:
     script: object | None = None
 
 
+async def probe_increx_support(
+    client: AsyncRedis | AsyncRedisCluster,
+) -> bool | None:
+    """Ask the server whether it implements ``INCREX``.
+
+    Called once per pool from the lifespan (see
+    :func:`~redis_fastapi.lifespan.redis_lifespan`), and lazily on first use
+    for backends built outside one.
+
+    Returns ``True`` when the server advertises the command, ``False`` when it
+    does not, and ``None`` when the question could not be answered - Redis
+    unreachable - which leaves detection to a later attempt rather than
+    caching a guess.
+
+    ``COMMAND INFO`` is answered by every Redis since 2.8, needs no write and
+    touches no key, so the probe is safe to run at startup against any server.
+
+    Why probe instead of "send INCREX and read the error": the error *text* is
+    not a stable contract, and on a cluster the mis-detection is not cosmetic.
+    A cluster client must map a command to a hash slot before it can send it,
+    and it builds that map from the server's own ``COMMAND`` table - so against
+    a pre-8.8 cluster, redis-py rejects ``INCREX`` **client-side** with
+    ``"INCREX command doesn't exist in Redis commands"``, never reaching the
+    server that would have said ``"unknown command"``.  A limiter keyed on the
+    server's wording therefore reads that as a backend outage and degrades
+    every request instead of falling back to Lua.
+    """
+    try:
+        if isinstance(client, AsyncRedisCluster):
+            # A keyless command still needs a node; ask any of them rather than
+            # relying on redis-py's default routing for an admin command.
+            reply = await client.execute_command(
+                "COMMAND", "INFO", "INCREX", target_nodes=AsyncRedisCluster.RANDOM
+            )
+        else:
+            reply = await client.execute_command(  # type: ignore[no-untyped-call]
+                "COMMAND", "INFO", "INCREX"
+            )
+    except TypeError:
+        # redis-py parses the COMMAND reply eagerly, and for a command the
+        # server does not know the entry is nil - which its parser indexes into
+        # and raises on.  That is the "unsupported" answer, not a broken probe.
+        return False
+    except (RedisError, OSError):
+        logger.debug("INCREX capability probe failed; will retry", exc_info=True)
+        return None
+    # A server that has the command answers with a one-entry table keyed by the
+    # command name.  Should redis-py ever start skipping nil entries instead of
+    # raising, that same server-lacks-INCREX case arrives here as an empty
+    # table, so both shapes give the same answer.
+    return bool(reply)
+
+
 @dataclass(frozen=True)
 class RateLimitResult:
     """Outcome of a single rate-limit check.
@@ -177,7 +230,11 @@ class RateLimitBackend:
         On Redis errors the result depends on *fail_closed* (default from
         ``REDIS_RATE_LIMIT_FAIL_CLOSED``): fail-open returns ``allowed=True``,
         fail-closed returns ``allowed=False``.
+
+        Raises:
+            ValueError: If *cost* is not at least 1.
         """
+        _validate_cost(cost)
         full_key = self._build_key(identifier, scope)
         try:
             new_value, actual_incr, pttl_ms, backend = await self._execute(
@@ -214,14 +271,22 @@ class RateLimitBackend:
         """Run the best window-counter, returning ``(new, incr, pttl_ms, backend)``.
 
         Tries the atomic ``INCREX`` (Redis 8.8+), then the atomic Lua script.
-        ``INCREX`` support is probed once and memoised on the shared capability
-        cache after its first "unknown command" error, so the failed round trip
-        is paid at most once per process.  Lua is the terminal tier: if the
-        server supports neither (e.g. scripting disabled), the ``RedisError``
-        propagates to :meth:`hit`, which turns it into the degraded
-        fail-open/closed result rather than counting non-atomically.  ``backend``
-        names the tier that served the check (``"increx"`` / ``"lua"``).
+        ``INCREX`` support is normally settled once per pool by
+        :func:`probe_increx_support` at startup; a backend built outside a
+        lifespan (or one whose startup probe could not reach Redis) resolves it
+        here on first use and memoises the answer on the shared capability
+        cache.  Lua is the terminal tier: if the server supports neither (e.g.
+        scripting disabled), the ``RedisError`` propagates to :meth:`hit`, which
+        turns it into the degraded fail-open/closed result rather than counting
+        non-atomically.  ``backend`` names the tier that served the check
+        (``"increx"`` / ``"lua"``).
         """
+        if self._caps.supports_increx is None:
+            # Still unknown: no lifespan ran the probe, or it could not reach
+            # the server.  A probe that fails again returns None and leaves the
+            # question open for the next request rather than caching a guess.
+            self._caps.supports_increx = await probe_increx_support(self._redis)
+
         if self._caps.supports_increx is not False:
             try:
                 new_value, actual_incr, pttl_ms = await self._increx(
@@ -340,10 +405,45 @@ class RateLimitBackend:
         )
 
 
+def _validate_cost(cost: int) -> None:
+    """Reject a *cost* that cannot be charged coherently.
+
+    ``cost`` is developer-supplied (a ``rate_limit()`` argument), never derived
+    from the request, so a bad value is a programming error worth failing on
+    rather than quietly reinterpreting:
+
+    * ``0`` consumes nothing, yet the counter reports no increment - which the
+      allow/deny rule reads as "rejected".  It would also create the key and
+      start the window's TTL, shortening the window for the first request that
+      does consume something.
+    * a negative cost *decrements* the counter, letting a caller hand back
+      requests it already spent and stay under the limit indefinitely.
+    """
+    if cost < 1:
+        raise ValueError(
+            f"cost must be >= 1, got {cost}: a zero cost consumes nothing but "
+            "is reported as rejected, and a negative cost decrements the "
+            "counter, which lets a client buy back its own limit."
+        )
+
+
 def _is_unknown_command(exc: RedisError) -> bool:
-    """Heuristic: does *exc* indicate the server lacks the INCREX command?"""
+    """Heuristic: does *exc* indicate the server lacks the INCREX command?
+
+    A fallback behind :func:`probe_increx_support`, for the case where the
+    probe could not answer and ``INCREX`` was attempted anyway.  Two distinct
+    signals, because the rejection can come from either end of the connection:
+    the server's own ``unknown command``, and - on a cluster whose server does
+    not advertise ``INCREX`` - redis-py refusing to route it, which never
+    reaches the server at all.
+
+    Deliberately *not* matched: ``wrong number of arguments``.  That means the
+    command exists and we called it wrongly; treating it as "server too old"
+    would swap a loud bug for a silent permanent downgrade to Lua that no test
+    would notice.
+    """
     msg = str(exc).lower()
-    return "unknown command" in msg or "wrong number of arguments" in msg
+    return "unknown command" in msg or "doesn't exist in redis commands" in msg
 
 
 class SyncRateLimitBackend:

@@ -372,6 +372,86 @@ class TestGlobalMiddleware:
             assert r.status_code == 429
             assert r.headers["Retry-After"]
 
+    def _stacked_app(
+        self,
+        fake: fakeredis.aioredis.FakeRedis,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        global_rate: str,
+        route_rate: str,
+    ) -> FastAPI:
+        """App with a global limiter and a per-route limit on the same request."""
+        import redis_fastapi.ratelimit as rl
+        from redis_fastapi.ratelimit import rate_limit
+        from redis_fastapi.ratelimit_backend import RateLimitBackend
+
+        async def _fake_backend(_request: Request) -> RateLimitBackend:
+            return RateLimitBackend(fake)
+
+        monkeypatch.setattr(rl, "get_rate_limit_backend", _fake_backend)
+
+        app = FastAPI()
+        app.dependency_overrides[get_rate_limit_backend] = lambda: RateLimitBackend(
+            fake
+        )
+        FastAPIRedis(app).rate_limiting(
+            global_rate=global_rate,
+            identifier=lambda r: "global",
+        )
+
+        @app.get("/x", dependencies=[Depends(rate_limit(route_rate))])
+        async def x() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        return app
+
+    def test_headers_report_the_binding_limit_not_the_last_checked(
+        self,
+        fake: fakeredis.aioredis.FakeRedis,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Global (3) is tighter than the route (100).  The route check runs
+        # last, so last-write-wins would advertise ~99 remaining while the
+        # client is actually two requests from a 429 it never saw coming.
+        app = self._stacked_app(
+            fake, monkeypatch, global_rate="3/minute", route_rate="100/minute"
+        )
+        with TestClient(app) as client:
+            r = client.get("/x")
+            assert r.headers["X-RateLimit-Limit"] == "3"
+            assert int(r.headers["X-RateLimit-Remaining"]) == 2
+
+    def test_headers_follow_the_route_when_it_is_tighter(
+        self,
+        fake: fakeredis.aioredis.FakeRedis,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Mirror image: the route is the constraint, so it owns the headers.
+        app = self._stacked_app(
+            fake, monkeypatch, global_rate="100/minute", route_rate="3/minute"
+        )
+        with TestClient(app) as client:
+            r = client.get("/x")
+            assert r.headers["X-RateLimit-Limit"] == "3"
+            assert int(r.headers["X-RateLimit-Remaining"]) == 2
+
+    def test_rejection_owns_the_headers(
+        self,
+        fake: fakeredis.aioredis.FakeRedis,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A 429 from the route must report the route's limit even though the
+        # roomier global check ran first and allowed the request.
+        app = self._stacked_app(
+            fake, monkeypatch, global_rate="100/minute", route_rate="1/minute"
+        )
+        with TestClient(app) as client:
+            assert client.get("/x").status_code == 200
+            r = client.get("/x")
+            assert r.status_code == 429
+            assert r.headers["X-RateLimit-Limit"] == "1"
+            assert int(r.headers["X-RateLimit-Remaining"]) == 0
+
 
 class _BrokenPipeline:
     """Pipeline whose execution always fails (simulates a downed server)."""

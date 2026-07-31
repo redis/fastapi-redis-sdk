@@ -80,11 +80,47 @@ def security(session: nox.Session) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+# Integration tests alone cover ~78% of src/ - they exercise the library
+# end-to-end rather than exhaustively, so the global --cov-fail-under=80 in
+# pyproject.toml does not apply to them.  70 leaves headroom while still
+# catching a real drop.  Full-suite coverage stays gated at 80.
+_INTEGRATION_COV_FLOOR = "70"
+
+
 @nox.session(python=PYTHON_VERSIONS)
 def tests(session: nox.Session) -> None:
     """Run the full test suite with coverage."""
     uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
-    session.run("pytest", "tests/", "-v", *session.posargs)
+    # posargs replace the default path so `nox -s tests-3.12 -- tests/unit`
+    # narrows the run instead of silently collecting everything.  Note this
+    # session keeps the full-suite 80% gate, so narrowing it will usually trip
+    # --cov-fail-under; use tests_unit / tests_integration to select a suite.
+    session.run("pytest", *(session.posargs or ["tests/"]), "-v")
+
+
+@nox.session(python=PYTHON_VERSIONS, default=False)
+def tests_unit(session: nox.Session) -> None:
+    """Run the fakeredis-backed unit suite.  Needs no Redis server."""
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
+    session.run("pytest", "tests/unit", *session.posargs)
+
+
+@nox.session(python=PYTHON_VERSIONS, default=False)
+def tests_integration(session: nox.Session) -> None:
+    """Run the integration suite against a real Redis server on localhost:6379.
+
+    Tests are marked ``@requires_redis`` and skip when no server is reachable.
+    That cannot pass vacuously: with all of them skipped coverage drops to
+    ~35% and the floor below fails the session, so a missing server surfaces
+    as a failure rather than a green all-skipped run.
+    """
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
+    session.run(
+        "pytest",
+        "tests/integration",
+        f"--cov-fail-under={_INTEGRATION_COV_FLOOR}",
+        *session.posargs,
+    )
 
 
 # ---------------------------------------------------------------------------

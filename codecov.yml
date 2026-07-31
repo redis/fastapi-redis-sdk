@@ -1,0 +1,21 @@
+# Codecov configuration.
+#
+# CI uploads coverage twice per commit, from two jobs that run disjoint test
+# suites (see docs/guide/compatibility.md § 4):
+#
+#   unit-tests        -> flag "unit"         (tests/unit,        ~94% of src/)
+#   integration-tests -> flag "integration"  (tests/integration, ~78% of src/)
+#
+# Codecov merges uploads per commit, so the combined report is the real
+# figure (~97%).  But it sends statuses after the FIRST upload by default,
+# and the two jobs race - integration-tests is 2 fast ubuntu jobs while
+# unit-tests is 15 including Windows and macOS, so integration almost always
+# lands first.  Without the gate below, every PR would briefly report the
+# integration-only 78% as a ~19-point coverage drop before self-correcting.
+#
+# Keep after_n_builds equal to the number of upload steps in ci.yml.  Raising
+# it above that count stalls statuses indefinitely; leaving it below lets them
+# fire on a partial report again.
+codecov:
+  notify:
+    after_n_builds: 2

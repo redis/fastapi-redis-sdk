@@ -90,7 +90,9 @@ jobs:
 
     services:
       redis:
-        image: redis:latest
+        # Pinned to 8.8 so the INCREX rate-limit tier (Redis 8.8+) is exercised
+        # in CI; older tags silently fall back to the Lua path.
+        image: redis:8.8
         ports:
           - 6379:6379
         options: >-
