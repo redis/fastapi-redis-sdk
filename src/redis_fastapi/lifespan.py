@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from inspect import isawaitable
 from typing import Any
 
 from fastapi import FastAPI
@@ -109,6 +110,18 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     When ``settings.otel_redis_enabled`` is ``True``, also initializes
     redis-py's native OpenTelemetry integration on startup and shuts it
     down on teardown.
+
+    **Custom connection pool.** When ``app.state.redis_pool_factory`` is set
+    (directly, or via ``FastAPIRedis(app).lifespan(pool_factory=...)``), the
+    standalone pool is obtained from that zero-argument callable instead of
+    being built from environment settings. The callable may be sync or
+    async, and must return a ``redis.asyncio.ConnectionPool`` (a
+    ``SentinelConnectionPool`` works too — that is the main use case:
+    Sentinel-managed or vault-credentialed deployments whose connection
+    parameters cannot be expressed as static environment variables). The
+    lifespan takes ownership of the returned pool and closes it on
+    shutdown. Not supported in cluster mode (``settings.cluster``), which
+    raises ``ValueError`` to keep the override explicit.
     """
     settings = get_settings()
 
@@ -126,8 +139,19 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     ps = _PoolState()
     app.state._redis = ps
 
+    pool_factory = getattr(app.state, "redis_pool_factory", None)
     if settings.cluster:
+        if pool_factory is not None:
+            raise ValueError(
+                "redis_pool_factory is not supported in cluster mode — "
+                "unset REDIS_CLUSTER or drop the factory"
+            )
         ps.async_cluster = _PoolState.build_async_cluster()
+    elif pool_factory is not None:
+        pool = pool_factory()
+        if isawaitable(pool):
+            pool = await pool
+        ps.async_pool = pool
     else:
         ps.async_pool = _PoolState.build_async_pool()
 
