@@ -8,21 +8,18 @@ and the ``X-RateLimit-*`` / IETF ``RateLimit`` headers — through ``TestClient`
 against a **real Redis server**.
 
 Each test builds its own app, keys counters off the request identity (the
-``TestClient`` client host, or an ``X-Forwarded-For`` value when trusting a
-proxy), and flushes the DB on teardown so counters never leak between tests.
+``TestClient`` client host), and flushes the DB on teardown so counters never
+leak between tests.
 """
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 import redis as sync_redis
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from redis_fastapi import FastAPIRedis, rate_limit
-from redis_fastapi.config import RedisSettings
 from tests.conftest import requires_redis
 
 
@@ -112,11 +109,19 @@ class TestRateLimitDependency:
 
 @requires_redis
 @pytest.mark.integration
-class TestTrustProxy:
-    """``rate_limit_trust_proxy`` controls whether X-Forwarded-For sets identity."""
+class TestProxyHeadersAreNotTrusted:
+    """``X-Forwarded-For`` never sets the rate-limit identity.
 
-    def test_disabled_ignores_xff(self, real_redis: sync_redis.Redis) -> None:
-        """Default (untrusted): XFF is ignored, so all callers share one bucket."""
+    Regression guard for the removed ``REDIS_RATE_LIMIT_TRUST_PROXY`` flag,
+    which keyed the counter on the header's **left-most** hop.  Proxies append
+    to XFF rather than overwrite it, so that hop is caller-supplied even behind
+    a correctly configured proxy — a client could rotate identities to evade its
+    own limit, or forge a victim's to exhaust theirs.  Proxy trust now belongs
+    to the ASGI server; these tests pin the header out of the identity.
+    """
+
+    def test_varying_xff_shares_one_counter(self, real_redis: sync_redis.Redis) -> None:
+        """Different XFF values from one peer hit the same bucket."""
         app = FastAPI()
         FastAPIRedis(app).lifespan().rate_limiting()
 
@@ -126,7 +131,6 @@ class TestTrustProxy:
 
         try:
             with TestClient(app) as tc:
-                # Different XFF values, but the setting is off -> same counter.
                 first = tc.get("/limited", headers={"X-Forwarded-For": "9.9.9.9"})
                 second = tc.get("/limited", headers={"X-Forwarded-For": "8.8.8.8"})
             assert first.status_code == 200
@@ -134,28 +138,73 @@ class TestTrustProxy:
         finally:
             real_redis.flushdb()
 
-    def test_enabled_keys_by_xff(self, real_redis: sync_redis.Redis) -> None:
-        """Trusted: each X-Forwarded-For client gets its own counter."""
-        trusting = RedisSettings(rate_limit_trust_proxy=True)
-        # `_client_ip` reads the setting at request time via ratelimit.get_settings;
-        # patch it there and build the dependency under the patch.
-        with patch("redis_fastapi.ratelimit.get_settings", return_value=trusting):
-            app = FastAPI()
-            FastAPIRedis(app).lifespan().rate_limiting()
+    def test_no_setting_re_enables_per_xff_keying(
+        self, real_redis: sync_redis.Redis
+    ) -> None:
+        """Rotation is impossible by configuration, not merely off by default."""
+        app = FastAPI()
+        FastAPIRedis(app).lifespan().rate_limiting()
 
-            @app.get("/limited", dependencies=[Depends(rate_limit("1/minute"))])
-            async def limited() -> dict[str, str]:
-                return {"ok": "yes"}
+        @app.get("/limited", dependencies=[Depends(rate_limit("2/minute"))])
+        async def limited() -> dict[str, str]:
+            return {"ok": "yes"}
 
-            try:
-                with TestClient(app) as tc:
-                    # Two distinct proxied clients: each allowed once.
-                    a1 = tc.get("/limited", headers={"X-Forwarded-For": "9.9.9.9"})
-                    b1 = tc.get("/limited", headers={"X-Forwarded-For": "8.8.8.8"})
-                    # The first client's second request exhausts its own bucket.
-                    a2 = tc.get("/limited", headers={"X-Forwarded-For": "9.9.9.9"})
-                assert a1.status_code == 200
-                assert b1.status_code == 200  # separate counter, not shared
-                assert a2.status_code == 429
-            finally:
-                real_redis.flushdb()
+        try:
+            with TestClient(app) as tc:
+                # Three distinct forged hops against a limit of 2.  Under the old
+                # flag each opened its own counter and all three passed.
+                codes = [
+                    tc.get("/limited", headers={"X-Forwarded-For": hop}).status_code
+                    for hop in ("9.9.9.9", "8.8.8.8", "7.7.7.7")
+                ]
+            assert codes == [200, 200, 429]
+        finally:
+            real_redis.flushdb()
+
+    def test_custom_identifier_can_opt_into_proxy_awareness(
+        self, real_redis: sync_redis.Redis
+    ) -> None:
+        """The documented escape hatch for servers without proxy-header support.
+
+        Mirrors the recipe in ``docs/guide/rate-limiting.md`` § Behind a proxy:
+        gate on the immediate peer, then walk XFF right-to-left for the first
+        hop the trust list does not cover.
+        """
+        trusted_peers = frozenset({"testclient"})
+
+        def xff_identifier(request: Request) -> str:
+            peer = request.client.host if request.client is not None else ""
+            if peer not in trusted_peers:
+                return peer  # untrusted peer: its own address is the identity
+            hops = [
+                hop.strip()
+                for hop in request.headers.get("X-Forwarded-For", "").split(",")
+                if hop.strip()
+            ]
+            for hop in reversed(hops):
+                if hop not in trusted_peers:
+                    return hop
+            return peer
+
+        app = FastAPI()
+        FastAPIRedis(app).lifespan().rate_limiting()
+
+        @app.get(
+            "/limited",
+            dependencies=[Depends(rate_limit("1/minute", identifier=xff_identifier))],
+        )
+        async def limited() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        try:
+            with TestClient(app) as tc:
+                # The peer is trusted here, so the forwarded hop is honoured and
+                # the two proxied clients get separate counters.
+                a1 = tc.get("/limited", headers={"X-Forwarded-For": "9.9.9.9"})
+                b1 = tc.get("/limited", headers={"X-Forwarded-For": "8.8.8.8"})
+                a2 = tc.get("/limited", headers={"X-Forwarded-For": "9.9.9.9"})
+            assert a1.status_code == 200
+            assert b1.status_code == 200
+            assert a2.status_code == 429
+        finally:
+            real_redis.flushdb()

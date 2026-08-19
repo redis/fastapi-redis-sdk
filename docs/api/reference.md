@@ -283,7 +283,15 @@ def ip_identifier(request: Request) -> str          # default identifier (client
 Identifier = Callable[[Request], str | Awaitable[str]]
 ```
 
-An `Identifier` returns the **client identity** segment of the counter key (e.g. an IP or user id) - the backend adds `scope` and `prefix`. Pass any callable as `identifier=` to key by user, API key, or tenant. `ip_identifier` honours `REDIS_RATE_LIMIT_TRUST_PROXY` when deriving the client IP.
+An `Identifier` returns the **client identity** segment of the counter key (e.g. an IP or user id) - the backend adds `scope` and `prefix`. Pass any callable as `identifier=` to key by user, API key, or tenant. `ip_identifier` returns `request.client.host` and never parses `X-Forwarded-For` - configure proxy headers at the ASGI server (Uvicorn `--proxy-headers`), or supply your own identifier. See [Behind a proxy](../guide/rate-limiting.md#behind-a-proxy).
+
+### `CannotIdentifyClient`
+
+```python
+class CannotIdentifyClient(Exception)
+```
+
+Raise from an `Identifier` that cannot tell callers apart. The limiter then treats the check like a Redis outage: `RateLimitResult.degraded` is `True`, the `error` metric is recorded, and `fail_closed` decides whether the request passes uncounted or gets a 429 - so the request is never counted against a shared placeholder bucket. `ip_identifier` raises it when the ASGI scope has no client address. See [Callers that cannot be identified](../guide/rate-limiting.md#callers-that-cannot-be-identified).
 
 ### `Rate` / `parse_rate()`
 

@@ -6,6 +6,8 @@ Exposes:
 * :class:`RateLimitMiddleware` - an app-wide global limiter / header injector,
 * :func:`ip_identifier` - the ready-made default key strategy (pass your own
   callable via ``identifier=`` to key by user, API key, etc.),
+* :class:`CannotIdentifyClient` - raise it from an identifier that cannot tell
+  callers apart, instead of returning a shared placeholder identity,
 * :class:`RateLimitExceeded` - the control-flow exception returning a 429,
 * :func:`add_redis_rate_limiting` - one-time app wiring.
 
@@ -73,34 +75,64 @@ class _RateLimitState:
 # ---------------------------------------------------------------------------
 
 
-def _client_ip(request: Request, *, trust_proxy: bool | None = None) -> str:
-    """Return the client IP, honoring ``X-Forwarded-For`` when trusted.
+class CannotIdentifyClient(Exception):
+    """Raised by an :data:`Identifier` that cannot determine who the caller is.
 
-    Args:
-        request: The incoming request.
-        trust_proxy: Override the ``REDIS_RATE_LIMIT_TRUST_PROXY`` setting.
+    Rate limiting is only meaningful once callers can be told apart.  When an
+    identifier cannot do that, the alternative to raising is to invent a
+    placeholder identity — and every request carrying it then shares **one**
+    counter, so a single limit throttles the whole application.  That is a
+    self-inflicted outage that looks like a working limiter, which is why this
+    is an exception rather than a fallback string.
+
+    :func:`ip_identifier` raises it when ``request.client`` is absent from the
+    ASGI scope.  Custom identifiers should raise it for the same reason — an
+    unauthenticated request to a per-user limiter, say — rather than returning
+    ``"anonymous"``, unless sharing one bucket is genuinely what you want.
+
+    The limiter treats it exactly like a Redis outage: the check is reported as
+    ``degraded``, and ``fail_closed`` decides the outcome.  Fail-open (the
+    default) lets the request through uncounted; fail-closed rejects it with a
+    429.  Either way the request is **not** counted against a shared bucket, and
+    the ``ratelimit.requests`` metric records ``result="error"`` so the condition
+    is visible instead of silent.
     """
-    trusted = (
-        get_settings().rate_limit_trust_proxy if trust_proxy is None else trust_proxy
-    )
-    if trusted:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    if request.client is not None:
-        return request.client.host
-    return "unknown"
 
 
 def ip_identifier(request: Request) -> str:
-    """Default identifier: the client IP.
+    """Default identifier: the client IP from the ASGI scope.
 
     Returns the per-client identity **only**.  The counter is separated per
     route by the *scope* segment (which :func:`rate_limit` defaults to the
     matched route template), so identifiers stay path-agnostic.  Matches the
     :data:`Identifier` signature.
+
+    Reads ``request.client`` and **never** parses ``X-Forwarded-For``.  That
+    header is client-supplied, and the proxies that set it (nginx, ALB, GCP LB)
+    *append* to it rather than overwrite, so its left-most hop is
+    attacker-controlled even in a correctly configured deployment — keying a
+    limit on it would let any caller pick its own counter, or exhaust a
+    victim's.  Proxy trust belongs to the ASGI server, which is the only layer
+    that knows the deployment topology: configure it there (Uvicorn's
+    ``--proxy-headers`` with ``--forwarded-allow-ips``) and ``request.client``
+    reflects the real client for free, because Starlette reads it from the
+    scope the server rewrote.  For servers without that feature, supply your
+    own ``identifier=`` — see ``docs/guide/rate-limiting.md`` § Behind a proxy.
+
+    Raises:
+        CannotIdentifyClient: If ``request.client`` is absent from the ASGI
+            scope.  Populating it is optional in the ASGI spec, and some
+            serverless adapters and test transports leave it ``None``; keying
+            every such request on a shared placeholder would collapse all of
+            them into one counter.
     """
-    return _client_ip(request)
+    if request.client is None:
+        raise CannotIdentifyClient(
+            "The ASGI scope carries no client address, so callers cannot be "
+            "told apart by IP. Pass a different identifier= to rate_limit(), "
+            "or run behind a server that populates scope['client']."
+        )
+    return request.client.host
 
 
 def _route_scope(request: Request) -> str:
@@ -262,6 +294,10 @@ async def _apply_limit(
     identity, run ``backend.hit`` inside a timed span, stash the result on
     ``request.state`` for header injection, and record the metric.
 
+    An identifier that raises :class:`CannotIdentifyClient` short-circuits the
+    counter entirely and yields a ``degraded`` result governed by *fail_closed*,
+    the same treatment an unreachable Redis gets.
+
     Returns the 429 :class:`~starlette.responses.Response` when the request is
     over the limit, or ``None`` when it is allowed or bypassed.  Callers decide
     what to do with a returned response — the dependency raises it as
@@ -277,22 +313,44 @@ async def _apply_limit(
             return None
 
     # The identity is per-client only; route separation lives in the scope.
-    identity = await _resolve_identifier(identifier, request)
-    with ratelimit_span(
-        span_name,
-        attributes={"ratelimit.scope": scope, "ratelimit.limit": rate.limit},
-    ) as span:
-        with timed_rate_limit(scope):
-            result = await backend.hit(
-                identity,
-                limit=rate.limit,
-                window=rate.window,
-                scope=scope,
-                cost=cost,
-                fail_closed=fail_closed,
-            )
-        if span is not None and result.backend:
-            span.set_attribute("ratelimit.backend", result.backend)
+    try:
+        identity = await _resolve_identifier(identifier, request)
+    except CannotIdentifyClient as exc:
+        # No identity means there is no counter to consult, so this takes the
+        # same fail-open/fail-closed path as a Redis outage.  The alternative -
+        # counting every unidentifiable caller under one placeholder identity -
+        # would let a single limit throttle all of them together.
+        closed = (
+            get_settings().rate_limit_fail_closed
+            if fail_closed is None
+            else fail_closed
+        )
+        logger.warning(
+            "Rate-limit identifier could not identify the caller for scope %r "
+            "(fail_%s): %s",
+            scope,
+            "closed" if closed else "open",
+            exc,
+        )
+        result = RateLimitBackend.degraded_result(
+            rate.limit, rate.window, allowed=not closed
+        )
+    else:
+        with ratelimit_span(
+            span_name,
+            attributes={"ratelimit.scope": scope, "ratelimit.limit": rate.limit},
+        ) as span:
+            with timed_rate_limit(scope):
+                result = await backend.hit(
+                    identity,
+                    limit=rate.limit,
+                    window=rate.window,
+                    scope=scope,
+                    cost=cost,
+                    fail_closed=fail_closed,
+                )
+            if span is not None and result.backend:
+                span.set_attribute("ratelimit.backend", result.backend)
 
     _store_state(
         request, _RateLimitState(result, rate.window, emit_headers, ietf_headers)

@@ -12,10 +12,11 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from redis_fastapi.deps import get_rate_limit_backend
 from redis_fastapi.ratelimit import (
+    CannotIdentifyClient,
     RateLimitResult,
-    _client_ip,
     _metric_result,
     ip_identifier,
+    rate_limit,
 )
 from redis_fastapi.ratelimit_backend import RateLimitBackend
 from redis_fastapi.setup import FastAPIRedis
@@ -51,8 +52,9 @@ def fake(
 
 
 def _request(
-    headers: dict[str, str] | None = None, client_host: str = "1.1.1.1"
+    headers: dict[str, str] | None = None, client_host: str | None = "1.1.1.1"
 ) -> Request:
+    """Build a bare ASGI request; ``client_host=None`` omits ``scope["client"]``."""
     scope = {
         "type": "http",
         "method": "GET",
@@ -60,21 +62,40 @@ def _request(
         "headers": [
             (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
         ],
-        "client": (client_host, 12345),
+        "client": None if client_host is None else (client_host, 12345),
         "query_string": b"",
     }
     return Request(scope)
 
 
+def _no_identity(request: Request) -> str:
+    """Identifier standing in for a scope with no client address."""
+    raise CannotIdentifyClient("no client address in the ASGI scope")
+
+
 @pytest.mark.unit
 class TestIdentifiers:
-    def test_client_ip_ignores_xff_by_default(self) -> None:
-        req = _request({"X-Forwarded-For": "9.9.9.9"})
-        assert _client_ip(req, trust_proxy=False) == "1.1.1.1"
-
-    def test_client_ip_honours_xff_when_trusted(self) -> None:
+    def test_ip_identifier_never_reads_x_forwarded_for(self) -> None:
+        # XFF is never consulted, with or without configuration.  Proxies
+        # *append* to the header, so its left-most hop is whatever the caller
+        # sent; keying on it would let a client pick its own counter (bypass) or
+        # a victim's (targeted exhaustion).  Proxy trust belongs to the ASGI
+        # server — see docs/guide/rate-limiting.md § Behind a proxy.
         req = _request({"X-Forwarded-For": "9.9.9.9, 10.0.0.1"})
-        assert _client_ip(req, trust_proxy=True) == "9.9.9.9"
+        assert ip_identifier(req) == "1.1.1.1"
+
+    def test_ip_identifier_gives_one_bucket_across_forged_xff(self) -> None:
+        # The same peer cannot rotate identities by varying the header.
+        assert ip_identifier(_request({"X-Forwarded-For": "9.9.9.9"})) == ip_identifier(
+            _request({"X-Forwarded-For": "8.8.8.8"})
+        )
+
+    def test_ip_identifier_follows_scope_client(self) -> None:
+        # Uvicorn's ProxyHeadersMiddleware rewrites scope["client"] once for the
+        # whole app, and Starlette reads request.client straight from the scope.
+        # So the real client IP flows through here with no parsing of our own —
+        # this is what replaces the removed REDIS_RATE_LIMIT_TRUST_PROXY flag.
+        assert ip_identifier(_request(client_host="203.0.113.7")) == "203.0.113.7"
 
     def test_ip_identifier_is_client_ip_only(self) -> None:
         # Route separation lives in the scope (default: the route template), not
@@ -90,6 +111,112 @@ class TestIdentifiers:
         req = _request({"X-API-Key": "abc123"})
         assert api_key_identifier(req) == "abc123"
         assert api_key_identifier(_request()) == "anonymous"
+
+
+@pytest.mark.unit
+class TestUnidentifiableClient:
+    """A caller the identifier cannot name is degraded, never bucketed together.
+
+    ``scope["client"]`` is optional in the ASGI spec; serverless adapters and some
+    test transports leave it ``None``.  Keying those requests on a shared
+    placeholder would collapse every one of them into a single counter, so one
+    limit would throttle the whole app.  Instead the check is reported as
+    ``degraded`` and ``fail_closed`` decides the outcome.
+    """
+
+    def test_ip_identifier_raises_without_a_client(self) -> None:
+        with pytest.raises(CannotIdentifyClient):
+            ip_identifier(_request(client_host=None))
+
+    def test_fails_open_uncounted_by_default(
+        self, fake: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """Fail-open: allowed through, and not counted against any bucket."""
+        app = _build_app(fake)
+
+        @app.get(
+            "/u",
+            dependencies=[Depends(rate_limit("1/minute", identifier=_no_identity))],
+        )
+        async def u() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        with TestClient(app) as client:
+            # A limit of 1 would reject the second request had these shared a
+            # placeholder bucket; both pass because neither was counted at all.
+            assert client.get("/u").status_code == 200
+            assert client.get("/u").status_code == 200
+
+    def test_fails_closed_when_configured(
+        self, fake: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        app = _build_app(fake)
+
+        @app.get(
+            "/u",
+            dependencies=[
+                Depends(
+                    rate_limit("1/minute", identifier=_no_identity, fail_closed=True)
+                )
+            ],
+        )
+        async def u() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        with TestClient(app) as client:
+            assert client.get("/u").status_code == 429
+
+    def test_recorded_as_an_error_not_an_allow(
+        self, fake: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """The condition is visible in metrics rather than silently passing."""
+        app = _build_app(fake)
+
+        @app.get(
+            "/u",
+            dependencies=[Depends(rate_limit("1/minute", identifier=_no_identity))],
+        )
+        async def u() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        with (
+            patch("redis_fastapi.ratelimit.record_rate_limit_request") as spy,
+            TestClient(app) as client,
+        ):
+            assert client.get("/u").status_code == 200
+
+        recorded = [call.kwargs.get("result") for call in spy.call_args_list]
+        assert "error" in recorded
+        assert "allowed" not in recorded
+
+    def test_custom_identifier_may_raise_it(
+        self, fake: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """The escape hatch is public: a per-user limiter can refuse anonymous
+        callers instead of pooling them under one ``"anonymous"`` identity."""
+
+        def user_identifier(request: Request) -> str:
+            user = request.headers.get("X-User")
+            if not user:
+                raise CannotIdentifyClient("no authenticated user on the request")
+            return f"user:{user}"
+
+        app = _build_app(fake)
+
+        @app.get(
+            "/me",
+            dependencies=[Depends(rate_limit("1/minute", identifier=user_identifier))],
+        )
+        async def me() -> dict[str, str]:
+            return {"ok": "yes"}
+
+        with TestClient(app) as client:
+            # Identified callers are counted normally...
+            assert client.get("/me", headers={"X-User": "a"}).status_code == 200
+            assert client.get("/me", headers={"X-User": "a"}).status_code == 429
+            # ...while an unidentified one is degraded, not merged into a bucket.
+            assert client.get("/me").status_code == 200
+            assert client.get("/me").status_code == 200
 
 
 # ---------------------------------------------------------------------------
