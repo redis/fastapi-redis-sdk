@@ -748,7 +748,19 @@ class CacheResponseCaptureMiddleware:
                 response_headers = list(message.get("headers", []))
                 return
 
+            # Any other message type (pathsend, zerocopysend, trailers, debug, …):
+            # we can't buffer/cache it, so flush the buffered start and pass it through.
             if message["type"] != "http.response.body":
+                if not passthrough:
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": response_status,
+                            "headers": response_headers,
+                        }
+                    )
+                    passthrough = True
+                await send(message)
                 return
 
             # 2. No pending cache op — forward body as-is
