@@ -132,11 +132,13 @@ class RateLimitResult:
         backend: Which execution path served the check — ``"increx"`` or
             ``"lua"``.  Empty for non-consuming reads
             (:meth:`RateLimitBackend.peek`) and the Redis-unreachable path.
-        degraded: ``True`` when Redis was unreachable and this result is a
-            fail-open/fail-closed fallback rather than a real counter check.
-            Lets callers distinguish a genuine ``allowed``/``limited`` outcome
-            from one produced during an outage (e.g. to record an ``error``
-            metric or add a header).
+        degraded: ``True`` when no counter could be consulted and this result is
+            a fail-open/fail-closed fallback rather than a real check — Redis was
+            unreachable, or the caller could not be identified
+            (:class:`~redis_fastapi.ratelimit.CannotIdentifyClient`).  Lets
+            callers distinguish a genuine ``allowed``/``limited`` outcome from
+            one produced during an outage (e.g. to record an ``error`` metric or
+            add a header).
     """
 
     allowed: bool
@@ -248,7 +250,7 @@ class RateLimitBackend:
                 "closed" if closed else "open",
                 exc_info=True,
             )
-            return self._degraded_result(limit, window, allowed=not closed)
+            return self.degraded_result(limit, window, allowed=not closed)
 
         allowed = actual_incr != 0
         # PTTL is -1 (no expiry) or -2 (missing) in edge cases; treat as a
@@ -350,8 +352,16 @@ class RateLimitBackend:
         return int(result[0]), int(result[1]), int(result[2])
 
     @staticmethod
-    def _degraded_result(limit: int, window: int, *, allowed: bool) -> RateLimitResult:
-        """Build a result for the Redis-unreachable path."""
+    def degraded_result(limit: int, window: int, *, allowed: bool) -> RateLimitResult:
+        """Build a fallback result for a check that could not be counted.
+
+        Used when the limiter cannot consult a real counter: Redis was
+        unreachable, or the caller could not be identified at all (see
+        :class:`~redis_fastapi.ratelimit.CannotIdentifyClient`).  *allowed*
+        carries the fail-open / fail-closed decision, and ``degraded=True``
+        keeps the outcome distinguishable from a genuine check so callers can
+        record an ``error`` metric rather than a normal allow/limit.
+        """
         return RateLimitResult(
             allowed=allowed,
             limit=limit,
@@ -392,7 +402,7 @@ class RateLimitBackend:
             pttl_ms = int(await self._redis.pttl(full_key))
         except (RedisError, OSError):
             logger.warning("Error reading rate-limit key '%s'", full_key, exc_info=True)
-            return self._degraded_result(limit, window, allowed=not self._fail_closed)
+            return self.degraded_result(limit, window, allowed=not self._fail_closed)
         current = int(raw) if raw is not None else 0
         reset_after = math.ceil(pttl_ms / 1000) if pttl_ms > 0 else window
         return RateLimitResult(

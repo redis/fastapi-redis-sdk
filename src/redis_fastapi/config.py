@@ -165,14 +165,6 @@ class RedisSettings(BaseSettings):
         default=False,
         description=("Emit IETF draft RateLimit / RateLimit-Policy response headers."),
     )
-    rate_limit_trust_proxy: bool = Field(
-        default=False,
-        description=(
-            "Trust the X-Forwarded-For header when deriving the client IP "
-            "(enable only behind a trusted proxy/load balancer)."
-        ),
-    )
-
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(
         default=False,

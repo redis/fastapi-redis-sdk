@@ -27,6 +27,7 @@ from redis_fastapi.deps import (
 from redis_fastapi.lifespan import redis_lifespan
 from redis_fastapi.rate import Rate, parse_rate
 from redis_fastapi.ratelimit import (
+    CannotIdentifyClient,
     Identifier,
     RateLimitExceeded,
     RateLimitMiddleware,
@@ -53,6 +54,7 @@ __all__ = [
     "CacheBackend",
     "CacheBackendDep",
     "CacheHitException",
+    "CannotIdentifyClient",
     "Coder",
     "Identifier",
     "JsonCoder",

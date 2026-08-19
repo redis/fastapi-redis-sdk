@@ -166,7 +166,7 @@ share a counter*, the other *which clients share a counter*:
 |--------------|--------------------|--------------------------------------------------------------------|-----------------------------------|
 | `prefix`     | which app          | `REDIS_PREFIX` (app-wide)                                          | `redis:fastapi:ratelimit`         |
 | `scope`      | which **routes**   | `scope=` on `rate_limit()`                                         | the matched route template        |
-| `identifier` | which **clients**  | `identifier=` (and `REDIS_RATE_LIMIT_TRUST_PROXY` for the default) | client IP via `ip_identifier`     |
+| `identifier` | which **clients**  | `identifier=`                                                      | client IP via `ip_identifier`     |
 
 Two requests hit the **same** counter only when all three match.  Examples for
 client `1.2.3.4` on route `/items/{id}` (the resulting counter key is shown as a
@@ -224,6 +224,11 @@ def header_identifier(header: str) -> Identifier:
 tenant_id = header_identifier("X-Tenant-ID")   # an Identifier
 ```
 
+If your identifier cannot name the caller at all, raise
+[`CannotIdentifyClient`](#callers-that-cannot-be-identified) rather than
+returning a placeholder - a placeholder makes every such request share one
+counter.
+
 !!! note "Partition the counter, don't vary the limit"
     A custom identifier only *partitions* the counter - every client it
     distinguishes still gets the **same** limit, counted separately.  Selecting a
@@ -232,13 +237,89 @@ tenant_id = header_identifier("X-Tenant-ID")   # an Identifier
 
 ### Behind a proxy
 
-By default the client IP is `request.client.host`.  When the app runs behind a
-trusted proxy or load balancer, enable `REDIS_RATE_LIMIT_TRUST_PROXY=true` so the
-first hop of `X-Forwarded-For` is used instead.
+`ip_identifier` returns `request.client.host` - the immediate peer from the ASGI
+scope - and **never** reads `X-Forwarded-For`.  Behind a proxy that is the
+load balancer's address, so every client would share one counter unless the
+proxy's real client IP reaches the scope.  Configure that at the **ASGI server**,
+not here.
 
-!!! warning
-    Only trust `X-Forwarded-For` when a proxy you control sets it - clients can
-    otherwise spoof the header to evade limits.
+!!! warning "Why the SDK does not parse `X-Forwarded-For`"
+    `X-Forwarded-For` is set by the client and *appended to* by each hop -
+    nginx's `$proxy_add_x_forwarded_for`, AWS ALB and GCP LB all append rather
+    than overwrite.  So the header's **left-most** entry is whatever the caller
+    typed, even behind a correctly configured proxy.  Keying a limit on it lets
+    any client rotate identities to evade its own limit, or forge a victim's
+    address to exhaust theirs.  Only the ASGI server knows how many hops to
+    trust, so that is where the decision belongs.
+
+#### Uvicorn (and Gunicorn with Uvicorn workers)
+
+Uvicorn's `ProxyHeadersMiddleware` does this correctly: it rewrites
+`scope["client"]` **once** for the whole app, but only when the immediate peer is
+in the trusted list, and it walks `X-Forwarded-For` **right-to-left** to find the
+first hop the list does not cover.  Because Starlette reads `request.client`
+straight from the scope, `ip_identifier` picks up the corrected address with no
+configuration on the SDK side:
+
+```bash
+# Trust one proxy on the same host (the default), then read request.client:
+uvicorn app:main --proxy-headers --forwarded-allow-ips="127.0.0.1"
+
+# Behind a load balancer on the pod network:
+uvicorn app:main --proxy-headers --forwarded-allow-ips="10.0.0.0/8"
+```
+
+The equivalent for Gunicorn with Uvicorn workers is `--forwarded-allow-ips`.
+
+!!! danger "`--forwarded-allow-ips="*"` disables the peer check"
+    A wildcard trusts `X-Forwarded-For` from **any** peer, which restores exactly
+    the spoofing hole described above.  Set the narrowest CIDR that covers your
+    proxies.  If you cannot enumerate them - some managed platforms rotate
+    egress addresses - prefer an identifier keyed on something authenticated (a
+    session, an API key) over an IP you cannot verify.
+
+#### Servers without proxy-header support
+
+Hypercorn, Daphne, Granian, and serverless adapters such as Mangum either handle
+this differently or not at all.  Supply your own `identifier=` and apply the same
+two rules Uvicorn does - **gate on the peer, then walk right-to-left**:
+
+```python
+from ipaddress import ip_address, ip_network
+
+TRUSTED_PROXIES = [ip_network("10.0.0.0/8")]
+
+def _trusted(host: str) -> bool:
+    try:
+        return any(ip_address(host) in net for net in TRUSTED_PROXIES)
+    except ValueError:      # not an IP address at all
+        return False
+
+def proxied_ip_identifier(request) -> str:
+    peer = request.client.host if request.client is not None else ""
+    # 1. Gate: only look at the header when the peer is a proxy we trust.
+    if not _trusted(peer):
+        return peer
+    # 2. Select: right-to-left, the first hop that is not one of our proxies.
+    hops = [h.strip() for h in request.headers.get("X-Forwarded-For", "").split(",")]
+    for hop in reversed(hops):
+        if hop and not _trusted(hop):
+            return hop
+    return peer
+
+@app.get("/items", dependencies=[Depends(rate_limit("100/minute", identifier=proxied_ip_identifier))])
+async def items(): ...
+```
+
+Without the **gate**, a client that reaches the app directly supplies the whole chain.  
+Without **right-to-left**, the left-most entry is caller-controlled even when the gate passes.
+
+!!! tip "CDN headers"
+    Cloudflare's `CF-Connecting-IP`, Fastly's `Fastly-Client-IP`, and similar
+    single-value headers are simpler to consume - one hop, set by the edge - but
+    still need the peer gate, or a client hitting your origin directly can forge
+    them.  Keep them in your own identifier rather than expecting one from the
+    SDK: which header is authoritative is a property of your edge, not of Redis.
 
 ---
 
@@ -568,6 +649,44 @@ Either way the outage stays visible: the check's `RateLimitResult.degraded` is
 rather than as a normal `allowed` / `limited` outcome - so a fail-open spike does
 not silently masquerade as healthy traffic.
 
+### Callers that cannot be identified
+
+A limiter needs to tell callers apart before it can count them.  When the
+identifier cannot, it raises `CannotIdentifyClient` and the check takes the
+**same** fail-open / fail-closed path as a Redis outage: `degraded=True`, an
+`error` metric, allowed-but-uncounted by default, or a 429 under
+`fail_closed=True`.
+
+`ip_identifier` raises it when the ASGI scope carries no client address.
+`scope["client"]` is optional in the ASGI spec, and some serverless adapters
+(Mangum and similar) and test transports leave it unset.
+
+!!! note "Why not fall back to a placeholder identity"
+    Returning something like `"unknown"` would be worse than failing: every
+    request that hit the fallback would share **one** counter, so a `100/minute`
+    limit would cap the *entire application* at 100 requests a minute.  That
+    needs no attacker and no misconfiguration - just a platform that omits
+    `scope["client"]` - and it looks exactly like a working limiter from the
+    outside.  Degrading the check keeps the failure loud and bounded to the
+    requests it affects.
+
+The exception is public, so your own identifiers can use it for the same reason -
+prefer it over pooling every unauthenticated caller into one bucket:
+
+```python
+from redis_fastapi import CannotIdentifyClient
+
+def user_identifier(request) -> str:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise CannotIdentifyClient("no authenticated user on the request")
+    return f"user:{user.id}"
+```
+
+If pooling *is* what you want - one shared budget for all anonymous traffic -
+return a constant instead, and size the limit for the whole population rather
+than for one client.
+
 ---
 
 ## 8. Configuration
@@ -581,13 +700,15 @@ mechanism as the caching options - see [Configuration](configuration.md)):
 | `rate_limit_default_window`        | `REDIS_RATE_LIMIT_DEFAULT_WINDOW`  | `60`    | Global window, in seconds.                           |
 | `rate_limit_emit_headers`          | `REDIS_RATE_LIMIT_EMIT_HEADERS`    | `true`  | Emit the `X-RateLimit-*` trio.                       |
 | `rate_limit_ietf_headers`          | `REDIS_RATE_LIMIT_IETF_HEADERS`    | `false` | Also emit IETF `RateLimit` / `RateLimit-Policy`.     |
-| `rate_limit_trust_proxy`           | `REDIS_RATE_LIMIT_TRUST_PROXY`     | `false` | Honour `X-Forwarded-For` for the client IP.          |
 | `rate_limit_fail_closed`           | `REDIS_RATE_LIMIT_FAIL_CLOSED`     | `false` | Reject (vs allow) when Redis is unreachable.         |
+
+There is deliberately **no** proxy-trust setting - see
+[Behind a proxy](#behind-a-proxy) for why that decision belongs to the ASGI
+server, and what to configure instead.
 
 ```bash
 export REDIS_URL=redis://localhost:6379
 export REDIS_RATE_LIMIT_DEFAULT_LIMIT=1000   # >0 enables the global limiter
-export REDIS_RATE_LIMIT_TRUST_PROXY=true
 export REDIS_RATE_LIMIT_IETF_HEADERS=true
 ```
 
@@ -654,8 +775,9 @@ exactly the limit (proving atomicity).
 2. **Start with `rate_limit("N/unit")`** on the routes that need protection.
 3. **Pick the identifier deliberately** - `ip_identifier` for anonymous traffic,
    or a small custom callable keyed by user / API key for authenticated traffic.
-4. **Enable `trust_proxy` only behind a proxy you control**, never on a directly
-   exposed app.
+4. **Configure proxy headers at the ASGI server**, not in the limiter - Uvicorn
+   `--proxy-headers` with a narrow `--forwarded-allow-ips`.  Never key a limit on
+   raw `X-Forwarded-For`; see [Behind a proxy](#behind-a-proxy).
 5. **Keep fail-open** unless rejecting traffic during a Redis outage is genuinely
    safer for your API than allowing it.
 6. **Use an explicit `scope`** when a group of routes should draw from one
