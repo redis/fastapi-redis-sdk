@@ -14,7 +14,7 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v10
+      - uses: actions/stale@v11
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: true
@@ -44,7 +44,7 @@ jobs:
   stale-needs-info:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v10
+      - uses: actions/stale@v11
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: true
