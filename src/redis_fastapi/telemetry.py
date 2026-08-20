@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -27,6 +28,28 @@ logger = logging.getLogger(__name__)
 
 TRACER_NAME = "fastapi-redis-sdk"
 METER_NAME = "fastapi-redis-sdk"
+
+# Contexts already logged at WARNING level (log-once pattern).  The first
+# failure to record a metric is surfaced as a warning so operators notice
+# it; repeated failures fall back to DEBUG to avoid log spam.
+_logged_once_contexts: set[str] = set()
+_logged_once_lock = threading.Lock()
+
+
+def _warn_once(context: str) -> None:
+    """Log ``context`` at WARNING the first time, then at DEBUG."""
+    with _logged_once_lock:
+        first = context not in _logged_once_contexts
+        if first:
+            _logged_once_contexts.add(context)
+    log = logger.warning if first else logger.debug
+    log("Error recording %s metric", context, exc_info=True)
+
+
+def _reset_log_once() -> None:
+    """Clear the log-once bookkeeping.  Intended for tests."""
+    with _logged_once_lock:
+        _logged_once_contexts.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +208,7 @@ def record_cache_request(
             1, {"result": result, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.warning("Error recording cache request metric", exc_info=True)
+        _warn_once("cache request")
 
 
 def record_cache_eviction(
@@ -201,7 +224,7 @@ def record_cache_eviction(
             1, {"type": evict_type, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.warning("Error recording cache eviction metric", exc_info=True)
+        _warn_once("cache eviction")
 
 
 def record_cache_write(
@@ -217,7 +240,7 @@ def record_cache_write(
             1, {"type": write_type, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.warning("Error recording cache write metric", exc_info=True)
+        _warn_once("cache write")
 
 
 def record_cache_latency(
@@ -234,7 +257,7 @@ def record_cache_latency(
             duration, {"operation": operation, "eviction_group": eviction_group}
         )
     except Exception:
-        logger.warning("Error recording cache latency metric", exc_info=True)
+        _warn_once("cache latency")
 
 
 @contextlib.contextmanager
@@ -275,7 +298,7 @@ def record_rate_limit_request(*, result: str, scope: str = "") -> None:
     try:
         _state.ratelimit_requests.add(1, {"result": result, "scope": scope})
     except Exception:
-        logger.debug("Error recording rate-limit request metric", exc_info=True)
+        _warn_once("rate-limit request")
 
 
 def record_rate_limit_latency(*, duration: float, scope: str = "") -> None:
@@ -285,7 +308,7 @@ def record_rate_limit_latency(*, duration: float, scope: str = "") -> None:
     try:
         _state.ratelimit_latency.record(duration, {"scope": scope})
     except Exception:
-        logger.debug("Error recording rate-limit latency metric", exc_info=True)
+        _warn_once("rate-limit latency")
 
 
 @contextlib.contextmanager
