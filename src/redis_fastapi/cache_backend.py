@@ -48,6 +48,44 @@ return total
 """
 
 
+# Cached per-client decision on whether the server has no eviction
+# protection (``maxmemory`` 0 or ``noeviction`` policy).  Probed at most
+# once per connection so a single ``INFO`` round trip guards every
+# subsequent no-TTL write.
+_MEMORY_PROBE_CACHE: dict[int, bool] = {}
+
+
+async def warn_no_expiry_if_server_unbounded(redis: Any, key: str) -> None:
+    """Warn when caching *key* without a TTL on a server with no eviction protection.
+
+    No-expiry caching is the library's default, so this is intentionally
+    quiet unless the server would let entries grow unbounded
+    (``maxmemory`` 0 / ``noeviction``).  The probe result is cached per
+    client; probe failures are treated as "protected" (no warning) so a
+    transient error never turns into log spam.
+    """
+    cache_key = id(redis)
+    if cache_key in _MEMORY_PROBE_CACHE:
+        unbounded = _MEMORY_PROBE_CACHE[cache_key]
+    else:
+        try:
+            info = await redis.info("memory")
+        except (RedisError, OSError):
+            return
+        maxmemory = info.get("maxmemory")
+        policy = info.get("maxmemory_policy")
+        if maxmemory is None:
+            return
+        unbounded = maxmemory == 0 or policy == "noeviction"
+        _MEMORY_PROBE_CACHE[cache_key] = unbounded
+    if unbounded:
+        logger.warning(
+            "Caching key '%s' without TTL — the server has maxmemory 0 / "
+            "noeviction, so the entry will persist until explicitly evicted",
+            key,
+        )
+
+
 class CacheBackend:
     """High-level cache operations backed by Redis.
 
@@ -182,17 +220,29 @@ class CacheBackend:
         Args:
             key: The cache key to store under.
             value: The value to serialize and cache.
-            ttl: Time-to-live as seconds (``int``) or a
+            ttl: Time-to-live in seconds (``int``) or a
                 :class:`~datetime.timedelta`.  ``None`` or a value of ``0``
                 or below means the key will not be automatically expired.
+                Positive sub-second ``timedelta`` values are rounded up to
+                1 second.  Negative values are treated as no expiry and
+                logged as a warning.
             eviction_group: Override the instance-level eviction group for this call.
         """
         grp = eviction_group if eviction_group is not None else self._eviction_group
         full_key = self._build_key(key, eviction_group)
-        ttl_seconds = int(ttl.total_seconds()) if isinstance(ttl, timedelta) else ttl
-        ttl_milliseconds: int | None = (
-            int(ttl / timedelta(milliseconds=1)) if isinstance(ttl, timedelta) else None
-        )
+        ttl_seconds: int | None
+        if isinstance(ttl, timedelta):
+            total_seconds = ttl.total_seconds()
+            ttl_seconds = 1 if 0 < total_seconds < 1 else int(total_seconds)
+        else:
+            ttl_seconds = ttl
+        if ttl_seconds is not None and ttl_seconds < 0:
+            logger.warning(
+                "Negative TTL (%s) for key '%s' - entry will not be "
+                "automatically expired",
+                ttl_seconds,
+                full_key,
+            )
         with cache_span(
             "cache.backend.set",
             attributes={
@@ -204,16 +254,13 @@ class CacheBackend:
             with timed_operation("set", eviction_group=grp):
                 try:
                     encoded = self._coder.encode(value)
-                    if ttl_milliseconds is not None:
-                        await self._redis.set(full_key, encoded, px=ttl_milliseconds)
-                    elif ttl_seconds is not None and ttl_seconds > 0:
+                    if ttl_seconds is not None and ttl_seconds > 0:
                         await self._redis.set(full_key, encoded, ex=ttl_seconds)
                     else:
-                        logger.warning(
-                            "Caching key '%s' without TTL — entry will persist "
-                            "until explicitly evicted or evicted by Redis policy",
-                            full_key,
-                        )
+                        if ttl is None:
+                            await warn_no_expiry_if_server_unbounded(
+                                self._redis, full_key
+                            )
                         await self._redis.set(full_key, encoded)
                     record_cache_write(write_type="miss_fill", eviction_group=grp)
                 except (RedisError, OSError):
