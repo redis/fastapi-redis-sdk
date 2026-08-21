@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from importlib import import_module
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -138,7 +139,55 @@ class TestSpanAttributeInconsistencyOnCorruptData:
 
 
 class TestTelemetryExceptionLogLevel:
-    def test_failure_logs_warning_once_then_debug(self) -> None:
+    @pytest.mark.parametrize(
+        ("helper", "instrument", "call_kwargs"),
+        [
+            (
+                telemetry.record_cache_request,
+                "cache_requests",
+                {"result": "hit"},
+            ),
+            (
+                telemetry.record_cache_eviction,
+                "cache_evictions",
+                {"evict_type": "key"},
+            ),
+            (
+                telemetry.record_cache_write,
+                "cache_writes",
+                {"write_type": "miss_fill"},
+            ),
+            (
+                telemetry.record_cache_latency,
+                "cache_latency",
+                {"duration": 0.1, "operation": "get"},
+            ),
+            (
+                telemetry.record_rate_limit_request,
+                "ratelimit_requests",
+                {"result": "allowed"},
+            ),
+            (
+                telemetry.record_rate_limit_latency,
+                "ratelimit_latency",
+                {"duration": 0.05},
+            ),
+        ],
+        ids=[
+            "cache_request",
+            "cache_eviction",
+            "cache_write",
+            "cache_latency",
+            "rate_limit_request",
+            "rate_limit_latency",
+        ],
+    )
+    def test_failure_logs_warning_once_then_debug(
+        self,
+        helper: Callable[..., None],
+        instrument: str,
+        call_kwargs: dict[str, object],
+    ) -> None:
         logger = logging.getLogger("redis_fastapi.telemetry")
         telemetry.disable_telemetry()
         telemetry.enable_telemetry()
@@ -149,39 +198,22 @@ class TestTelemetryExceptionLogLevel:
         def _boom(*args: object, **kwargs: object) -> None:
             raise RuntimeError("metric recording failed")
 
-        telemetry._state.cache_requests.add = _boom  # type: ignore[attr-defined]
+        failing_instrument = MagicMock()
+        failing_instrument.add.side_effect = _boom
+        failing_instrument.record.side_effect = _boom
+        setattr(telemetry._state, instrument, failing_instrument)
 
         try:
             with patch.object(logger, "warning") as mock_warning:
                 with patch.object(logger, "debug") as mock_debug:
-                    telemetry.record_cache_request(result="hit")
-                    telemetry.record_cache_request(result="hit")
+                    helper(**call_kwargs)
+                    helper(**call_kwargs)
 
-            assert mock_warning.call_count == 1
-            assert mock_debug.call_count == 1
-        finally:
-            telemetry.disable_telemetry()
-
-    def test_rate_limit_failure_logs_warning_once_then_debug(self) -> None:
-        logger = logging.getLogger("redis_fastapi.telemetry")
-        telemetry.disable_telemetry()
-        telemetry.enable_telemetry()
-        telemetry._reset_log_once()
-        if not telemetry.is_enabled():
-            pytest.skip("opentelemetry not installed")
-
-        def _boom(*args: object, **kwargs: object) -> None:
-            raise RuntimeError("metric recording failed")
-
-        telemetry._state.ratelimit_requests.add = _boom  # type: ignore[attr-defined]
-
-        try:
-            with patch.object(logger, "warning") as mock_warning:
-                with patch.object(logger, "debug") as mock_debug:
-                    telemetry.record_rate_limit_request(result="allowed")
-                    telemetry.record_rate_limit_request(result="allowed")
-
-            assert mock_warning.call_count == 1
-            assert mock_debug.call_count == 1
+            assert mock_warning.call_count == 1, (
+                f"FIXED: first {helper.__name__} failure must surface as WARNING"
+            )
+            assert mock_debug.call_count == 1, (
+                f"FIXED: repeated {helper.__name__} failures must fall back to DEBUG"
+            )
         finally:
             telemetry.disable_telemetry()
