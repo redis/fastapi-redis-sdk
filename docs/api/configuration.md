@@ -34,6 +34,7 @@ Automatically reads from:
 | `cluster` | `bool` | `False` | - | OSS Cluster mode |
 | `prefix` | `str` | `"redis:fastapi"` | - | Key prefix |
 | `default_ttl` | `int` | `0` | >= 0 | Default cache TTL (0 = no expiry) |
+| `warn_unbounded_cache` | `bool` | `True` | - | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `otel_enabled` | `bool` | `False` | - | Enable OTel cache spans/metrics |
 | `otel_redis_enabled` | `bool` | `False` | - | Enable redis-py native OTel |
 
