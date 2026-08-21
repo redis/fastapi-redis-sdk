@@ -134,6 +134,14 @@ class RedisSettings(BaseSettings):
             "Set a positive value to enable automatic expiry."
         ),
     )
+    warn_unbounded_cache: bool = Field(
+        default=True,
+        description=(
+            "Warn at startup when entries are cached without a TTL on a Redis "
+            "server that cannot evict them - maxmemory 0, or a noeviction / "
+            "volatile-* policy.  Set to false to silence the check."
+        ),
+    )
 
     # -- Rate limiting ---------------------------------------------------------
     rate_limit_default_limit: int = Field(
