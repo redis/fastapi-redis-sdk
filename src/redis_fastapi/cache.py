@@ -49,6 +49,17 @@ if TYPE_CHECKING:
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+# Set when a cache()/cache_put() dependency is built without an explicit TTL
+# and therefore falls back to ``settings.default_ttl``.  The lifespan
+# eviction-safety check reads this so it stays quiet for apps that set a TTL
+# on every route.
+_default_ttl_in_use = False
+
+
+def relies_on_default_ttl() -> bool:
+    """Return ``True`` if any cache dependency falls back to ``default_ttl``."""
+    return _default_ttl_in_use
+
 
 # ---------------------------------------------------------------------------
 # Key builder
@@ -356,6 +367,9 @@ def cache(
         An async generator dependency suitable for use with ``Depends()``.
     """
     _settings = get_settings()
+    if ttl is None:
+        global _default_ttl_in_use
+        _default_ttl_in_use = True
     _ttl: int = ttl if ttl is not None else _settings.default_ttl
     _prefix: str = (
         cache_prefix if cache_prefix is not None else _settings.pattern_prefix("cache")
@@ -573,6 +587,9 @@ def cache_put(
         An async generator dependency suitable for use with ``Depends()``.
     """
     _settings = get_settings()
+    if ttl is None:
+        global _default_ttl_in_use
+        _default_ttl_in_use = True
     _ttl: int = ttl if ttl is not None else _settings.default_ttl
     _prefix: str = prefix if prefix is not None else _settings.pattern_prefix("cache")
     _key_builder: KeyBuilder = key_builder or default_key_builder
@@ -824,5 +841,6 @@ def add_redis_caching(app: FastAPI) -> None:
     Args:
         app: The FastAPI application instance.
     """
+    app.state._redis_caching = True
     app.add_exception_handler(CacheHitException, cache_hit_exception_handler)
     app.add_middleware(CacheResponseCaptureMiddleware)

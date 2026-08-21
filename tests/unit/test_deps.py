@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import fakeredis
@@ -468,3 +470,141 @@ class TestCacheBackend:
         full_key = backend._build_key("k1")
         actual_ttl = await fake.ttl(full_key)
         assert 118 <= actual_ttl <= 120
+
+    @pytest.mark.asyncio
+    async def test_subsecond_timedelta_rounds_up_to_one_second(self) -> None:
+        """A sub-second TTL must not truncate to 0, which means "no expiry"."""
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+
+        await backend.set("k1", "val", ttl=timedelta(milliseconds=500))
+        assert await fake.ttl(backend._build_key("k1")) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_second_timedelta_is_exact(self) -> None:
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+
+        await backend.set("k1", "val", ttl=timedelta(seconds=1))
+        assert await fake.ttl(backend._build_key("k1")) == 1
+
+    # ---- omitted TTL falls back to settings.default_ttl (parity with cache()) ----
+
+    @pytest.mark.asyncio
+    async def test_omitted_ttl_uses_the_configured_default(self) -> None:
+        """set() without a ttl must resolve default_ttl, exactly as cache() does."""
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+        settings = RedisSettings(default_ttl=300)
+
+        with patch("redis_fastapi.cache_backend.get_settings", return_value=settings):
+            await backend.set("k1", "val")
+
+        assert 298 <= await fake.ttl(backend._build_key("k1")) <= 300
+
+    @pytest.mark.asyncio
+    async def test_explicit_zero_overrides_a_nonzero_default(self) -> None:
+        """ttl=0 means "never expire" whatever the default is."""
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+        settings = RedisSettings(default_ttl=300)
+
+        with patch("redis_fastapi.cache_backend.get_settings", return_value=settings):
+            await backend.set("k1", "val", ttl=0)
+
+        assert await fake.ttl(backend._build_key("k1")) == -1
+
+    @pytest.mark.asyncio
+    async def test_explicit_ttl_still_beats_the_default(self) -> None:
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+        settings = RedisSettings(default_ttl=300)
+
+        with patch("redis_fastapi.cache_backend.get_settings", return_value=settings):
+            await backend.set("k1", "val", ttl=60)
+
+        assert 58 <= await fake.ttl(backend._build_key("k1")) <= 60
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("default_ttl", [0, 120])
+    async def test_backend_and_decorator_resolve_the_same_default(
+        self, default_ttl: int
+    ) -> None:
+        """Both public APIs must store the same TTL when ttl is omitted."""
+        import importlib
+
+        from redis_fastapi.cache import CachePending, _store_cache_entry, cache
+        from redis_fastapi.cache_backend import CacheBackend
+
+        # See note in test_cache_eviction_safety.py: the dotted-string target
+        # "redis_fastapi.cache.get_settings" resolves to the factory function
+        # on py3.10, so patch the module object directly.
+        cache_mod = importlib.import_module("redis_fastapi.cache")
+
+        settings = RedisSettings(default_ttl=default_ttl)
+
+        # -- decorator path: cache() with no ttl, stored the way the
+        #    capture middleware stores it --
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        with patch.object(cache_mod, "get_settings", return_value=settings):
+            cache()  # resolves settings.default_ttl into the dependency
+            pending = CachePending(
+                key="decorator-key", ttl=settings.default_ttl, redis=fake
+            )
+        await _store_cache_entry(pending, b'{"v": 1}', {})
+        decorator_ttl = await fake.ttl("decorator-key")
+
+        # -- backend path: set() with no ttl --
+        backend = CacheBackend(fake, eviction_group="ns")
+        with patch("redis_fastapi.cache_backend.get_settings", return_value=settings):
+            await backend.set("k1", "val")
+        backend_ttl = await fake.ttl(backend._build_key("k1"))
+
+        assert backend_ttl == decorator_ttl, (
+            f"decorator stored ttl={decorator_ttl}, backend stored {backend_ttl}"
+        )
+        assert backend_ttl == (-1 if default_ttl == 0 else default_ttl)
+
+    # ---- non-positive TTL means no expiry ----
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl", [0, -5, None])
+    async def test_non_positive_ttl_stores_without_expiry(
+        self, ttl: int | None
+    ) -> None:
+        """Negative and zero TTLs must still store the value, never raise."""
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+
+        await backend.set("k1", "val", ttl=ttl)
+
+        assert await backend.get("k1") == "val"
+        assert await fake.ttl(backend._build_key("k1")) == -1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl", [-5, timedelta(seconds=-5)])
+    async def test_negative_ttl_logs_a_warning(
+        self, caplog: pytest.LogCaptureFixture, ttl: object
+    ) -> None:
+        from redis_fastapi.cache_backend import CacheBackend
+
+        fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        backend = CacheBackend(fake, eviction_group="ns")
+
+        with caplog.at_level(logging.WARNING, logger="redis_fastapi.cache_backend"):
+            caplog.clear()
+            await backend.set("k1", "val", ttl=ttl)  # type: ignore[arg-type]
+
+        assert any("Negative TTL" in r.getMessage() for r in caplog.records)

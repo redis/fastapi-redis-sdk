@@ -182,17 +182,35 @@ class CacheBackend:
         Args:
             key: The cache key to store under.
             value: The value to serialize and cache.
-            ttl: Time-to-live as seconds (``int``) or a
-                :class:`~datetime.timedelta`.  ``None`` or value below ``1``
-                means the key will not be automatically expired.
+            ttl: Time-to-live in seconds (``int``) or a
+                :class:`~datetime.timedelta`.  Omit it (or pass ``None``) to
+                fall back to ``settings.default_ttl``, exactly as
+                :func:`~redis_fastapi.cache.cache` does.  A value of ``0``
+                means the key is never automatically expired, whatever the
+                default is.  Positive sub-second ``timedelta`` values are
+                rounded up to 1 second.  Negative values are treated as no
+                expiry and logged as a warning.
             eviction_group: Override the instance-level eviction group for this call.
-
-        Raises:
-            ValueError: If *ttl* is negative.
         """
         grp = eviction_group if eviction_group is not None else self._eviction_group
         full_key = self._build_key(key, eviction_group)
-        ttl_seconds = int(ttl.total_seconds()) if isinstance(ttl, timedelta) else ttl
+        ttl_seconds: int | None
+        if ttl is None:
+            # Same fallback as cache(): an omitted TTL means "use the
+            # configured default".  Pass ttl=0 for no expiry regardless.
+            ttl_seconds = get_settings().default_ttl
+        elif isinstance(ttl, timedelta):
+            total_seconds = ttl.total_seconds()
+            ttl_seconds = 1 if 0 < total_seconds < 1 else int(total_seconds)
+        else:
+            ttl_seconds = ttl
+        if ttl_seconds is not None and ttl_seconds < 0:
+            logger.warning(
+                "Negative TTL (%s) for key '%s' - entry will not be "
+                "automatically expired",
+                ttl_seconds,
+                full_key,
+            )
         with cache_span(
             "cache.backend.set",
             attributes={

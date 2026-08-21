@@ -295,13 +295,13 @@ app = FastAPI()
 FastAPIRedis(app).lifespan()
 ```
 
-| Method                                              | Description                                                       |
-|-----------------------------------------------------|-------------------------------------------------------------------|
-| `get(key, *, default=None, eviction_group=None)`    | Retrieve and deserialize.  Returns `default` on miss.             |
-| `set(key, value, *, ttl=None, eviction_group=None)` | Serialize and store.  `ttl` accepts `int` seconds or `timedelta`. |
-| `delete(key, *, eviction_group=None)`               | Delete a single entry.  Returns `True` if it existed.             |
-| `has(key, *, eviction_group=None)`                  | Check existence without deserializing (Redis `EXISTS`).           |
-| `delete_group(eviction_group=None)`                 | Delete every key in an eviction group.  Returns the count.        |
+| Method                                              | Description                                                                                                                         |
+|-----------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
+| `get(key, *, default=None, eviction_group=None)`    | Retrieve and deserialize.  Returns `default` on miss.                                                                               |
+| `set(key, value, *, ttl=None, eviction_group=None)` | Serialize and store.  `ttl` accepts `int` seconds or `timedelta`; omit it to fall back to `default_ttl`, or pass `0` for no expiry. |
+| `delete(key, *, eviction_group=None)`               | Delete a single entry.  Returns `True` if it existed.                                                                               |
+| `has(key, *, eviction_group=None)`                  | Check existence without deserializing (Redis `EXISTS`).                                                                             |
+| `delete_group(eviction_group=None)`                 | Delete every key in an eviction group.  Returns the count.                                                                          |
 
 Four things about the semantics are worth knowing before you build on them:
 
@@ -695,6 +695,10 @@ By default, `default_ttl` is **0** - cache entries have **no automatic
 expiration** and persist until explicitly evicted (via `cache_evict()`,
 `delete_group()`, or Redis memory eviction policies like `allkeys-lru`).
 
+`default_ttl` applies to both public APIs.  `cache()`, `cache_put()`, and
+`CacheBackend.set()` all fall back to it when `ttl` is omitted; pass `ttl=0`
+to store without an expiry whatever the default is.
+
 This is a deliberate design choice:
 
 1. **A caching library's job is to cache, not to expire.** Expiry is an
@@ -709,11 +713,21 @@ This is a deliberate design choice:
    is removed. TTL is a coarse safety net, not a substitute for proper
    invalidation.
 
-3. **The real protection against memory exhaustion is Redis itself.**
-   Configure [`maxmemory`](https://redis.io/docs/latest/develop/reference/eviction/)
-   and an eviction policy (e.g. `allkeys-lru`) on the server side.
-   Application-level TTL defaults are not required to prevent unbounded
-   memory growth.
+3. **Redis can protect you against memory exhaustion - under one policy family.**
+   Only the `allkeys-*` [eviction policies](https://redis.io/docs/latest/develop/reference/eviction/)
+   reclaim keys that carry no TTL.  `noeviction` (the Redis OSS default) and
+   every `volatile-*` policy evict only keys that already have an expiry, so
+   entries cached without one can never be reclaimed: Redis rejects writes
+   with an OOM error instead of evicting.  Note that `volatile-lru` is the
+   default on AWS ElastiCache, Azure Cache for Redis, and Google Memorystore,
+   so relying on `default_ttl = 0` there means changing your server's
+   eviction policy, not accepting its default.
+
+   The SDK checks this for you.  When caching is wired and a route falls back
+   to a `default_ttl` of `0`, the lifespan reads `INFO memory` once at startup
+   and warns if the server cannot evict un-expiring keys.  Set an
+   `allkeys-*` policy, set `REDIS_DEFAULT_TTL`, or silence the check with
+   `REDIS_WARN_UNBOUNDED_CACHE=false`.
 
 4. **Consistency with the ecosystem reduces friction.** Spring Cache, Ehcache,
    Caffeine, fastapi-cache2, PSR-6/PSR-16, and virtually every other caching
