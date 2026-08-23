@@ -55,7 +55,7 @@ class FastAPIRedis:
         """Check whether *cls* is already registered in ``app.user_middleware``."""
         return any(m.cls is cls for m in self._app.user_middleware)  # type: ignore[comparison-overlap]
 
-    def lifespan(self) -> FastAPIRedis:
+    def lifespan(self, *, pool_factory: Any = None) -> FastAPIRedis:
         """Manage Redis connection pools across the application lifecycle.
 
         Wraps the existing ``app.router.lifespan_context`` so that Redis
@@ -65,8 +65,21 @@ class FastAPIRedis:
         Supports both standalone and OSS Cluster modes based on
         ``get_settings().cluster``.
 
+        Args:
+            pool_factory: Optional zero-argument callable (sync or async)
+                returning the ``redis.asyncio.ConnectionPool`` to use
+                instead of one built from environment settings. Lets
+                deployments whose connection parameters are not static env
+                vars — Sentinel-managed clusters, secret-manager-issued
+                passwords — supply their own pool while keeping every
+                caching and rate-limiting dependency unchanged. The
+                lifespan owns the returned pool and closes it on shutdown.
+                Not supported in cluster mode.
+
         Calling this method more than once on the same app is a no-op.
         """
+        if pool_factory is not None:
+            self._app.state.redis_pool_factory = pool_factory
         if getattr(self._app.router.lifespan_context, "_redis_lifespan", False):
             return self
 
