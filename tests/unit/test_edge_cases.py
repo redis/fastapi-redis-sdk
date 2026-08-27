@@ -207,7 +207,9 @@ class TestCorruptEntryTypeErrorRecovery:
             # Store binary garbage
             fake_async_redis.set(key, b"\x80\x81\x82\x83")
 
-            with patch.object(cache_module, "record_cache_request", side_effect=spy_record):
+            with patch.object(
+                cache_module, "record_cache_request", side_effect=spy_record
+            ):
                 with TestClient(app) as c:
                     r = c.get("/items2")
                     assert r.status_code == 200
