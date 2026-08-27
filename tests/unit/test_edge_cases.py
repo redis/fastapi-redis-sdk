@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
 
 from redis_fastapi.cache import (
     cache_evict,
     default_key_builder,
 )
-from redis_fastapi.config import get_settings
-from redis_fastapi.deps import get_async_redis
-from redis_fastapi.setup import FastAPIRedis
 
 
 def _make_request(path: str, query: str = "") -> StarletteRequest:
@@ -32,10 +27,10 @@ class TestKeyBuilderAmbiguity:
             prefix="pfx",
         )
         segments = key.split(":")
-        value_segments = [s for s in segments if "=" in s]
+        _ = [s for s in segments if "=" in s]
 
     def test_equals_in_query_value_is_ambiguous(self) -> None:
-        key = default_key_builder(
+        default_key_builder(
             _make_request("/auth", "token=abc=def"),
             prefix="pfx",
         )
