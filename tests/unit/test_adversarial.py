@@ -621,6 +621,46 @@ class TestBase64BodyEncoding:
         finally:
             get_settings.cache_clear()
 
+    def test_build_hit_response_decodes_base64_body(self) -> None:
+        import base64
+        import json
+        from unittest.mock import MagicMock
+
+        from redis_fastapi.cache import _build_hit_response
+
+        body = b"\x80\x81\x82\x83"
+        entry = {
+            "body": base64.b64encode(body).decode("ascii"),
+            "encoding": "base64",
+            "etag": 'W/"abc123"',
+        }
+        request = MagicMock()
+        request.headers = {}
+
+        response = _build_hit_response(json.dumps(entry).encode(), 60, request, False)
+        assert response.status_code == 200
+        assert response.body == body
+
+    def test_build_hit_response_304_not_modified(self) -> None:
+        import base64
+        import json
+        from unittest.mock import MagicMock
+
+        from redis_fastapi.cache import _build_hit_response
+
+        body = b"hello"
+        etag = 'W/"abc123"'
+        entry = {
+            "body": base64.b64encode(body).decode("ascii"),
+            "encoding": "base64",
+            "etag": etag,
+        }
+        request = MagicMock()
+        request.headers = {"if-none-match": etag}
+
+        response = _build_hit_response(json.dumps(entry).encode(), 60, request, False)
+        assert response.status_code == 304
+
 
 # ===================================================================
 # 14. Pool state client close (L5)
