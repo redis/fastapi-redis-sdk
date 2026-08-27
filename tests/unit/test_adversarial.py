@@ -21,6 +21,8 @@ from redis_fastapi.cache import (
     CacheResponseCaptureMiddleware,
     _parse_cache_control,
     cache,
+    cache_evict,
+    cache_put,
     default_key_builder,
 )
 from redis_fastapi.cache_backend import CacheBackend
@@ -540,3 +542,54 @@ class TestConcurrency:
 
             for r in results:
                 assert r.status_code == 200
+
+
+# ===================================================================
+# 13. Eviction group glob/brace validation
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestEvictionGroupGlobValidation:
+    """eviction_group containing Redis glob metacharacters or unbalanced
+    braces must be rejected at decoration time."""
+
+    def test_rejects_glob_star(self) -> None:
+        with pytest.raises(ValueError, match="glob"):
+            cache(eviction_group="*")
+
+    def test_rejects_glob_question(self) -> None:
+        with pytest.raises(ValueError, match="glob"):
+            cache(eviction_group="?")
+
+    def test_rejects_glob_brackets(self) -> None:
+        with pytest.raises(ValueError, match="glob"):
+            cache(eviction_group="[abc]")
+
+    def test_rejects_unbalanced_open_brace(self) -> None:
+        with pytest.raises(ValueError, match="unbalanced braces"):
+            cache(eviction_group="a{b")
+
+    def test_rejects_unbalanced_close_brace(self) -> None:
+        with pytest.raises(ValueError, match="unbalanced braces"):
+            cache(eviction_group="a}b")
+
+    def test_accepts_plain_string(self) -> None:
+        dep = cache(eviction_group="users")
+        assert dep is not None
+
+    def test_accepts_empty_string(self) -> None:
+        dep = cache(eviction_group="")
+        assert dep is not None
+
+    def test_accepts_balanced_braces(self) -> None:
+        dep = cache(eviction_group="a{b}c")
+        assert dep is not None
+
+    def test_cache_put_rejects_glob(self) -> None:
+        with pytest.raises(ValueError, match="glob"):
+            cache_put(eviction_group="test*")
+
+    def test_cache_evict_rejects_glob(self) -> None:
+        with pytest.raises(ValueError, match="glob"):
+            cache_evict(eviction_group="test?")

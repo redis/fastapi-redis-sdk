@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from inspect import isawaitable
@@ -57,6 +58,33 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 def _urlencode(value: str) -> str:
     return value.replace(":", "%3A").replace("&", "%26").replace("=", "%3D")
+
+
+_GLOB_RE = re.compile(r"[*?\[\]]")
+
+
+def _validate_eviction_group(eviction_group: str) -> None:
+    """Reject *eviction_group* values containing Redis glob metacharacters.
+
+    Characters like ``*``, ``?``, ``[``, and ``]`` are interpreted as glob
+    wildcards by Redis ``SCAN MATCH``.  When used inside an eviction group
+    they can match far more keys than intended, potentially wiping the
+    entire cache.
+
+    Unbalanced braces (``{`` / ``}``) are also rejected because they
+    break Redis Cluster hash-slot routing.
+    """
+    if _GLOB_RE.search(eviction_group):
+        raise ValueError(
+            f"eviction_group {eviction_group!r} contains Redis glob "
+            f"characters (*, ?, [, ]). These would match unintended "
+            f"keys during cache eviction. Use a plain identifier."
+        )
+    if eviction_group.count("{") != eviction_group.count("}"):
+        raise ValueError(
+            f"eviction_group {eviction_group!r} has unbalanced braces. "
+            f"This breaks Redis Cluster hash-slot routing."
+        )
 
 
 def default_key_builder(
@@ -361,6 +389,7 @@ def cache(
     Returns:
         An async generator dependency suitable for use with ``Depends()``.
     """
+    _validate_eviction_group(eviction_group)
     _settings = get_settings()
     _ttl: int = ttl if ttl is not None else _settings.default_ttl
     _prefix: str = (
@@ -520,6 +549,7 @@ def cache_evict(
             "global prefix — if this is intentional, provide an eviction_group "
             "explicitly."
         )
+    _validate_eviction_group(eviction_group)
 
     # Flow: yield to endpoint → on success evict key or group
     async def _dependency(
@@ -586,6 +616,7 @@ def cache_put(
     Returns:
         An async generator dependency suitable for use with ``Depends()``.
     """
+    _validate_eviction_group(eviction_group)
     _settings = get_settings()
     _ttl: int = ttl if ttl is not None else _settings.default_ttl
     _prefix: str = prefix if prefix is not None else _settings.pattern_prefix("cache")
