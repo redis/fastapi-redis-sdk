@@ -138,6 +138,86 @@ class TestSpanAttributeInconsistencyOnCorruptData:
             get_settings.cache_clear()
 
 
+class TestCorruptEntryTypeErrorRecovery:
+    """H4: corrupt entries that cause TypeError (not just JSONDecodeError)
+    must be caught by the widened except clause, resulting in a cache miss."""
+
+    def test_corrupt_binary_entry_recovers_gracefully(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+        counts = [0]
+
+        @app.get("/items", dependencies=[Depends(cache(ttl=300))])
+        async def ep() -> dict:
+            counts[0] += 1
+            return {"value": 1}
+
+        async def _fake() -> fakeredis.aioredis.FakeRedis:
+            return fake_async_redis
+
+        app.dependency_overrides[get_async_redis] = _fake
+        get_settings.cache_clear()
+
+        try:
+            settings = get_settings()
+            key = default_key_builder(
+                _make_request("/items"), prefix=settings.pattern_prefix("cache")
+            )
+            # Store a value that will cause TypeError when unpacked as dict
+            fake_async_redis.set(key, "not-valid-json")
+
+            with TestClient(app) as c:
+                r = c.get("/items")
+                assert r.status_code == 200
+                # Endpoint ran, meaning cache miss happened (corrupt entry skipped)
+                assert counts[0] == 1
+        finally:
+            get_settings.cache_clear()
+
+    def test_corrupt_binary_triggers_miss_not_hit(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        recorded_results: list[str] = []
+
+        def spy_record(*, result: str, eviction_group: str = "") -> None:
+            recorded_results.append(result)
+
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+
+        get_settings.cache_clear()
+
+        @app.get("/items2", dependencies=[Depends(cache(ttl=300))])
+        async def ep2() -> dict:
+            return {"value": 2}
+
+        async def _fake() -> fakeredis.aioredis.FakeRedis:
+            return fake_async_redis
+
+        app.dependency_overrides[get_async_redis] = _fake
+        cache_module = import_module("redis_fastapi.cache")
+
+        try:
+            settings = get_settings()
+            key = default_key_builder(
+                _make_request("/items2"), prefix=settings.pattern_prefix("cache")
+            )
+            # Store binary garbage
+            fake_async_redis.set(key, b"\x80\x81\x82\x83")
+
+            with patch.object(cache_module, "record_cache_request", side_effect=spy_record):
+                with TestClient(app) as c:
+                    r = c.get("/items2")
+                    assert r.status_code == 200
+
+            assert "hit" not in recorded_results
+            assert recorded_results == ["miss"]
+        finally:
+            get_settings.cache_clear()
+
+
 class TestTelemetryExceptionLogLevel:
     @pytest.mark.parametrize(
         ("helper", "instrument", "call_kwargs"),

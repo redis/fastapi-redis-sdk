@@ -404,7 +404,7 @@ def cache(
                     hit_response = _build_hit_response(
                         cached_data, remaining_ttl, request, private
                     )
-                except (json.JSONDecodeError, KeyError) as exc:
+                except Exception as exc:
                     logger.warning("Invalid cache entry for key %s: %s", cache_key, exc)
                 else:
                     record_cache_request(result="hit", eviction_group=eviction_group)
