@@ -74,6 +74,11 @@ request. Starlette built this connection point for its own purpose.
 This is the most important technical result of the research. The flags did not
 exist when the authors designed the current session libraries.
 
+Section 5a explains what we do with this result. We copy the design of the flags
+into our own class, and we do not import the Starlette class. That decision keeps
+the minimum version of FastAPI where it is, and it lets us correct two faults in
+the upstream flags without a wait.
+
 ---
 
 ## 2. What exists today, and how much people use it
@@ -282,8 +287,12 @@ Two conditions make this the right time. Starlette 1.x added the `accessed` and
    That is a mistake which is easy to make, and we can prevent it. No library
    designed before March 2026 can use this method.
 2. **Supply the OWASP operations as an API, not as documentation.** Give the user
-   `rotate()`, which defends against session fixation at login and after a
-   privilege change. Give **separate idle and absolute TTLs**. Give `revoke()`.
+   rotation that defends against session fixation at login and after a privilege
+   change — and make it **automatic**, so no application call can be omitted. The
+   middleware compares a *principal* before and after each request and rotates when
+   it changes. Section 5.1 of [`session-design.md`](session-design.md) gives the
+   mechanism and the sequence. Give **separate idle and absolute TTLs**. Give
+   `revoke()`.
    Give `list_sessions(user_id)` and `revoke_all(user_id)` to control concurrent
    sessions. A Redis SET for each user holds the session IDs. A cookie library
    cannot supply that last capability, and this is the clearest reason to use
@@ -297,16 +306,114 @@ Two conditions make this the right time. Starlette 1.x added the `accessed` and
    the `Set-Cookie` race condition. Document how to migrate from the
    `RedisStrategy` in `fastapi-users`, and from `starsessions`.
 
+### 5a. Starlette already supports cookies. Why do we not use that support?
+
+We keep the cookie. We change the content of the cookie.
+
+|                 | The cookie holds                | Where the data is                                   |
+|-----------------|---------------------------------|-----------------------------------------------------|
+| Starlette today | `sign(b64(json(session_data)))` | the cookie **is** the database                      |
+| This design     | `sign(opaque_id)`               | the cookie is a **pointer**. Redis is the database. |
+
+That one change gives us every row of the table in Section 3: revocation, an idle
+timeout and an absolute timeout that the server enforces, a payload larger than 4KB,
+data that stays away from the client, and `revoke_all`. None of them are possible
+while the payload is in the cookie, because the server then keeps no copy of anything.
+
+**We cannot extend the middleware that exists.** It has no connection point. We
+verified this in `starlette/middleware/sessions.py` on `main`:
+
+- The constructor takes `app`, `secret_key`, `session_cookie`, `max_age`, `path`,
+  `same_site`, `https_only`, and `domain`. It takes **no `backend`, no `store`, and no
+  `serializer`.**
+- The read path is inside `__call__`: `signer.unsign`, then `b64decode`, then
+  `json.loads`, then `Session(...)`.
+- The write path is inside the `send_wrapper` **closure**: `json.dumps`, then
+  `b64encode`, then `signer.sign`, then `Set-Cookie`.
+
+The encode and decode operations are in a closure inside `__call__`. A subclass
+therefore has nothing to override except `__call__` itself, which means that it
+rewrites the whole method. The missing constructor parameter is exactly the change in
+[starlette#499](https://github.com/encode/starlette/pull/499). The table in Section 1
+records that the maintainers declined it. The parameter is absent on purpose.
+
+**Two other methods do not work. Do not propose them again.**
+
+- **Put our layer on top of the Starlette middleware**, and let the Starlette cookie
+  hold only `{"sid": ...}`. This fails difference 4 above. `request.session` then
+  becomes the *cookie* dictionary, so Authlib writes the OAuth state into the cookie
+  and not into Redis. We lose the correction for the 4KB limit, and we lose the
+  drop-in property. Two `max_age` values also then compete.
+- **Use dependency injection with no middleware.** This is not possible. The
+  application must add `Set-Cookie` before it sends `http.response.start`. A
+  dependency that is a context manager stays open until the background tasks finish,
+  which is much later than the headers. sm-Fifteen recorded this limit in
+  [fastapi#754](https://github.com/fastapi/fastapi/issues/754), and it is the reason
+  why a wrapper around `send` is necessary.
+
+**What we reuse. The replacement is approximately 80 lines, not a fork.**
+
+- The `scope["session"]` contract. This is what keeps Authlib and every existing call
+  to `request.session` correct with no change.
+- The construction of the cookie flags (`httponly; samesite=…; secure`), the
+  `add_vary_header("Cookie")` call, and the method to clear a cookie (the value
+  `null`, with an `expires` date in 1970).
+- `itsdangerous.TimestampSigner`. We still sign, but we sign the ID and not the
+  payload.
+- `MutableHeaders`, `HTTPConnection`, and `Secret`.
+
+**Starlette permits this. It is a connection point, not a workaround.** The `session`
+property in `starlette/requests.py` contains:
+
+```python
+session: Session = self.scope["session"]
+# We keep the hasattr in case people actually use their own `SessionMiddleware` implementation.
+if hasattr(session, "mark_accessed"):  # pragma: no branch
+    session.mark_accessed()
+```
+
+The core supports a third-party session middleware that puts its own object into
+`scope["session"]`, and a comment in the source says so.
+
+**Therefore: write our own `Session` class. Do not import the Starlette class.** We
+write the middleware in any case, so we control the object in `scope["session"]`. This
+gives four results.
+
+1. **The minimum version does not change.** The design works with Starlette 0.4x and
+   with 1.x. The declaration `fastapi>=0.115.0` stays correct.
+2. **We correct the faults in the upstream class ourselves, now.** Section 6.1 lists
+   them: `popitem()` and `|=` set no flag, and `pop()` sets `modified` without
+   `accessed`. For a server-side store, a missed flag is a lost write with no error,
+   which is the worst fault in this design. We do not wait for a pull request from
+   another author.
+3. **We depend on no change in Starlette.** We import nothing from
+   `starlette.middleware.sessions`, so no proposal of ours must succeed before we
+   ship.
+4. With Starlette 1.0 and later, the property above still calls `mark_accessed()` for
+   us. With earlier versions the property only returns the dictionary, so we use a
+   safe default: treat the session as accessed, and always send `Vary: Cookie`.
+
+The cost: we own a class of approximately 40 lines, and we must read the upstream
+`Session` class when it changes. That cost is smaller than a minimum version that we
+cannot lower again.
+
 ### Structure, which follows the existing conventions of the SDK
 
 Use the same division as the existing cache and rate limit code:
 
-| New file | Follows | Contents |
-|---|---|---|
-| `src/redis_fastapi/sessions.py` | `cache.py`, `ratelimit.py` | `SessionMiddleware`, the `session()` factory for dependency injection, and `add_redis_sessions()` |
+| New file                               | Follows                                    | Contents                                                                                                                                                                                                                                                                                            |
+|----------------------------------------|--------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `src/redis_fastapi/sessions.py`        | `cache.py`, `ratelimit.py`                 | `SessionMiddleware`, the `session()` factory for dependency injection, and `add_redis_sessions()`                                                                                                                                                                                                   |
 | `src/redis_fastapi/session_backend.py` | `cache_backend.py`, `ratelimit_backend.py` | `SessionStore`, an abstract base class (ABC) that owns the lifecycle. Also `RedisSessionBackend` and `SyncSessionBackend`, with these methods: `load`, `save`, `delete`, `rotate`, `touch`, `list_for_user`, and `revoke_all`. Section 7 gives the reason for an ABC instead of a plain `Protocol`. |
 
 Extend the existing files. Do not write the same code again.
+
+**Serialize with the existing `Coder`.** The repository already has a serialization
+interface: the `Coder` protocol and the `JsonCoder` implementation, in
+`src/redis_fastapi/types.py:15`. Use them for the session payload. Do not write a
+second interface. `starsessions` has a separate `Serializer` and `JsonSerializer` for
+this purpose, but we do not need them. This choice also gives us
+`pydantic_model_coder()` at no cost, so a user can hold a typed model in a session.
 
 - `src/redis_fastapi/setup.py`: add `.sessions()` to the `FastAPIRedis` chain.
 - `src/redis_fastapi/deps.py`: add `SessionDep`, `SessionBackendDep`, and
@@ -314,9 +421,20 @@ Extend the existing files. Do not write the same code again.
   `get_rate_limit_backend`. Keep the `dependency_overrides` behaviour, because
   tests need it.
 - `src/redis_fastapi/config.py`: add `REDIS_SESSION_*` settings to
-  `RedisSettings`. These settings control the cookie name, the idle TTL, the
-  absolute TTL, the `SameSite` value, the `https_only` flag, the key prefix, and
-  the rotation policy.
+  `RedisSettings`. Section 8.3 compares this list against `starsessions`, and every
+  entry below has an equivalent there. The settings control:
+    - the cookie name, and its `domain` and `path`
+    - the `SameSite` value and the `https_only` flag
+    - the idle TTL and the absolute TTL. **Both accept an `int` or a
+      `timedelta`**, as `cache()` already does in this repository.
+    - the session-only mode, where the cookie carries no `max-age` and the browser
+      deletes it when it closes
+    - `gc_ttl`, the TTL for a Redis key in that mode, where no exact expiry exists
+    - the key prefix, as a string **or a callable**
+    - the rotation policy, as `principal_keys`: the session keys whose value triggers a
+      rotation when it changes. The default watches the identity; add a role or a scope
+      list to rotate on a privilege change as well.
+    - the encryption, which is off by default. See Section 8.3.1.
 - `src/redis_fastapi/telemetry.py`: add `session_*` instruments. Follow the
   existing pattern in that file exactly. Add new fields to `_OTelState`. Add a
   `session_span()` function beside `cache_span` and `ratelimit_span`. Add
@@ -338,23 +456,34 @@ Extend the existing files. Do not write the same code again.
 - `src/redis_fastapi/__init__.py`: add the new public names to `__all__`.
 - Documentation: write `docs/guide/sessions.md` and add it to the mkdocs
   navigation. Add a section to `docs/guide/observability.md` for the new metrics.
-  Write an application in `examples/` that shows a login, then `rotate()`, then a
-  logout, then `revoke_all()`. Write a second example for an Authlib OAuth flow.
+  Write an application in `examples/` that shows a login, a privilege change, a
+  logout, and `revoke_all()` — with the first two rotating on their own, so the example
+  demonstrates that no rotation call exists. Write a second example for an Authlib OAuth flow.
 
 ### Security requirements. Treat these as acceptance criteria.
 
-- **Declare a direct dependency on `starlette>=1.0.0`.** The design uses
-  `Session.accessed` and `Session.modified`. Starlette added these flags in
-  **version 1.0.0 (2026-03-22)**, because #3166 went into that release. Today
-  `pyproject.toml` declares no direct dependency on Starlette. Starlette arrives
-  through `fastapi>=0.115.0`, and `uv.lock` selects version 1.3.1. The current
-  specification therefore permits a 0.3x version of Starlette, which has no
-  `Session` class. Without a minimum version, the store writes nothing when the
-  data changes.
+- **Write our own `Session` class. Do not import the one from Starlette, and do not
+  raise the minimum version.** Section 5a gives the complete reasoning. In summary:
+  Starlette added `Session` in version 1.0.0 (2026-03-22). But `pyproject.toml`
+  declares no direct dependency on Starlette, and `fastapi>=0.115.0` permits a 0.4x
+  version, which has no `Session` class. A floor of `starlette>=1.0.0` therefore
+  raises the true FastAPI minimum by approximately twenty minor versions, and it
+  contradicts the row "FastAPI 0.115+" in the requirements table of `README.md`. We
+  write our own middleware in any case, so we can put our own object into
+  `scope["session"]`.
 - Make session IDs with `secrets.token_urlsafe(32)`, which gives at least 128
   bits. Keep the IDs opaque. Never put data into an ID.
-- Call `rotate()` after authentication and after a privilege change. Delete the
-  old key and move the data to the new key.
+- **Validate the session ID from the cookie before any other use of it.** Accept
+  only the characters that are safe in a cookie value, and treat every other value
+  as no session at all. Without this test, a value from the client can inject a
+  header when the code writes the ID back into `Set-Cookie`. `starsessions` has this
+  control, and Section 8.3 records it.
+- **Rotate after authentication and after a privilege change, without an application
+  call.** The middleware detects the change and rotates; the old key is deleted before
+  the new one is written. A control that must be invoked is a control that can be
+  omitted, and omitting this one is session fixation. Section 5.1 of
+  [`session-design.md`](session-design.md) gives the detector and its four safety
+  rules.
 - Enforce an idle TTL **and** an absolute TTL. Redis must enforce both of them.
 - Use strict cookie defaults: `HttpOnly`, `SameSite=Lax`, and `Secure`. Supply a
   documented method to disable `Secure` during development. `starsessions` also
@@ -375,23 +504,20 @@ Extend the existing files. Do not write the same code again.
 
 - Write unit tests in `tests/unit/`. Use the same structure as the existing cache
   and rate limit tests. Test these conditions:
-    - `rotate()` keeps the data and makes the old key invalid.
+    - Rotation keeps the data and makes the old key invalid.
+    - **Rotation happens with no application call**, when the identity is written.
+    - A key declared privilege-bearing rotates on a change in either direction.
     - The idle timeout and the absolute timeout work independently.
     - `revoke_all` removes every session of one user.
     - The store writes nothing to Redis if no code touched the session. Assert on
       the `modified` flag.
     - The response has a `Vary: Cookie` header if code read the session.
-- **Do not trust the `modified` flag.** Section 6.1 explains that the flag does not
-  report every change today. The tests must show that the store keeps the data
-  after each of these three operations:
-    - `popitem()`
-    - `|=`
-    - a change inside a nested object, such as `session["a"]["b"] = 1`
-
-    No `dict` subclass can detect the nested change, so nobody can correct it
-    upstream. The store therefore needs an explicit `save()` method, and an
-    optional mode that always writes. These tests must pass even if the
-    maintainers never merge #3436.
+- **Do not trust the `modified` flag.** Write one test for each row of the table in
+  Section 6.1: `popitem()`, `|=`, a `pop()` that must also set `accessed`, and a
+  change inside a nested object such as `session["a"]["b"] = 1`. In every case the
+  store must still hold the data afterwards. The last row passes through the explicit
+  `save()` method, because no subclass of `dict` can detect that change. These tests
+  must never depend on the release schedule of Starlette.
 - Write integration tests in `tests/integration/` against a real Redis server.
   Test that two application instances share one session through one Redis server.
   Test the TTL behaviour. Test the concurrent requests that replaced a cookie
@@ -399,6 +525,20 @@ Extend the existing files. Do not write the same code again.
 - Write a compatibility test. An Authlib OAuth flow must complete against the
   Redis store without any change. Also test a payload larger than 4KB, which a
   signed cookie cannot hold.
+- Test the items that Section 8.3 added:
+    - A session ID with an unsafe character gives a new session, and nothing from
+      that value reaches a response header.
+    - With encryption on, the value in Redis is not readable, and a round trip
+      returns the same data. With encryption off, no warning appears for each
+      request.
+    - The session-only mode sends no `max-age`, and the Redis key still gets a TTL
+      from `gc_ttl`.
+    - The idle TTL and the absolute TTL each move the `max-age` of the cookie and
+      the TTL of the key **together**. Section 8.3.2 explains why one test must
+      cover both.
+    - The key prefix works as a string and as a callable.
+    - Every extension point in Section 9 accepts a substitute, and the middleware
+      then uses it.
 - Write a telemetry test. Follow the existing pattern. Assert that the instruments
   record the data. Assert that `disable_telemetry()` gives a clean `_OTelState`.
   Assert that no attribute contains a session ID.
@@ -410,114 +550,85 @@ Extend the existing files. Do not write the same code again.
 
 ### Suggested order of work
 
-Release these parts first, because they are the OWASP core:
-`session_backend.py`, `sessions.py`, the dependency injection, the configuration,
-the strict cookie defaults, `rotate`, and `revoke`. Then release
-`list_sessions` and `revoke_all`, which control concurrent sessions, and the
-Authlib compatibility example. These parts are the differences from other
-packages, so give them their own release note.
+Section 8.5 gives the complete contents of version 1. Inside that release, build
+the OWASP core first: `session_backend.py`, `sessions.py`, the dependency
+injection, the configuration, the strict cookie defaults, `rotate`, and `revoke`.
+
+**Write the binding to a user and the index for each user in the same release**,
+even if `list_sessions` and `revoke_all` appear later. Section 8.4 gives the
+reason: an index that arrives after the first sessions exist reports a wrong
+answer, and it reports it silently.
+
+Give `list_sessions`, `revoke_all`, and the Authlib compatibility example their own
+release note. They are the clearest differences from the other packages.
 
 ---
 
-## 6. Upstream strategy: what we propose, and what we keep
+## 6. What we implement better, and what we send upstream
 
-A second question came after the research above. Must we propose the
-vendor-neutral part to Starlette or to FastAPI as common code, so that other
-vendors can extend it later?
+### 6.1 What our `Session` class must do better than the upstream one
 
-**Make it vendor-neutral, but keep it in this package.** The table below divides
-the feature into layers, and it shows where the correct division falls.
-
-| Layer | Vendor-neutral? | Can upstream accept it? |
-|---|---|---|
-| L1 The `Session` dict with the `accessed` and `modified` flags | already upstream | already present, but incomplete. See Section 6.1. |
-| L2 A `Session` import that does not need the cookie middleware | a refactor only | a small PR is possible. See Section 6.3. |
-| L3 A cookie carrier with a store as a parameter | neutral | **this is the diff of PR #499** |
-| L4 A `SessionStore` protocol with `load`, `save`, `delete`, and `touch` | neutral. **This is the proposal.** | **refused two times** |
-| L5 The OWASP lifecycle: `rotate`, two TTLs, `revoke_all`, and an index for each user | the interface is neutral | outside the scope of a feature-complete toolkit |
-| L6 The Redis implementation | specific to the vendor | ours |
-
-Layers L3 and L4 together are the proposal. They are also exactly the content of
-[starlette#499](https://github.com/encode/starlette/pull/499): session backends
-that you can exchange, with no vendor code in the diff. That PR stayed open for
-approximately three years, and the maintainers closed it without a merge. Nobody
-can say that the neutral version has no proposal. The maintainers refused the
-neutral version, and they gave the same answer to
-[#2256](https://github.com/Kludex/starlette/discussions/2256) in 2023.
-
-We verified the current state in the source code, not only in the issue tracker.
-Today `starlette/middleware/sessions.py` on `master` still has **no parameter for
-a store, a backend, or a serializer**. The code always uses JSON, then base64,
-then `TimestampSigner`. Nothing changed at layers L3 and L4.
-
-There is a second reason to keep the interface. **An upstream interface follows
-the upstream release schedule.** Faults in session code become security
-vulnerabilities, because they involve fixation, rotation, and cookie flags. If our
-store uses an upstream protocol, then every correction to that protocol waits for
-a Starlette release. We must also support one or two older releases with
-`hasattr` tests. Control of the interface is therefore an advantage.
-
-The history of other ecosystems gives the same answer. In each ecosystem in
-Section 4, item (a), the store abstraction sits between the framework and the
-vendor.
-`express-session` is a third-party package, and it defines the `Store` base class.
-`connect-redis` implements that class. The Node core owns neither of them.
-
-Spring puts `SessionRepository` in Spring Session, not in the Servlet
-specification. Therefore make the abstraction vendor-neutral, and keep it here.
-
-The parts that we must send upstream are much smaller. One of them is urgent.
-
-### 6.1 Correct the `accessed` and `modified` flags that we depend on
-
-Difference 1 in Section 5 is the rule to write to Redis only when the data
-changes. That rule is correct only if the `modified` flag reports every change.
-**Today it does not.** We verified this in
+Section 5a decides that we write our own class. This is the list of faults in the
+upstream class that ours must not repeat. We verified each one in
 `starlette/middleware/sessions.py`.
 
-The `Session` class overrides `__setitem__`, `__delitem__`, `clear`, `pop`,
-`setdefault`, and `update`. It does **not** override `popitem()` and it does not
-override `|=`. The `dict.__ior__` method updates the dictionary in C code, so it
-does not use the `update()` override. For a signed cookie, the result is one lost
-`Set-Cookie` header. For a server-side store, the result is a lost write, and the
-store gives no error. The second result is much worse.
+Difference 1 in Section 5 is the rule to write to Redis only when the data changes.
+That rule is only as good as the `modified` flag. The upstream class overrides
+`__setitem__`, `__delitem__`, `clear`, `pop`, `setdefault`, and `update`, and it
+misses the cases below.
 
-[starlette#3436](https://github.com/Kludex/starlette/pull/3436) already corrects
-this. An external contributor opened it on 2026-08-10, and it is still open.
-**Review that PR and support it. Do not write a second PR for the same problem.**
-An open PR changes the exact behaviour that our design uses. A comment from a
-Redis maintainer in that discussion has more value than a proposal that the
-maintainers will refuse.
+**The consequence is worse for us than for the author of that class.** When the flag
+fails for a signed cookie, one `Set-Cookie` header does not go out, and the next
+request repairs the damage. When the flag fails for a server-side store, the write to
+Redis never happens, no error appears, and the data is gone.
 
-### 6.2 A new PR: `pop()` sets `modified` but never sets `accessed`
+| Fault                                                                          | Reason                                                                                                                                                                                                                                                                                            | Our class                                                                                                            |
+|--------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `popitem()` sets no flag                                                       | The class does not override the method.                                                                                                                                                                                                                                                           | Override it.                                                                                                         |
+| `\|=` sets no flag                                                             | `dict.__ior__` changes the dictionary in C code, so it never reaches the `update()` override.                                                                                                                                                                                                     | Override `__ior__`.                                                                                                  |
+| `pop()` sets `modified` but not `accessed`                                     | It runs `self.modified = self.modified or key in self` instead of calling `mark_modified()`, which sets both flags. A request that only calls `pop()` therefore sends `Set-Cookie` with no `Vary: Cookie`. Issue [#2019](https://github.com/Kludex/starlette/issues/2019) covers the same header. | Set both flags.                                                                                                      |
+| A change inside a nested object, such as `session["a"]["b"] = 1`, sets no flag | **No subclass of `dict` can detect this.** The change happens inside the value, and the dictionary never sees a method call.                                                                                                                                                                      | We cannot fix it either. The store must therefore supply an explicit `save()` method, and a mode that always writes. |
 
-The `pop()` method runs `self.modified = self.modified or key in self`. The
-`mark_modified()` method sets *both* flags. A request that only calls `pop()`
-therefore sends `Set-Cookie` without `Vary: Cookie`. This result is different from
-every other method that changes the data. The `Vary` header is also the subject of
-[#2019](https://github.com/Kludex/starlette/issues/2019). The correction needs two
-lines and one test, and it is outside the scope of #3436.
+The first three faults are ours to correct, and the tests in Section 5 must prove
+each one. The fourth is different in kind: it is a limit of the language, so no
+release of Starlette will remove it, and our answer must be an escape route rather
+than a correction.
 
-### 6.3 A proposal: a neutral import path for `Session`
+### 6.2 Why the abstraction stays in this package
 
-Propose `starlette.datastructures.Session`, or a new `starlette.sessions` module.
-Keep the existing name as an alias. Give this argument: a third-party store must
-import from `starlette.middleware.sessions` today. That import loads the
-itsdangerous cookie middleware, and the store needs only the type. The core code
-shows that the type is already public in practice.
-`starlette/requests.py:169-175` imports `Session` under `TYPE_CHECKING`, and then
-it tests the object with `hasattr(session, "mark_accessed")`.
+Someone will ask whether we should give the vendor-neutral part to Starlette or to
+FastAPI, so that other vendors can build on it. The answer is no, for two reasons.
 
-This proposal has a moderate chance and a low cost. It also **blocks nothing**. If
-the maintainers refuse it, we import from the middleware module, or we test the
-object in the same way as the core code.
+**The maintainers already refused it, twice.** That is what
+[starlette#499](https://github.com/encode/starlette/pull/499) proposed: session
+backends that a user can exchange, with no vendor code in the diff. It stayed open
+for approximately three years and closed with no merge. Discussion
+[#2256](https://github.com/Kludex/starlette/discussions/2256) got the same answer in
+2023. Nobody can say that the neutral version lacked a proposal.
 
-### 6.4 Documentation PRs after the release
+**An upstream interface follows an upstream release schedule.** Faults in session
+code are security faults, because they concern fixation, rotation, and cookie flags.
+If our store depends on an upstream protocol, every correction to that protocol waits
+for a Starlette release, and we carry `hasattr` tests for the older releases in the
+meantime. Control of the interface is worth more than the neutrality we would buy.
 
-Add the SDK to the third-party pages of Starlette and FastAPI after we release it.
-One task has more value. Some pages still send approximately 70k downloads each
-month to the **archived** `fastapi-sessions` package, as Section 2 shows. That is
-a supply chain risk. Nobody will argue against a correction.
+Section 4, item (a), gives the same conclusion from other ecosystems: the store
+abstraction sits between the framework and the vendor, not inside the framework.
+
+### 6.3 Optional contributions to Starlette
+
+**None of these blocks the release.** Section 5a removed that condition: we write our
+own class, so no fault upstream reaches our store. Do this work because it is right
+for the ecosystem, and because a Redis maintainer in these discussions earns the
+goodwill that the documentation PRs in Section 8.7 will need.
+
+- **Support [starlette#3436](https://github.com/Kludex/starlette/pull/3436).** An
+  external contributor opened it on 2026-08-10 to correct the `popitem()` and `|=`
+  faults in the upstream class, and it is still open. Review it. **Do not write a
+  second PR for the same problem.**
+- **Open a PR for the `pop()` fault** in the table above. It needs two lines and one
+  test, and #3436 does not cover it.
+- **Send the documentation PRs after the release**, as Section 8.7 describes.
 
 ---
 
@@ -620,14 +731,30 @@ both packages. Structural typing needs no inheritance, so an existing
 without any change. Today a vendor must choose one package or write two classes.
 Most vendors write for the larger ecosystem, and that is not us.
 
-**But do not copy the contract.** It cannot express three operations that
-Section 3 requires.
+**But do not copy the contract.** There are two reasons. The first is the shape of
+the contract itself: **a store that is not Redis dictates it.** The `lifetime`
+parameter exists for `CookieStore`, which needs it as the `max_age` of the signer.
+Their own Redis store ignores that argument in `read()`. If we copy the contract, we
+accept a limit that a cookie store created, inside a package that integrates Redis.
+Section 8.3.4 records this.
+
+The second reason: the contract cannot express three operations that Section 3
+requires.
 
 - **The contract has no `rotate()`.** The caller must build the defence against
   fixation from three calls: `read` the old key, `write` the new key, then
   `remove` the old key. Those calls are not atomic. Between the write and the
   remove, two IDs give access to the same authenticated session. If the process
   stops, or the caller ignores an error from `remove`, the old ID stays valid.
+
+    **Our `rotate()` needs no transaction either, and it is still correct.** A
+    session write touches more than one key, and on Redis Cluster those keys sit in
+    different slots, so no Lua script and no `MULTI` can hold them together. We order
+    the operations instead: **delete the old key before writing the new one.** A
+    process that stops in the middle then signs the user out, which is safe, and no
+    interruption can leave two IDs valid at once. The order gives the property that a
+    transaction would have given, and it gives it on a cluster too. Section 5 of
+    [`session-design.md`](session-design.md) gives the sequence.
 
     `starsessions` shows the risk in its own code. Its `regenerate_id()` method
     keeps the old ID in `_remove_data_for_session` and deletes it only at the next
@@ -666,24 +793,336 @@ Document how to migrate.
 
 ---
 
-## The open question
+## 8. The scope of version 1
 
-Must version 1 support only **web sessions**? That scope means a cookie and the
-OWASP lifecycle, and it competes with `starsessions` and `fastapi-users`. Or must
-version 1 also support **session state for agents and MCP**? That scope means a
-session ID in a header or in an argument, no cookie, and working memory with a
-TTL. Section 4, item (c), describes this group of users. Both scopes use the same
-backend,
-but the transport is different and the users are different.
+Version 1 must be a **minimum solution that works**. It must also be complete
+enough to replace the packages that people use today. This section says what that
+requirement means in practice, after we read the source of both packages.
 
-My opinion: build the web sessions first, and make the backend independent of the
-transport. The support for agents is then a second adapter, not new work. But this
-scope also overlaps with `redis/agent-memory-server`. The decision is therefore
-about the Redis product range as much as about the technical design.
+### 8.1 We do not replace `fastapi-users`. Do not claim that we do.
 
-Section 7 answers part of the technical question. The ABC with a small Protocol is
-the reason that a transport-independent backend is possible. The base class holds
-the complete lifecycle, and no part of it depends on the transport:
+`fastapi-users` is a framework for user management. It supplies registration,
+password hashing, password reset, email verification, links to OAuth accounts,
+adapters for several databases, and a user manager. We replace exactly one layer of
+it: `RedisStrategy` and `CookieTransport`.
+
+State this limit in the documentation. If we claim more, we invite a comparison
+against features that nobody expects from a session store, and we lose it.
+
+### 8.2 What `RedisStrategy` is, in 33 lines
+
+We read the complete file. The strategy stores **only** `str(user.id)`, under an
+opaque key from `secrets.token_urlsafe()`, with `ex=lifetime_seconds`. The
+consequences:
+
+- It holds **no session payload**. There is nowhere to put a shopping cart, a
+  wizard step, or OAuth state.
+- It never refreshes the key when it reads it, so there is **no idle timeout**. The
+  `ex` argument gives an absolute timeout only.
+- It has **no rotation** for a change of privilege inside a session.
+- It has **no index for each user**, so `revoke_all` is not possible.
+- `lifetime_seconds` defaults to `None`. With the default, **the token never
+  expires**.
+
+Its `CookieTransport` is correct in the parts that matter: it uses `APIKeyCookie`,
+so the scheme reaches OpenAPI, and its defaults are `secure=True`,
+`httponly=True`, and `samesite="lax"`.
+
+Parity with this strategy is therefore simple. We are better on every point above.
+We are worse on one point only: we do not return a user object, because we do not
+own the user model.
+
+### 8.3 A complete comparison against `starsessions`
+
+We read the full source: `middleware.py`, `session.py`, `serializers.py`,
+`encryptors.py`, `exceptions.py`, `types.py`, and the four stores. An earlier draft
+of this section read only `__init__.py`, and it therefore missed most of the list
+below. The package root does not export the encryptors at all.
+
+**The comparison covers the features of a Redis backend, and no other kind.** This
+package integrates Redis. A feature that belongs to a different backend is not a gap
+for us, and we must not treat it as one. The correct goal is different: a user must
+be able to move **to** Redis with very little work. Section 8.3.4 lists the items
+that are outside our scope, with the reason for each one.
+
+In the tables: **✓** means that the specification covers it. **~** means that the
+specification covers it in part, and the text needs a correction. **✗** means that
+the specification does not cover it, and that this is a gap we must close.
+
+#### Parameters of `SessionMiddleware`
+
+| `starsessions` | Us | Note |
+|---|---|---|
+| `store` | ✓ | The `SessionStore` ABC in Sections 5 and 7. |
+| `lifetime` (`int` or `timedelta`) | ~ | We have an absolute TTL. **It must also accept a `timedelta`.** Their parameter does, and `cache()` in this repository does. |
+| `lifetime=0`, a session-only cookie | ✗ | **Gap.** No `max-age`, so the browser deletes the cookie when it closes. This also needs a `gc_ttl` value for the Redis key. See 8.3.1. |
+| `rolling` | ~ | Our idle TTL gives a similar result, but not the same one. See 8.3.2. |
+| `cookie_name` | ✓ | |
+| `cookie_same_site` | ✓ | |
+| `cookie_https_only` | ✓ | Both packages set `Secure` by default. |
+| `cookie_domain` | ✗ | **Gap.** Section 5 does not list it. |
+| `cookie_path` | ✗ | **Gap.** Section 5 does not list it. They also limit the deletion of a cookie to that path. |
+| `serializer` | ✓ | Section 5 resolves this: use `Coder`, at `src/redis_fastapi/types.py:15`. |
+| `encryptor` | ✗ | **Gap. This is a complete subsystem.** See 8.3.1. |
+
+#### Behaviour
+
+| `starsessions` | Us | Note |
+|---|---|---|
+| Reject an unsafe cookie value before use (`_SAFE_COOKIE_VALUE_RE`) | ✗ | **Gap, and it is a security control.** It prevents header injection when the code writes the ID into `Set-Cookie`. The cost is one regular expression. Copy it. |
+| Validate `cookie_name` in the constructor | ✗ | Small. Copy it. |
+| Delete the cookie **and** the record when a session becomes empty | ~ | Our `revoke()` implies this. Write it down. |
+| Write nothing when an empty session stays empty (`initially_empty`) | ✓ | Our rule to write only when the data changes is stronger. |
+| `SessionAutoloadMiddleware`, with paths and regular expressions | ✓ | We need no equivalent. Our design loads the session when code touches it, which is difference 1 in Section 5. That is better than a flag plus a `SessionNotLoaded` exception. |
+| `LoadGuard` and `SessionNotLoaded` | ✓ | Absent on purpose, for the same reason. |
+
+#### Public functions
+
+| `starsessions` | Us | Note |
+|---|---|---|
+| `generate_session_id()`, `token_hex(16)`, 128 bits | ✓ | We use `token_urlsafe(32)`, which gives 256 bits. |
+| `regenerate_session_id()` | ✓ | Our `rotate()`. Ours is atomic; Section 7 shows that theirs is not. |
+| `get_session_id()` | ~ | Name it in the specification. |
+| `load_session()` and `is_loaded()` | n/a | Our load is automatic. |
+| `get_session_metadata()`, with `lifetime`, `created`, `last_access` | ~ | **Use the same three field names.** A migration is then a rename and not a redesign. |
+| `get_session_remaining_seconds()` | ~ | The same. |
+| `get_session_handler()` | n/a | Its own docstring says "private API, no backward compatibility guarantee". Ignore it. |
+
+#### Stores, serializers, encryptors, and exceptions
+
+| `starsessions` | Us | Note |
+|---|---|---|
+| The `SessionStore` ABC: `read`, `write`, `remove` | ✓ | Section 7, with the adapter. |
+| `RedisStore(connection=…)` | ✓ | Ours uses the connection pool of the SDK. |
+| `prefix`, a string **or a callable** | ~ | Section 5 says "key prefix". **It must also accept a callable.** Their documentation advertises this. |
+| `gc_ttl` | ✗ | **Gap.** Necessary when `lifetime` is zero. |
+| `InMemoryStore` | n/a | Outside our scope. See 8.3.3 and 8.3.4. |
+| `CookieStore` | n/a | Outside our scope. See 8.3.4. |
+| `Serializer` and `JsonSerializer(json_encoder, json_decoder)` | ✓ | `Coder` replaces both. Section 9 gives the translation. |
+| **`Encryptor`, `NoopEncryptor`, `FernetEncryptor`, `AESGCMEncryptor`** | ✗ | **The largest gap.** See 8.3.1. |
+| `SessionError`, `SessionNotLoaded`, `ImproperlyConfigured` | ✗ | **Gap.** The specification defines no exceptions. Section 9 defines them. |
+
+#### 8.3.1 Encryption of the data at rest
+
+`starsessions` accepts an `encryptor`, and it supplies Fernet and AES-GCM. Our
+specification says nothing about encryption.
+
+The row "Keep the data away from the client" in the Section 3 table is not the same
+statement. A server-side store keeps the data away from the browser, but the data is
+then plaintext in Redis. It also reaches the RDB file, the AOF file, every replica,
+and every backup or snapshot that a managed service makes. For a session that holds
+personal data or an OAuth token, under a rule such as the GDPR, that difference is
+the whole point.
+
+**Decision: supply the connection point, and document the implementation. Write no
+cryptographic code in version 1.**
+
+Define an `Encryptor` protocol with two methods, `encrypt(bytes)` and
+`decrypt(bytes)`. That is approximately five lines. Then write a recipe in the
+documentation that implements it with AES-GCM from the `cryptography` package, in
+approximately ten lines. Ship no implementation, and add no `cryptography` extra.
+
+The reason: cryptographic code that we ship is cryptographic code that we own, that
+we must review, and whose vulnerabilities we must track and announce. Ten lines in
+the documentation give the user the same result and keep that duty where the
+`cryptography` project already discharges it. **The cost is real and we must state
+it: a user who wants encryption writes ten lines instead of setting one flag.** If
+users ask for a shipped implementation, promote the recipe into code and add the
+extra then.
+
+Two details from their code that the recipe must respect:
+
+- **Do not copy `NoopEncryptor`.** It calls `warnings.warn()` inside `encrypt()`, so
+  it warns on every request. A warning at that rate gets filtered, and then nobody
+  reads it. Use `None` as the default value instead.
+- **Use AES-GCM, not Fernet.** AES-GCM gives authenticated encryption in one
+  operation. Their Fernet path is AES-128-CBC with a separate HMAC. The protocol
+  stays public, so a user who prefers Fernet can still supply it.
+
+#### 8.3.2 "Rolling" and "idle" are two different behaviours
+
+Their `rolling=True` extends **both** the `max-age` of the cookie **and** the TTL of
+the record by the complete `lifetime`, on every response. Their `rolling=False`
+keeps the original expiry time and sends the seconds that **remain** as `max-age`.
+
+Our idle TTL refreshes the key in Redis. The specification does not say what happens
+to the `max-age` of the cookie.
+
+**These two clocks must agree.** If they do not, the browser deletes a cookie while
+the record in Redis is still alive. The user then sees a logout with no cause.
+
+Write both clocks against both carriers, and give the translation: their `rolling=True`
+becomes our idle TTL, and their `rolling=False` becomes our absolute TTL.
+
+#### 8.3.3 Do not ship an `InMemoryStore`. Use `fakeredis` in tests.
+
+An earlier draft argued for a store of this kind, because a `starsessions` user runs
+`InMemoryStore` in the tests, and because such a store lets `pytest` run with no
+Redis container. **The second reason is already false in this repository**, and the
+first reason then disappears with it.
+
+This repository solves the same problem, and it solves it better.
+`tests/conftest.py:16` imports `fakeredis`, and `noxfile.py:102` describes the
+`tests_unit` session as "the fakeredis-backed unit suite. Needs no Redis server."
+
+`fakeredis` is the better answer for a session store, not only an equal one. It runs
+our **real** code: the real key schema, the real TTL commands, and the real index built
+on hash field expiration. `fakeredis` supports every one of those commands, which we
+verified before we settled the design. An in-memory session store runs none of that, so a test suite that passes
+against it proves less than it appears to prove. Two ways to reach an empty test
+database is one way too many, and the weaker way is the one that hides faults.
+
+**Decision: ship no in-memory store.** Instead write a recipe that shows a test with
+`fakeredis`, and point to `tests/conftest.py` in this repository as the example that
+we ourselves use.
+
+#### 8.3.4 What is outside our scope, and why
+
+This package integrates Redis. The items below belong to a different backend. They
+are **not** gaps, and no later release must close them.
+
+| Item | Why it is not ours |
+|---|---|
+| `InMemoryStore` | It is not a Redis feature. `fakeredis` covers the test case, and it covers it better. See 8.3.3. |
+| `CookieStore` | It is not a Redis feature. The Starlette middleware already is a cookie store, and Section 5a explains that it is competent for that one job. A user who wants a cookie store must keep it. |
+| The `lifetime` and `ttl` pair in their `write()` | Section 7 already refuses this contract. Here is the sharper reason: the shape exists **because of `CookieStore`**, which needs `lifetime` for the `max_age` of the signer. Their own Redis store ignores the `lifetime` argument to `read()` completely. If we copy the contract, we accept a limit that a store which is not Redis created. |
+
+Our `SessionStoreProtocol` must still be wide enough to accept a store of any of
+these kinds from a user. Section 9 lists it as a connection point. We do not write
+one, but we do not prevent one.
+
+### 8.4 Move the index for each user into version 1
+
+Section 5 puts `list_sessions` and `revoke_all` in a later release. **Move the
+binding to a user, and the index, into version 1.** The two methods can still
+appear later.
+
+The reason is the data, not the code. If we add the index afterwards, every session
+from before that release has no entry in it. `revoke_all` then reports success and
+removes nothing, and `list_sessions` hides a live session. Section 7 rejects
+exactly this failure: an empty answer that the application cannot distinguish from
+a correct one. Here we would cause it ourselves.
+
+The work in Redis is small. Use a **hash with a TTL on each field**: one field for each
+session, and the TTL of that field is the absolute deadline of the session. Redis then
+deletes the entry when the session dies.
+
+**Do not use a plain set.** An earlier draft did. Most sessions end because their TTL
+runs out, and Redis calls nobody when a key expires, so a set keeps a member for every
+session that ever timed out. It grows without limit, and `list_sessions` then reports
+sessions that do not exist.
+
+A second draft used a sorted set scored by expiry, which is correct but which still asks
+us to prune. **Hash field expiration, which Redis added in 7.4, removes even that.** This
+package already requires Redis 7.4, so we may use it. `HGETALL` returns the live sessions
+and nothing else, `HLEN` counts them for a limit on concurrent sessions, and the value of
+each field can hold a descriptor, so the "your active sessions" screen costs one round
+trip. Section 3.3 of [`session-design.md`](session-design.md) gives the complete design,
+and Section 13 explains why no other backend can copy it.
+
+Do this while the key schema is still free.
+
+### 8.5 The contents of version 1
+
+Divide the work by the answer to one question: can a user add this later, without
+our help?
+
+- **Core.** No, the user cannot. It must be in the middleware or in the store.
+- **A connection point.** Yes, but only if we expose a seam. Each seam is a few
+  lines, so every seam belongs in version 1. A feature that we do not write must
+  never become a feature that nobody can write.
+- **A recipe.** Yes, with the seams that already exist. It needs no code from us,
+  only documentation. Therefore it also belongs in version 1.
+
+#### Core, P0. The release means nothing without these.
+
+- `SessionStore` (ABC) and `RedisSessionStore`
+- our `SessionMiddleware`, with a signed opaque ID in the cookie
+- our own `Session` class, which tracks `popitem()` and `|=`
+- a load that happens with no call from the user, and only when the request carries a
+  session cookie. **An earlier draft said "only when code touches the session". No
+  implementation can do that**, because `HTTPConnection.session` is a synchronous
+  property and cannot await a Redis read. Section 1.1 of
+  [`session-design.md`](session-design.md) gives the evidence and the corrected rule.
+  The user still calls nothing, which is the promise in difference 1 above.
+- a write that happens only when the data changes
+- an idle TTL **and** an absolute TTL, with the clock of the cookie and the clock of
+  Redis in agreement. Section 8.3.2 explains the failure if they disagree.
+- automatic rotation when the principal changes, with the ordering guarantee beneath it
+- `revoke()`
+- strict cookie defaults
+- the validation of the session ID that arrives in the cookie
+- `SessionDep`, `SessionStoreDep`, and `get_session_store`
+- the `REDIS_SESSION_*` settings, and `.sessions()` on the builder
+
+#### Core, P1. Necessary to replace the packages that people use today.
+
+- the binding to a user **and** the index for each user (Section 8.4)
+- the settings for the cookie domain and the cookie path
+- the session-only mode, with `gc_ttl` for the Redis key
+- the OpenAPI scheme through `APIKeyCookie`
+- the accessors for the metadata, with the field names of `starsessions`
+- serialization through the existing `Coder`
+- the telemetry from Section 5
+- the exception hierarchy from Section 9.2
+- compatibility with Authlib, which needs no work. It follows from the
+  `scope["session"]` contract.
+- **support for a `def` endpoint as well as an `async def` one.** Reading and writing a
+  session already needs no bridge, because the session is a dictionary and the
+  middleware does the input and output. The imperative store operations need
+  `SyncSessionStore` and `SyncSessionStoreDep`, which follow `SyncCacheBackend` and
+  `SyncRateLimitBackend` exactly. See the "Sync endpoints" part of Section 9 in
+  [`session-design.md`](session-design.md).
+
+#### Connection points. All of them, because each one is small.
+
+Section 9.1 gives the complete table: `Coder`, `Encryptor`, `SessionStoreProtocol`,
+the key prefix as a string or a callable, the factory for a session ID, the
+identifier for the index, and the builder for the cookie.
+
+#### Recipes. Documentation only, and no code from us.
+
+Section 9.6 gives the complete list. It includes an encryptor with AES-GCM, tests
+with `fakeredis`, the four migrations, `Partitioned` and `__Host-` cookies, CSRF,
+the check of the IP address and the User-Agent, and `Clear-Site-Data` at logout.
+
+**The last two arrived here from the excluded list.** An earlier draft excluded both
+from version 1. That was wrong. The first compares two values that the session
+payload already holds. The second sets one response header. Neither needs code that
+we are not writing anyway, so neither has a reason to wait.
+
+#### Excluded from version 1
+
+Every item below is excluded because it needs code that we choose not to write now,
+and not because it is small:
+
+- the carrier for agents and MCP
+- the adapter for `starsessions` stores, from Section 7
+- the reader that migrates a live `starsessions` session, from Section 9.3.3
+
+**`SyncSessionStore` was on this list, and it should not have been.** The reason given
+was that the middleware is asynchronous, so a synchronous store would serve only
+imperative calls inside synchronous endpoints. That argument assumed such calls were
+rare. They are not: Section 9 of [`session-design.md`](session-design.md) makes
+imperative store calls the way an application signs a user in, signs them out, lists
+their devices and caps their sessions. FastAPI serves a `def` endpoint as readily as an
+`async def` one, so excluding the facade excluded every one of those operations from
+half of the framework's users.
+
+The exclusion also contradicted itself. It noted that the absence was "visible, because
+`SyncCacheBackend` and `SyncRateLimitBackend` exist" — that is an argument for building
+it, not for deferring it. Two of three features shipping a synchronous facade and the
+third not is exactly the kind of inconsistency this specification tries to avoid.
+
+Section 8.3.4 lists what is outside our scope permanently. Do not confuse that list
+with this one.
+
+### 8.6 The answer to the open question
+
+**Build the web sessions first, and keep the store independent of the transport.**
+
+Section 7 already makes this possible. The base class holds the complete lifecycle,
+and no part of it touches the transport:
 
 - the session IDs
 - the rotation
@@ -691,20 +1130,198 @@ the complete lifecycle, and no part of it depends on the transport:
 - the index for each user
 - the telemetry
 
-Only the cookie carrier is specific to the web, and it lives in `sessions.py`, not
-in the store. An adapter for agents and MCP then supplies a different carrier.
-That carrier reads the session ID from a header or from an argument, and it uses
-the same base class. The remaining question is about the product range.
+Only the cookie carrier belongs to the web, and it lives in `sessions.py` and not
+in the store. Support for agents and MCP is then a second carrier that reads the
+session ID from a header or from an argument. It is not a rewrite.
 
-### Next actions
+One question stays open, and it is not a technical question. Session state for
+agents overlaps with `redis/agent-memory-server`. The product managers must decide
+where that feature belongs.
 
-1. Review and support
-   [starlette#3436](https://github.com/Kludex/starlette/pull/3436), as Section 6.1
-   explains. This action is urgent. The PR is open now, and it changes the
-   behaviour that this design uses.
-2. Open the PR for `pop()` and the `accessed` flag, as Section 6.2 explains.
-3. Add a minimum version of `starlette>=1.0.0` to `pyproject.toml` when the
-   implementation starts.
-4. Propose the neutral import path for `Session`, as Section 6.3 explains.
-   Continue with the work whatever the answer is.
-5. Send the documentation PRs after the release, as Section 6.4 explains.
+### 8.7 Next actions
+
+1. Write the code for version 1, as Section 8.5 defines it. Nothing upstream blocks
+   this work.
+2. Make the two optional contributions to Starlette, as Section 6.3 lists them:
+   support #3436, and open the PR for the `pop()` fault. Neither one blocks us,
+   because we write our own `Session` class.
+3. After the release, add the SDK to the third-party pages of Starlette and FastAPI.
+   One task there has more value than the listing itself: those pages still send
+   approximately 70k downloads each month to the **archived** `fastapi-sessions`
+   package, as Section 2 shows. That is a supply chain risk, and nobody will argue
+   against a correction.
+
+---
+
+## 9. Extension points, exceptions, and how to change from another package
+
+Section 8 sets two goals. A user of another package must be able to change to this
+one with very little work. And if we do not supply a feature, the user must be able
+to supply it, with a callback or an extension, and never with a fork.
+
+This section is the contract for both goals.
+
+### 9.1 The extension points
+
+Each row is a connection point that we make public and that we keep. If you need to
+add a row later, that is a sign that the design is too closed.
+
+| Connection point | Type | It lets a user replace |
+|---|---|---|
+| `Coder` (`src/redis_fastapi/types.py:15`) | Protocol | the serialization: a custom JSON encoder or decoder, msgpack, or a compressed format |
+| `Encryptor` | Protocol | the encryption at rest: Fernet, a key from a KMS, or the rotation of a key |
+| `SessionStore` (ABC) and `SessionStoreProtocol` | ABC and Protocol | the complete storage: Postgres, Valkey, or Memcached. Section 7 explains the two types. |
+| the key prefix | `str` or `Callable[[str], str]` | the names of the keys: one space for each tenant, or a hash tag for OSS Cluster |
+| the factory for a session ID | `Callable[[], str]` | the format of an ID, if a company standard demands one |
+| the builder for the cookie | a callable, or every attribute passed through | **any cookie attribute that we did not plan** |
+| the identifier for the index | `Callable[[Session], str \| None]` | the subject of the index: a tenant, a device, or an API client, and not only a user |
+| the trigger for a rotation | `principal_keys: list[str]`, or a callable | **what counts as a privilege change.** Defaults to the identity alone; add a role or a scope list and an escalation rotates by itself. Section 5.1 of [`session-design.md`](session-design.md). |
+
+**The builder for the cookie is more important than it appears.** Section 2a records
+that the Starlette middleware cannot send `Partitioned`, and that it cannot use a
+`__Host-` prefix. Those two limits are a common reason to stop using it. A
+connection point here means that we never repeat that fault. A user adds the
+attribute; the user does not wait for our next release.
+
+### 9.2 The exceptions
+
+`starsessions` defines three exceptions, and this specification defined none. Define
+these, so that a caller can catch every fault from this feature as one group:
+
+- `SessionError`, the base class for every exception below.
+- `SessionConfigurationError`, for a setting that is absent or wrong. This is the
+  equivalent of their `ImproperlyConfigured`.
+- `SessionStoreError`, for a store that fails. Wrap the error from the driver;
+  do not let a `redis.RedisError` reach the application code directly.
+
+We need no equivalent of their `SessionNotLoaded`. Our session always loads when
+code touches it, which is difference 1 in Section 5.
+
+**Decide the behaviour when the store is unavailable, and write it down.** The rate
+limit code in this repository already has a `fail_closed` setting for the same
+question. Sessions must make the same choice explicit: if Redis is unreachable,
+does the request continue with an empty session, or does it fail? Do not leave this
+to an exception that escapes by accident.
+
+### 9.3 Where users arrive from
+
+Order the migration documentation by the value to the user, and not by the name of
+the competitor. Four sources matter, and the first one matters most.
+
+**One rule applies to all four: the sessions that exist do not survive the change.**
+Our key format, the position of the metadata, and the index for each user differ
+from every source below. Every signed-in user signs in again. State this at the top
+of each guide. A team must not find it in production. Recommend a release at a quiet
+time.
+
+#### 9.3.1 From a session store that holds data in one process
+
+**This is the most important guide, and the specification did not have it.**
+
+The user has sessions in the memory of the process. That covers the Starlette
+middleware with small payloads, `starsessions` with `InMemoryStore`, and a dictionary
+that somebody wrote by hand. The application works, and it works until the day the
+team starts a second worker or a second pod. Then a user signs in on one instance and
+the next request reaches the other one, which has never heard of that session.
+
+That day is the reason this feature exists. Section 4 gives the same history for
+Spring Session Data Redis. Write the guide for the person who is having that day:
+
+- Name the symptom first: a user signs out at random, and the rate of it grows with
+  the number of instances. That is what the person will search for.
+- Show that the change removes the need for sticky sessions at the load balancer, so
+  the balancer returns to a plain round robin.
+- Show that a session then survives a restart and a deployment.
+- Note the one new duty: Redis becomes a dependency of the request path. Point to the
+  decision in Section 9.2 about the behaviour when the store is unavailable.
+
+#### 9.3.2 From the Starlette signed cookie
+
+This is the largest group of users, and most of them arrived through Authlib.
+
+For them the change is almost free. Section 5a explains why: we keep the
+`scope["session"]` contract, so `request.session` behaves as before and Authlib needs
+no change at all. The user replaces one middleware.
+
+Name the two faults that disappear at the same time, because Section 2a shows that
+these are what people actually suffer from:
+
+- The limit of 4096 bytes disappears. A payload larger than that no longer breaks
+  the login without an error message.
+- The race condition on `Set-Cookie` disappears, and with it one cause of
+  `mismatching_state`.
+
+#### 9.3.3 From `starsessions` with `RedisStore`
+
+The user already has the correct architecture. Only the package changes. The table in
+Section 9.4 translates every setting.
+
+A reader for their format is possible, and it would remove the one interruption. It
+would read their key, migrate the session at the first request, and write it again in
+our format. It costs approximately 30 lines. Section 8.5 excludes it from version 1,
+because it is code that we choose not to write yet. Add it if users ask for a
+migration with no sign-out.
+
+#### 9.3.4 From the `RedisStrategy` of `fastapi-users`
+
+See Section 9.5.
+
+### 9.4 Translation of the settings from `starsessions`
+
+This table is the most valuable part of that migration, and it costs us nothing.
+
+| `starsessions` | This SDK | Note |
+|---|---|---|
+| `store=RedisStore(connection=…)` | `.sessions()` | We use the connection pool of the SDK. |
+| `lifetime=N` | the absolute TTL | Both accept an `int` or a `timedelta`. |
+| `lifetime=0` | the session-only mode | Set `gc_ttl` for the Redis key. |
+| `rolling=True` | the idle TTL | Section 8.3.2 explains the two clocks. |
+| `rolling=False` | the absolute TTL alone | |
+| `cookie_name` | the cookie name | The same meaning. |
+| `cookie_same_site` | the `SameSite` value | The same meaning. |
+| `cookie_https_only` | the `https_only` flag | Both default to on. |
+| `cookie_domain`, `cookie_path` | the cookie domain, the cookie path | The same meaning. |
+| `serializer=JsonSerializer(...)` | `Coder` | A custom `json_encoder` becomes a custom `Coder`. |
+| `encryptor=FernetEncryptor(key)` | the `Encryptor` connection point | Use the AES-GCM recipe, or supply their Fernet class. Section 8.3.1. |
+| `prefix="x."` or a callable | the key prefix | We accept both forms. |
+| `gc_ttl` | `gc_ttl` | The same meaning. |
+| `regenerate_session_id()` | `rotate()` | Ours is atomic. Section 7 gives the difference. |
+| `load_session()`, `is_loaded()` | nothing | Our load is automatic. Delete these calls. |
+| `get_session_metadata()` | the accessor for the metadata | The same three field names. |
+| `get_session_remaining_seconds()` | the same name | |
+| `InMemoryStore` | `fakeredis` in the tests | Section 8.3.3. Outside our scope in production. |
+| `CookieStore` | nothing | Outside our scope. Keep the Starlette middleware for this case. |
+| `SessionAutoloadMiddleware` | nothing | Delete it. Our load is automatic. |
+
+### 9.5 Changing from the `RedisStrategy` of `fastapi-users`
+
+Section 8.1 states the limit: we replace `RedisStrategy` and `CookieTransport`, and
+we replace nothing else. The user keeps `fastapi-users` for registration, for
+passwords, and for OAuth.
+
+Their record maps a token to a user ID and holds nothing else. So the migration has
+one direction that is simple: our session holds the user ID in the same way, and it
+can also hold everything else. As above, the sessions that exist do not survive the
+change.
+
+### 9.6 The recipes for version 1
+
+A recipe is documentation, and it needs no code from us. Each one uses a connection
+point from Section 9.1. Section 8.5 puts all of them in version 1 for that reason.
+
+| Recipe | It uses | Approximate size |
+|---|---|---|
+| An encryptor with AES-GCM | the `Encryptor` connection point and the `cryptography` package | 10 lines. Section 8.3.1. |
+| Tests with `fakeredis` | `dependency_overrides`, which this package already supports | Point to `tests/conftest.py`. Section 8.3.3. |
+| The four migrations | — | Section 9.3. |
+| `Partitioned` and `__Host-` cookies | the builder for the cookie | 5 lines. It corrects the limit in Section 2a. |
+| CSRF for a cookie session | `fastapi-csrf-protect` | Section 5 already requires this text. |
+| A check of the IP address and the User-Agent | two values in the session payload | 10 lines. Repeat the OWASP warning from Section 3: it detects, and it does not defend. |
+| `Clear-Site-Data` at logout | one response header | 2 lines. |
+| One key space for each tenant | the key prefix as a callable | 3 lines. |
+| A hash tag for OSS Cluster | the key prefix as a callable | 3 lines. |
+| An index by device instead of by user | the identifier for the index | 5 lines. |
+
+**Write the recipes as tested code.** Put each one in `examples/`, or in a test that
+`nox` runs. A recipe that nobody runs stops working at the first release that changes
+a name, and then it damages the user more than an absent feature does.
