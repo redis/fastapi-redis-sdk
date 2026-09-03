@@ -9,7 +9,7 @@ from __future__ import annotations
 import warnings
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -173,6 +173,115 @@ class RedisSettings(BaseSettings):
         default=False,
         description=("Emit IETF draft RateLimit / RateLimit-Policy response headers."),
     )
+    # -- Sessions --------------------------------------------------------------
+    session_cookie_name: str = Field(
+        default="session",
+        description=(
+            "Name of the session cookie.  Matches Starlette's and "
+            "starsessions' default so a migration keeps existing cookie names."
+        ),
+    )
+    session_cookie_domain: str | None = Field(
+        default=None,
+        description=(
+            "Cookie Domain attribute.  None scopes the cookie to the exact "
+            "host that set it; setting it also exposes the cookie to "
+            "subdomains."
+        ),
+    )
+    session_cookie_path: str = Field(
+        default="/",
+        description="Cookie Path attribute.",
+    )
+    session_cookie_same_site: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        description=(
+            "Cookie SameSite attribute.  'none' requires "
+            "session_cookie_https_only=True."
+        ),
+    )
+    session_cookie_https_only: bool = Field(
+        default=True,
+        description=(
+            "Add Secure to the session cookie, so the browser sends it over "
+            "HTTPS only.  On by default; turn it off for local development "
+            "over plain HTTP and nowhere else."
+        ),
+    )
+    session_idle_ttl: int = Field(
+        default=1800,
+        ge=0,
+        description=(
+            "Idle clock, in seconds.  The session dies this long after the "
+            "last request that carried its cookie.  Stored as the TTL of hash "
+            "field 'd'.  0 disables the idle clock, and the field then takes "
+            "session_gc_ttl."
+        ),
+    )
+    session_absolute_ttl: int = Field(
+        default=28800,
+        ge=0,
+        description=(
+            "Absolute clock, in seconds.  The session dies this long after "
+            "creation however active the user is.  Stored as the TTL of hash "
+            "field 'a', which is written once and never refreshed.  0 disables "
+            "it, and the field then takes session_gc_ttl."
+        ),
+    )
+    session_gc_ttl: int = Field(
+        default=2592000,
+        gt=0,
+        description=(
+            "Backstop TTL for a field whose real deadline is unknown: "
+            "cookie-only mode, or session_absolute_ttl=0.  Never reached in "
+            "normal operation; it exists so Redis can always collect an "
+            "abandoned key."
+        ),
+    )
+    session_refresh_on_load: bool = Field(
+        default=True,
+        description=(
+            "True: the load uses HGETEX, so any request carrying the cookie "
+            "restarts the idle clock in the same round trip.  False: only a "
+            "request that touched the session refreshes it, at the cost of a "
+            "second round trip."
+        ),
+    )
+    session_fail_closed: bool = Field(
+        default=False,
+        description=(
+            "Behaviour when Redis is unreachable on READ.  False yields an "
+            "empty session, so the caller looks anonymous and the "
+            "application's own authorization rejects them.  True raises "
+            "instead.  Writes always raise, whatever this is set to."
+        ),
+    )
+    session_always_save: bool = Field(
+        default=False,
+        description=(
+            "Write the payload on every request that touched the session, "
+            "even when no mutation was detected.  The escape route for a "
+            "change inside a nested value, which no dict subclass can see."
+        ),
+    )
+    session_principal_keys: list[str] = Field(
+        default_factory=lambda: ["user_id"],
+        description=(
+            "Session keys the rotation trigger watches.  A change to any of "
+            "them on a successful response rotates the session ID.  Add 'role' "
+            "or 'scopes' for OWASP's privilege-change rotation."
+        ),
+    )
+    session_events_enabled: bool = Field(
+        default=False,
+        description=(
+            "Subscribe to Redis notifications and call registered handlers "
+            "when a session ends.  Best-effort: on a server that cannot "
+            "supply them the store logs one warning at startup and the "
+            "handlers never fire."
+        ),
+    )
+
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(
         default=False,

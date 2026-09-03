@@ -16,7 +16,7 @@ their own lifespan logic without conflicting.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -25,9 +25,11 @@ from redis_fastapi.lifespan import redis_lifespan
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+    from starlette.requests import Request
 
     from redis_fastapi.rate import Rate
     from redis_fastapi.ratelimit import Identifier, OnLimitExceeded, SkipWhen
+    from redis_fastapi.sessions import CookieSpec, Session
 
 
 class FastAPIRedis:
@@ -135,6 +137,52 @@ class FastAPIRedis:
             on_limit_exceeded=on_limit_exceeded,
             ietf_headers=ietf_headers,
             fail_closed=fail_closed,
+        )
+        return self
+
+    def sessions(
+        self,
+        *,
+        principal_of: Callable[[Session], Any] | None = None,
+        principal_keys: list[str] | None = None,
+        subject_of: Callable[[Session], str | None] | None = None,
+        cookie_builder: Callable[[CookieSpec], str] | None = None,
+        skip: Callable[[Request], bool] | None = None,
+    ) -> FastAPIRedis:
+        """Register the session middleware.
+
+        Required for ``request.session``, ``SessionDep`` and
+        ``SessionStoreDep`` to work.  Rotation after a sign-in or a privilege
+        change is automatic - the middleware detects the change rather than
+        waiting to be told, so there is no rotation call to forget::
+
+            FastAPIRedis(app).lifespan().sessions(
+                principal_keys=["user_id", "role"]
+            )
+
+        Calling this method more than once on the same app is a no-op.
+
+        Args:
+            principal_of: Pure function whose changing return value triggers a
+                rotation.  Defaults to reading ``session_principal_keys``.
+            principal_keys: The session keys to watch, for the common case
+                where a function is overkill.
+            subject_of: Which subject a session is indexed under; ``None``
+                leaves it out of the index.
+            cookie_builder: Renders the ``Set-Cookie`` value.
+            skip: Requests that need no session at all, at zero Redis cost.
+        """
+        from redis_fastapi.sessions import SessionMiddleware, add_redis_sessions
+
+        if self._has_middleware(SessionMiddleware):
+            return self
+        add_redis_sessions(
+            self._app,
+            principal_of=principal_of,
+            principal_keys=principal_keys,
+            subject_of=subject_of,
+            cookie_builder=cookie_builder,
+            skip=skip,
         )
         return self
 

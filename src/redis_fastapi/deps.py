@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         SyncRateLimitBackend,
         _BackendCapabilities,
     )
+    from redis_fastapi.session_backend import _StoreCapabilities
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
@@ -19,6 +20,18 @@ from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 
 from redis_fastapi.config import get_settings
+
+# Imported at runtime, not under TYPE_CHECKING, and that is load-bearing.
+# FastAPI resolves an endpoint's annotations with ``get_type_hints``, which
+# evaluates the forward reference inside ``Annotated[...]`` against *this*
+# module's namespace.  A name that exists only for the type checker raises
+# NameError there, and FastAPI then treats the parameter as an ordinary query
+# parameter - so the endpoint answers 422 instead of receiving its session.
+# Under ``from __future__ import annotations`` in the caller's module this is
+# the only spelling that works.  There is no import cycle: session_backend
+# never imports deps at module level.
+from redis_fastapi.session_backend import RedisSessionStore, SyncSessionStore
+from redis_fastapi.sessions import Session
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +59,10 @@ class _PoolState:
     # forward ref (annotations are lazy here), so this needs no runtime import
     # and there is no import cycle: ratelimit_backend never imports deps.
     ratelimit_capabilities: _BackendCapabilities | None = None
+
+    # The same idea for the session store: HSETEX support is a property of the
+    # server, so it is discovered once per pool rather than on every request.
+    session_capabilities: _StoreCapabilities | None = None
 
     # -- pool / cluster builders (static) -----------------------------------
 
@@ -106,6 +123,7 @@ class _PoolState:
         """Reset cached clients (called during lifespan shutdown)."""
         self._async_client = None
         self.ratelimit_capabilities = None
+        self.session_capabilities = None
 
 
 def _get_pool_state(app: FastAPI) -> _PoolState:
@@ -184,6 +202,45 @@ async def get_sync_rate_limit_backend(request: Request) -> SyncRateLimitBackend:
     return SyncRateLimitBackend(backend)
 
 
+async def get_session_store(request: Request) -> RedisSessionStore:
+    """Return a :class:`RedisSessionStore` backed by the shared async pool.
+
+    Built per request, but its server-capability cache lives on the pool
+    state, so ``HSETEX`` detection is paid once per process rather than
+    re-probed on every request.
+    """
+    from redis_fastapi.session_backend import RedisSessionStore, _StoreCapabilities
+
+    state = _get_pool_state(request.app)
+    if state.session_capabilities is None:
+        state.session_capabilities = _StoreCapabilities()
+    client = await get_async_redis(request)
+    return RedisSessionStore(client, capabilities=state.session_capabilities)
+
+
+async def get_sync_session_store(request: Request) -> SyncSessionStore:
+    """Return a :class:`SyncSessionStore` for use in sync endpoints.
+
+    The underlying async store is resolved on the event loop; the returned
+    wrapper bridges each call back via :func:`anyio.from_thread.run`.
+    """
+    from redis_fastapi.session_backend import SyncSessionStore
+
+    store = await get_session_store(request)
+    return SyncSessionStore(store)
+
+
+async def get_session(request: Request) -> Session:
+    """Return the session the middleware already loaded for this request.
+
+    Performs no I/O.  The read happened before the application ran, because
+    ``request.session`` is a synchronous property and cannot await.
+    """
+    from redis_fastapi.sessions import session_of
+
+    return session_of(request)
+
+
 AsyncRedisDep = Annotated[AsyncClient, Depends(get_async_redis)]
 CacheBackendDep = Annotated["CacheBackend", Depends(get_cache_backend)]
 SyncCacheBackendDep = Annotated["SyncCacheBackend", Depends(get_sync_cache_backend)]
@@ -191,3 +248,6 @@ RateLimitBackendDep = Annotated["RateLimitBackend", Depends(get_rate_limit_backe
 SyncRateLimitBackendDep = Annotated[
     "SyncRateLimitBackend", Depends(get_sync_rate_limit_backend)
 ]
+SessionStoreDep = Annotated[RedisSessionStore, Depends(get_session_store)]
+SyncSessionStoreDep = Annotated[SyncSessionStore, Depends(get_sync_session_store)]
+SessionDep = Annotated[Session, Depends(get_session)]
