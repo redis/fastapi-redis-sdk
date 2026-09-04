@@ -30,6 +30,11 @@ from redis_fastapi.deps import (
     get_sync_rate_limit_backend,
     get_sync_session_store,
 )
+from redis_fastapi.exceptions import (
+    SessionConfigurationError,
+    SessionError,
+    SessionStoreError,
+)
 from redis_fastapi.lifespan import redis_lifespan
 from redis_fastapi.rate import Rate, parse_rate
 from redis_fastapi.ratelimit import (
@@ -47,21 +52,22 @@ from redis_fastapi.ratelimit_backend import (
     SyncRateLimitBackend,
 )
 from redis_fastapi.session_backend import (
+    LoadedSession,
     RedisSessionStore,
     SessionInfo,
     SessionMetadata,
     SessionRecord,
+    SessionState,
     SessionStore,
+    SessionStoreProtocol,
     SyncSessionStore,
 )
-from redis_fastapi.session_events import SessionEvents
+from redis_fastapi.session_events import Cause, SessionEvents, Tier
 from redis_fastapi.sessions import (
     CookieSpec,
+    Outcome,
     Session,
-    SessionConfigurationError,
-    SessionError,
     SessionMiddleware,
-    SessionStoreError,
     add_redis_sessions,
     build_cookie,
 )
@@ -69,6 +75,7 @@ from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
     Coder,
+    Encryptor,
     JsonCoder,
     KeyBuilder,
     pydantic_model_coder,
@@ -80,12 +87,16 @@ __all__ = [
     "CacheBackendDep",
     "CacheHitException",
     "CannotIdentifyClient",
+    "Cause",
     "Coder",
     "CookieSpec",
+    "Encryptor",
     "FastAPIRedis",
     "Identifier",
     "JsonCoder",
     "KeyBuilder",
+    "LoadedSession",
+    "Outcome",
     "Rate",
     "RateLimitBackend",
     "RateLimitBackendDep",
@@ -103,15 +114,18 @@ __all__ = [
     "SessionMetadata",
     "SessionMiddleware",
     "SessionRecord",
+    "SessionState",
     "SessionStore",
     "SessionStoreDep",
     "SessionStoreError",
+    "SessionStoreProtocol",
     "SyncCacheBackend",
     "SyncCacheBackendDep",
     "SyncRateLimitBackend",
     "SyncRateLimitBackendDep",
     "SyncSessionStore",
     "SyncSessionStoreDep",
+    "Tier",
     "add_redis_caching",
     "add_redis_rate_limiting",
     "add_redis_sessions",

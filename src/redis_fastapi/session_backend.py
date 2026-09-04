@@ -21,18 +21,18 @@ import logging
 import secrets
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from enum import Enum, auto
+from typing import Any, Protocol, runtime_checkable
 
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
-from redis.exceptions import RedisError
+from redis.exceptions import RedisClusterException, RedisError
 
 from redis_fastapi.config import get_settings
-from redis_fastapi.sessions import (
-    Session,
+from redis_fastapi.exceptions import (
     SessionConfigurationError,
     SessionStoreError,
 )
@@ -41,9 +41,24 @@ from redis_fastapi.telemetry import (
     session_span,
     timed_session,
 )
-from redis_fastapi.types import Coder, JsonCoder
+from redis_fastapi.types import Coder, Encryptor, JsonCoder
 
 logger = logging.getLogger(__name__)
+
+# Every driver failure this store is willing to interpret.
+#
+# ``RedisClusterException`` is **not** a subclass of ``RedisError`` - it
+# descends straight from ``Exception`` - and its subclass
+# ``SlotNotCoveredError`` is raised on the ordinary command path during a
+# resharding or a failover.  Catching only ``RedisError`` therefore lets the
+# commonest cluster failure escape every policy in this module: the read would
+# not fail open, and a raw driver exception would reach application code that
+# was told ``SessionError`` catches the whole feature.
+STORE_ERRORS: tuple[type[BaseException], ...] = (
+    RedisError,
+    RedisClusterException,
+    OSError,
+)
 
 # Hash field names.  Two characters, and identical in every session key.
 # Section 13.2: a uniform schema is what a future compact-hash encoding would
@@ -54,10 +69,32 @@ FIELD_DATA = "d"
 # The value of field ``a`` is never read - the field exists for its TTL alone.
 _ABSOLUTE_MARKER = "1"
 
-# ``HTTL`` answers -2 for "no such field, or no such key" and -1 for "the field
-# exists with no expiry".  Naming them stops either being read as a duration.
-TTL_NO_FIELD = -2
-TTL_NO_EXPIRY = -1
+
+class Deadline(Enum):
+    """What ``_read`` says when the absolute deadline is not a number.
+
+    A backend reports a live deadline as an ``int`` of seconds remaining, and
+    anything else as one of these.  The two cases are not interchangeable and
+    the base class branches on both, so neither may be smuggled through as a
+    negative integer.
+
+    An earlier version passed Redis's own ``HTTL`` sentinels - ``-2`` and
+    ``-1`` - straight through, which quietly made "reproduce this Redis
+    encoding" part of the contract every other backend had to satisfy, without
+    the ``_read`` docstring ever saying so.
+    """
+
+    ABSENT = auto()
+    """No deadline field, or no key at all.  The session does not exist."""
+
+    UNBOUNDED = auto()
+    """The field exists with no expiry.  Unreachable by construction - this
+    store always gives it one - so it means something else wrote the key."""
+
+
+# Redis's own answers, mapped to the above by ``_ttl``.
+_HTTL_NO_FIELD = -2
+_HTTL_NO_EXPIRY = -1
 
 # Characters a session ID may contain: the alphabet of ``secrets.token_urlsafe``.
 _ID_ALPHABET = frozenset(
@@ -168,12 +205,48 @@ async def probe_hsetex_support(
         # entry for a command the server does not know.  That is the
         # "unsupported" answer, not a broken probe.
         return False
-    except (RedisError, OSError):
+    except STORE_ERRORS:
         return None
     if not reply:
         return False
     first = reply[0] if isinstance(reply, (list, tuple)) else reply
     return first is not None
+
+
+@dataclass
+class SessionState:
+    """Everything about one session that is not its data.
+
+    The store reads and writes this; the middleware owns it and puts it on
+    ``request.state``.  Keeping it separate is what lets ``Session`` go back to
+    being a ``dict`` with two flags - exactly Starlette's contract and nothing
+    more - and it is why this module imports nothing from ``sessions``.
+
+    The type of ``data`` is a plain ``MutableMapping`` on purpose: the store
+    has no business knowing about a web session object, and a second carrier
+    (an agent or MCP session, say) can reuse the store without one.
+
+    Attributes:
+        data: The payload the application sees.
+        session_id: Where it is stored, or ``None`` before the first write.
+        subject: What it is indexed under.  Captured at load time, because by
+            the time ``revoke`` runs the payload it would be derived from is
+            already gone.
+        created: The original creation time, carried forward so a write does
+            not restamp it.
+        absolute_remaining: What the server says is left of the deadline.
+        revoked: The store ended this session; the middleware owes a clearing
+            cookie.
+        rotated: A handler asked for a rotation the middleware still owes.
+    """
+
+    data: MutableMapping[str, Any]
+    session_id: str | None = None
+    subject: str | None = None
+    created: float | None = None
+    absolute_remaining: int | None = None
+    revoked: bool = False
+    rotated: bool = False
 
 
 @dataclass(frozen=True)
@@ -190,13 +263,85 @@ class LoadedSession:
     absolute_remaining: int
 
 
+@runtime_checkable
+class SessionStoreProtocol(Protocol):
+    """The surface the middleware and the dependencies actually call.
+
+    Much smaller than :class:`SessionStore`, and structural rather than
+    inherited, so a test double or another package can supply a store without
+    subclassing anything.  :class:`SessionStore` satisfies it by construction.
+
+    Implement this when you want to *substitute* a store; inherit
+    :class:`SessionStore` when you want to *write* one, because the base class
+    already owns the lifecycle rules that are a security control.
+    """
+
+    @property
+    def idle_seconds(self) -> int: ...  # pragma: no cover
+
+    @property
+    def absolute_seconds(self) -> int: ...  # pragma: no cover
+
+    def is_valid_id(self, value: str) -> bool: ...  # pragma: no cover
+
+    def new_id(self) -> str: ...  # pragma: no cover
+
+    def new_record(
+        self,
+        data: dict[str, Any],
+        *,
+        created: float | None = ...,
+    ) -> SessionRecord: ...  # pragma: no cover
+
+    def session_id(self, state: SessionState) -> str | None: ...  # pragma: no cover
+
+    async def load(
+        self, session_id: str, *, refresh: bool = ...
+    ) -> LoadedSession | None: ...  # pragma: no cover
+
+    async def create(
+        self, session_id: str, record: SessionRecord
+    ) -> None: ...  # pragma: no cover
+
+    async def save(
+        self, session_id: str, record: SessionRecord
+    ) -> None: ...  # pragma: no cover
+
+    async def touch(self, session_id: str) -> None: ...  # pragma: no cover
+
+    async def delete(self, session_id: str) -> None: ...  # pragma: no cover
+
+    async def rotate(
+        self,
+        state: SessionState,
+        *,
+        subject: str | None = ...,
+        descriptor: dict[str, Any] | None = ...,
+    ) -> str: ...  # pragma: no cover
+
+    async def revoke(
+        self, state: SessionState, *, subject: str | None = ...
+    ) -> None: ...  # pragma: no cover
+
+    async def index(
+        self,
+        subject: str,
+        session_id: str,
+        record: SessionRecord,
+        *,
+        absolute_remaining: int,
+        extra: dict[str, Any] | None = ...,
+    ) -> None: ...  # pragma: no cover
+
+
 class SessionStore(ABC):
     """Owns the session lifecycle; a subclass owns only the storage.
 
     The lifecycle is a security control, so it is written once here rather
-    than once per backend.  A new backend implements the seven abstract
-    primitives at the bottom of this class and inherits the identifier rules,
-    the two-clock policy, the envelope format and the error handling.
+    than once per backend.  A new backend implements the abstract primitives
+    at the bottom of this class - ten of them, listed there - and inherits the
+    identifier rules, the two-clock policy, the envelope format and the error
+    handling.
 
     Section 7 of ``session-mgmt.md`` gives the reason this is an abstract base
     class and not a bare protocol.  ``SessionStoreProtocol`` describes the much
@@ -208,6 +353,7 @@ class SessionStore(ABC):
         self,
         *,
         coder: type[Coder] = JsonCoder,
+        encryptor: Encryptor | None = None,
         idle_ttl: int | timedelta | None = None,
         absolute_ttl: int | timedelta | None = None,
         gc_ttl: int | timedelta | None = None,
@@ -215,6 +361,7 @@ class SessionStore(ABC):
     ) -> None:
         settings = get_settings()
         self._coder = coder
+        self._encryptor = encryptor
         self._id_factory = id_factory
         self._idle_ttl = _seconds(
             idle_ttl if idle_ttl is not None else settings.session_idle_ttl
@@ -322,6 +469,8 @@ class SessionStore(ABC):
                 "d": record.data,
             }
         )
+        if self._encryptor is not None:
+            return self._encryptor.encrypt(encoded.encode()).decode("latin-1")
         return encoded
 
     def decode(self, raw: str | bytes) -> SessionRecord:
@@ -331,7 +480,14 @@ class SessionStore(ABC):
         session, because the two mean different things: the caller decides
         whether to sign the user out or to fail the request.
         """
-        text = raw if isinstance(raw, str) else raw.decode()
+        if self._encryptor is not None:
+            blob = raw.encode("latin-1") if isinstance(raw, str) else raw
+            try:
+                text = self._encryptor.decrypt(blob).decode()
+            except Exception as exc:
+                raise SessionStoreError(f"Unreadable session record: {exc}") from exc
+        else:
+            text = raw if isinstance(raw, str) else raw.decode()
         try:
             envelope = self._coder.decode(text)
             meta = envelope["m"]
@@ -346,13 +502,29 @@ class SessionStore(ABC):
         except Exception as exc:
             raise SessionStoreError(f"Unreadable session record: {exc}") from exc
 
-    def new_record(self, data: dict[str, Any]) -> SessionRecord:
-        """Build a record for a session that does not exist yet."""
+    def new_record(
+        self, data: dict[str, Any], *, created: float | None = None
+    ) -> SessionRecord:
+        """Build a record to write.
+
+        *created* carries the original creation time forward on an update.
+        Omitting it stamps "now", which is correct only for a session that
+        does not exist yet: leave it out on a create, pass the loaded value on
+        every subsequent write.  Without it ``created`` silently becomes "time
+        of last write", and a device listing reports every active session as
+        having been signed in seconds ago.
+
+        ``lifetime`` records the deadline actually in force, so a session with
+        the absolute clock disabled reports the ``gc_ttl`` backstop rather
+        than a misleading zero.
+        """
         now = time.time()
         return SessionRecord(
             data=data,
             metadata=SessionMetadata(
-                created=now, last_access=now, lifetime=self._absolute_ttl
+                created=created if created is not None else now,
+                last_access=now,
+                lifetime=self.absolute_seconds,
             ),
         )
 
@@ -388,12 +560,12 @@ class SessionStore(ABC):
                 raw, absolute_ttl = await self._read(
                     session_id, refresh_idle=self.idle_seconds if refresh else None
                 )
-            except (RedisError, OSError) as exc:
+            except STORE_ERRORS as exc:
                 record_session_operation(operation="load", result="error")
                 self._read_failed(exc)
                 return None
 
-        if absolute_ttl == TTL_NO_EXPIRY:
+        if absolute_ttl is Deadline.UNBOUNDED:
             # Unreachable by construction: every write gives field "a" a TTL.
             # Reaching it means something wrote the key outside this store, so
             # say so loudly and treat the session as absent rather than guess.
@@ -405,36 +577,72 @@ class SessionStore(ABC):
             await self._safe_delete(session_id)
             return None
 
-        if raw is None or absolute_ttl <= 0:
+        alive_until = absolute_ttl if isinstance(absolute_ttl, int) else 0
+        if raw is None or alive_until <= 0:
             # Rows two and four of the state table: a half-dead key, alive on
             # one clock and dead on the other. Delete it so the index entry can
             # follow, rather than leaving a candidate that every later
             # verification has to reject. Row three - dead on both - is simply
             # absent, and there is nothing to remove.
-            if raw is not None or absolute_ttl > 0:
+            half_dead = raw is not None or alive_until > 0
+            if half_dead:
                 await self._safe_delete(session_id)
             record_session_operation(
-                operation="load",
-                result="expired" if raw is not None or absolute_ttl > 0 else "miss",
+                operation="load", result="expired" if half_dead else "miss"
             )
             return None
 
         record_session_operation(operation="load", result="hit")
-        return LoadedSession(record=self.decode(raw), absolute_remaining=absolute_ttl)
+        return LoadedSession(record=self.decode(raw), absolute_remaining=alive_until)
+
+    async def create(self, session_id: str, record: SessionRecord) -> None:
+        """Write a session that does not exist yet, starting both clocks.
+
+        The only method that ever writes field ``a``.  Use it for a first
+        write and for the new half of a rotation; use :meth:`save` for every
+        subsequent write.
+
+        Raises:
+            SessionStoreError: On any store failure.
+        """
+        await self._save(session_id, record, absolute=self.absolute_seconds)
 
     async def save(self, session_id: str, record: SessionRecord) -> None:
-        """Write the payload, leaving the absolute deadline untouched.
+        """Update an existing session's payload, and only its payload.
 
-        Field ``a`` is written **if it does not already exist**, so one call
-        covers both creating a session and updating one, and no number of
-        updates can extend the absolute deadline.  That conditional write is
-        the whole of N-6: outliving the deadline is not a bug to avoid here,
-        it is unreachable.
+        **This is N-6, and the method split is what makes it structural.**
+        There is no argument to this method that could write field ``a``, so
+        an update cannot extend the absolute deadline and - the case that
+        matters - cannot bring it back after it has expired.
+
+        An earlier version wrote ``a`` conditionally on every save, reasoning
+        that ``FNX`` protects an existing field.  It does, but an *expired*
+        field is an absent field, so a request whose load saw ``a`` alive and
+        whose write landed after it lapsed recreated the deadline with a full
+        fresh lifetime.  The window is one request long and it recurs every
+        cycle, so an actively-used session never died.  Now such a write
+        leaves a key holding ``d`` with no ``a``, which the next load reads as
+        row two of the state table and deletes.  The session ends, which is
+        the correct outcome: its deadline passed.
 
         Raises:
             SessionStoreError: On any store failure.  A write never fails
                 quietly, whatever ``session_fail_closed`` says - losing a login
                 or a rotation is the worst outcome in this design.
+        """
+        await self._save(session_id, record, absolute=None)
+
+    async def _save(
+        self, session_id: str, record: SessionRecord, *, absolute: int | None
+    ) -> None:
+        """Shared body of :meth:`create` and :meth:`save`.
+
+        **This is N-6, and the flag is what makes it structural.**  An update
+        writes field ``d`` and nothing else, so it cannot extend field ``a``
+        and - the case that matters - it cannot bring ``a`` back after it has
+        expired.
+
+        *absolute* is the deadline TTL on a create, and ``None`` on an update.
         """
         with session_span("session.save"), timed_session("save"):
             try:
@@ -442,9 +650,9 @@ class SessionStore(ABC):
                     session_id,
                     self.encode(record),
                     idle=self.idle_seconds,
-                    absolute=self.absolute_seconds,
+                    absolute=absolute,
                 )
-            except (RedisError, OSError) as exc:
+            except STORE_ERRORS as exc:
                 record_session_operation(operation="save", result="error")
                 raise SessionStoreError(f"Could not save session: {exc}") from exc
         record_session_operation(operation="save", result="hit")
@@ -457,7 +665,7 @@ class SessionStore(ABC):
         """
         try:
             await self._expire(session_id, self.idle_seconds)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             raise SessionStoreError(f"Could not refresh session: {exc}") from exc
 
     async def delete(self, session_id: str) -> None:
@@ -469,22 +677,22 @@ class SessionStore(ABC):
         """
         try:
             await self._delete(session_id)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             raise SessionStoreError(f"Could not delete session: {exc}") from exc
 
     # -- rotation and revocation ---------------------------------------------
 
-    def session_id(self, session: Session) -> str | None:
+    def session_id(self, state: SessionState) -> str | None:
         """The identifier this session is stored under, if it has one yet.
 
         ``None`` for a session that has never been written.  Useful for
         marking "this device" in a listing.
         """
-        return session.sid
+        return state.session_id
 
     async def rotate(
         self,
-        session: Session,
+        state: SessionState,
         *,
         subject: str | None = None,
         descriptor: dict[str, Any] | None = None,
@@ -513,27 +721,38 @@ class SessionStore(ABC):
         Raises:
             SessionStoreError: On any store failure.
         """
-        old_id = session.sid
+        subject = subject if subject is not None else state.subject
+        old_id = state.session_id
         if old_id is not None:
             await self.delete(old_id)
-            if subject is not None:
-                await self._index_drop(subject, old_id)
+            # The entry lives under the subject it was *written* with, which is
+            # not always the one being written now - an account switch changes
+            # it mid-request.
+            if state.subject:
+                await self._index_drop(state.subject, old_id)
 
         new_id = self.new_id()
-        record = self.new_record(session.raw())
-        await self.save(new_id, record)
-        session.sid = new_id
+        record = self.new_record(dict(state.data))
+        await self.create(new_id, record)
+        state.session_id = new_id
+        state.created = record.metadata.created
+        state.absolute_remaining = self.absolute_seconds
         # Cleared, not set. ``rotated`` means "the middleware still owes this
         # session a rotation"; we have just performed one. Leaving it set made
         # the middleware rotate a second time at response start, which threw
         # away the key written here and turned the ID returned to the caller
         # into a stale value. The middleware notices the new ID by comparing it
         # with the one it loaded, so the cookie still goes out.
-        session.rotated = False
-        session.revoked = False
+        state.rotated = False
+        state.revoked = False
+        state.subject = subject
         if subject is not None:
             await self.index(
-                subject, new_id, record, absolute_remaining=self.absolute_seconds
+                subject,
+                new_id,
+                record,
+                absolute_remaining=self.absolute_seconds,
+                extra=descriptor,
             )
         # The runtime backstop for a misconfigured principal resolver: sign-ins
         # with no rotations is a visible anomaly on a dashboard, and a silent
@@ -542,7 +761,7 @@ class SessionStore(ABC):
         record_session_operation(operation="rotate", result="hit")
         return new_id
 
-    async def reauthenticate(self, session: Session) -> None:
+    async def reauthenticate(self, state: SessionState) -> None:
         """Force a rotation on the way out of this request.
 
         For a privilege change the principal cannot see - an impersonation
@@ -551,21 +770,34 @@ class SessionStore(ABC):
         ``http.response.start`` so it lands in the same response as the new
         cookie.
         """
-        session.rotated = True
-        session.mark_modified()
+        state.rotated = True
 
-    async def revoke(self, session: Session) -> None:
+    async def revoke(self, state: SessionState, *, subject: str | None = None) -> None:
         """End the session in hand and clear its cookie.
 
         Safe to call on a session that was never written.
+
+        *subject* drops the index entry alongside the key.  The middleware
+        supplies it from the subject captured at load time, so a handler
+        calling ``store.revoke(session)`` need not pass anything; pass it
+        explicitly only when using the store outside a request.
+
+        Leaving the entry behind is not cosmetic: ``list_for_subject`` prunes
+        it on the next read but ``count_for_subject`` does not, so a
+        concurrent-session cap counts sessions the user has already signed out
+        of and eventually refuses a legitimate login.
         """
-        old_id = session.sid
+        old_id = state.session_id
         if old_id is not None:
             await self.delete(old_id)
-        session.clear()
-        session.sid = None
-        session.revoked = True
-        session.rotated = False
+            resolved = subject if subject is not None else state.subject
+            if resolved:
+                await self._index_drop(resolved, old_id)
+        state.data.clear()
+        state.session_id = None
+        state.subject = None
+        state.revoked = True
+        state.rotated = False
 
     async def revoke_id(self, session_id: str, *, subject: str) -> bool:
         """End one session by ID, and refuse an ID not indexed under *subject*.
@@ -583,7 +815,7 @@ class SessionStore(ABC):
             return False
         try:
             members = await self._index_members(subject)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             raise SessionStoreError(f"Could not read the session index: {exc}") from exc
         if session_id not in members:
             return False
@@ -594,20 +826,23 @@ class SessionStore(ABC):
     async def revoke_all(self, subject: str) -> int:
         """End every session belonging to *subject*.
 
+        Two round trips whatever the session count: one to read the index,
+        one pipeline that deletes every key and then drops the index itself.
+
         Returns:
-            How many session keys were removed.  The index is an upper bound,
-            so this can be lower than the number of entries it held - the
-            difference is sessions that had already died.
+            How many session **keys** were removed, counted from the server's
+            own ``DEL`` replies.  The index is an upper bound, so this is
+            lower than the number of entries it held whenever some of those
+            sessions had already died.
         """
         try:
             members = await self._index_members(subject)
-            removed = 0
-            for session_id in members:
-                await self._delete(session_id)
-                removed += 1
-            for session_id in members:
-                await self._index_remove(subject, session_id)
-        except (RedisError, OSError) as exc:
+            if not members:
+                record_session_operation(operation="revoke_all", result="miss")
+                return 0
+            removed = await self._delete_many(list(members))
+            await self._index_clear(subject)
+        except STORE_ERRORS as exc:
             record_session_operation(operation="revoke_all", result="error")
             raise SessionStoreError(f"Could not revoke sessions: {exc}") from exc
         record_session_operation(operation="revoke_all", result="hit")
@@ -622,6 +857,7 @@ class SessionStore(ABC):
         record: SessionRecord,
         *,
         absolute_remaining: int,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         """Record a session under its subject, expiring with it.
 
@@ -630,24 +866,30 @@ class SessionStore(ABC):
         **remaining** absolute time, never a fresh lifetime: a relative full
         lifetime restarts the entry's clock on every write and lets the index
         outlive the session it points at.
+
+        *extra* is whatever the application wants a device listing to show -
+        an IP, a user agent, a device name.  It is stored **beside** the
+        session payload, never inside it, so it can never appear in the
+        application's own ``request.session``.  The middleware fills it from
+        the ``descriptor_of`` seam.
         """
         descriptor = self._coder.encode(
             {
                 "c": record.metadata.created,
                 "l": record.metadata.last_access,
-                "d": record.data.get("__descriptor__", {}),
+                "d": dict(extra or {}),
             }
         )
         try:
             await self._index_add(subject, session_id, descriptor, absolute_remaining)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             raise SessionStoreError(f"Could not index the session: {exc}") from exc
 
     async def _index_drop(self, subject: str, session_id: str) -> None:
         """Remove one index entry, wrapping driver errors."""
         try:
             await self._index_remove(subject, session_id)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             raise SessionStoreError(
                 f"Could not update the session index: {exc}"
             ) from exc
@@ -667,7 +909,7 @@ class SessionStore(ABC):
         """
         try:
             members = await self._index_members(subject)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             self._read_failed(exc)
             return []
         if not members:
@@ -677,7 +919,7 @@ class SessionStore(ABC):
         infos: list[SessionInfo] = []
         dead: list[str] = []
         for session_id, raw in members.items():
-            if session_id not in live:
+            if live is not None and session_id not in live:
                 dead.append(session_id)
                 continue
             infos.append(self._to_info(session_id, raw))
@@ -686,7 +928,7 @@ class SessionStore(ABC):
             # because we could not prune a stale row helps nobody.
             try:
                 await self._index_remove(subject, session_id)
-            except (RedisError, OSError) as exc:
+            except STORE_ERRORS as exc:
                 logger.warning("Could not prune a dead index entry: %s", exc)
         infos.sort(key=lambda info: info.last_access, reverse=True)
         return infos
@@ -699,28 +941,53 @@ class SessionStore(ABC):
         *limit* to make the count exact **only when it matters**: below the
         limit the fast answer is returned, and the verification round trip is
         paid solely by the request that is about to be refused.
+
+        **This one does not fail open.**  Section 7's argument for an empty
+        session on a failed read is that the application's own authorization
+        still runs; here the store *is* the answer, and ``0`` is the
+        permissive one - a concurrent-session cap would wave every login
+        through exactly when Redis is unhealthy.
+
+        Raises:
+            SessionStoreError: If the count could not be established.
         """
         try:
             members = await self._index_members(subject)
-        except (RedisError, OSError) as exc:
-            self._read_failed(exc)
-            return 0
+        except STORE_ERRORS as exc:
+            raise SessionStoreError(
+                f"Could not count sessions for the subject: {exc}"
+            ) from exc
         upper = len(members)
         if limit is None or upper < limit:
             return upper
-        return len(await self._verify(list(members)))
+        live = await self._verify(list(members))
+        if live is None:
+            raise SessionStoreError(
+                "Could not verify session liveness while counting; refusing to "
+                "answer rather than under-count."
+            )
+        return len(live)
 
-    async def _verify(self, session_ids: list[str]) -> set[str]:
-        """Return the subset of *session_ids* whose sessions are still alive.
+    async def _verify(self, session_ids: list[str]) -> set[str] | None:
+        """Which of *session_ids* are alive, or ``None`` if we could not ask.
 
         One batch, not one call per session, so a subject with fifty devices
         costs the same round trip as one with two.
+
+        **``None`` and the empty set mean different things, and conflating
+        them destroys the index.**  An earlier version returned an empty set
+        on failure; ``list_for_subject`` then read "absent from the live set"
+        as proof of death and ``HDEL``-ed every entry for the subject.  One
+        transient pipeline error - the ordinary case on a cluster mid-failover
+        - left every live session of that user invisible to ``revoke_all``
+        until its absolute deadline.  Callers must treat ``None`` as "report
+        everything, prune nothing".
         """
         try:
             return await self._alive(session_ids)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             logger.warning("Could not verify session liveness: %s", exc)
-            return set()
+            return None
 
     def _to_info(self, session_id: str, raw: bytes | str) -> SessionInfo:
         """Build a listing row from an index descriptor alone.
@@ -744,10 +1011,6 @@ class SessionStore(ABC):
             return SessionInfo(
                 session_id=session_id, created=0.0, last_access=0.0, descriptor={}
             )
-
-    @abstractmethod
-    async def _alive(self, session_ids: list[str]) -> set[str]:
-        """Return which of *session_ids* still have a live session."""
 
     # -- failure policy ------------------------------------------------------
 
@@ -776,7 +1039,7 @@ class SessionStore(ABC):
         """
         try:
             await self._delete(session_id)
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             logger.warning("Could not remove a dead session key: %s", exc)
 
     # -- the whole surface a new backend implements --------------------------
@@ -784,8 +1047,12 @@ class SessionStore(ABC):
     @abstractmethod
     async def _read(
         self, session_id: str, *, refresh_idle: int | None
-    ) -> tuple[bytes | str | None, int]:
-        """Return ``(payload or None, seconds left on the absolute clock)``.
+    ) -> tuple[bytes | str | None, int | Deadline]:
+        """Return ``(payload or None, the absolute deadline)``.
+
+        The deadline is the number of seconds left, or a :class:`Deadline`
+        member when it is not a number.  Do not invent negative sentinels -
+        the base class does not interpret them.
 
         *refresh_idle* is the idle window in seconds, or ``None`` to read
         without refreshing.  A backend that can do both in one round trip
@@ -794,12 +1061,13 @@ class SessionStore(ABC):
 
     @abstractmethod
     async def _write(
-        self, session_id: str, payload: str, *, idle: int, absolute: int
+        self, session_id: str, payload: str, *, idle: int, absolute: int | None
     ) -> None:
         """Write the payload with an idle TTL.
 
-        Must give the absolute deadline its TTL **only when it does not
-        already exist**, so that repeated writes cannot extend it.
+        *absolute* is ``None`` on an update, and the deadline field must then
+        be left completely alone - neither refreshed nor recreated.  When it
+        is an int this is a create, and the deadline field takes that TTL.
         """
 
     @abstractmethod
@@ -826,6 +1094,18 @@ class SessionStore(ABC):
         """Drop one session from a subject's index."""
 
     @abstractmethod
+    async def _delete_many(self, session_ids: list[str]) -> int:
+        """Remove many sessions in one round trip; return how many existed."""
+
+    @abstractmethod
+    async def _index_clear(self, subject: str) -> None:
+        """Drop a subject's whole index in one command."""
+
+    @abstractmethod
+    async def _alive(self, session_ids: list[str]) -> set[str]:
+        """Return which of *session_ids* still have a live session."""
+
+    @abstractmethod
     async def _index_members(self, subject: str) -> dict[str, bytes | str]:
         """Return ``{session_id: descriptor}`` for a subject.
 
@@ -835,7 +1115,7 @@ class SessionStore(ABC):
 
 
 class RedisSessionStore(SessionStore):
-    """The Redis implementation of the seven storage primitives.
+    """The Redis implementation of the storage primitives.
 
     Everything here is one pipelined round trip per operation.  Both keys are
     flat, with no hash tag, for the reason ``ratelimit_backend.py`` already
@@ -893,7 +1173,7 @@ class RedisSessionStore(SessionStore):
 
     async def _read(
         self, session_id: str, *, refresh_idle: int | None
-    ) -> tuple[bytes | str | None, int]:
+    ) -> tuple[bytes | str | None, int | Deadline]:
         key = self.session_key(session_id)
         pipe = self._redis.pipeline(transaction=False)
         if refresh_idle is None:
@@ -916,37 +1196,38 @@ class RedisSessionStore(SessionStore):
         return _first(replies[0]), _ttl(replies[reads])
 
     async def _write(
-        self, session_id: str, payload: str, *, idle: int, absolute: int
+        self, session_id: str, payload: str, *, idle: int, absolute: int | None
     ) -> None:
         key = self.session_key(session_id)
+        modern = await self._has_hsetex()
         pipe = self._redis.pipeline(transaction=False)
-        if await self._has_hsetex():
-            # FNX: set only if the field does not already exist. On an update
-            # the whole command is a no-op, so field "a" keeps the deadline it
-            # was created with.
-            pipe.execute_command(
-                "HSETEX",
-                key,
-                "FNX",
-                "EX",
-                absolute,
-                "FIELDS",
-                1,
-                FIELD_ABSOLUTE,
-                _ABSOLUTE_MARKER,
-            )
+        if absolute is not None:
+            # A create. FNX still guards against two concurrent creations of
+            # the same ID racing; it is not what keeps the deadline absolute.
+            # The caller not passing an absolute on an update is what does.
+            if modern:
+                pipe.execute_command(
+                    "HSETEX",
+                    key,
+                    "FNX",
+                    "EX",
+                    absolute,
+                    "FIELDS",
+                    1,
+                    FIELD_ABSOLUTE,
+                    _ABSOLUTE_MARKER,
+                )
+            else:
+                pipe.execute_command("HSETNX", key, FIELD_ABSOLUTE, _ABSOLUTE_MARKER)
+                pipe.execute_command(
+                    "HEXPIRE", key, absolute, "NX", "FIELDS", 1, FIELD_ABSOLUTE
+                )
+        if modern:
             pipe.execute_command(
                 "HSETEX", key, "EX", idle, "FIELDS", 1, FIELD_DATA, payload
             )
         else:
-            # The 7.4 spelling of the same two writes. HSETNX will not touch an
-            # existing field, and HEXPIRE's NX only sets an expiry on a field
-            # that has none - which, given the line above, is only ever a field
-            # this call just created.
-            pipe.execute_command("HSETNX", key, FIELD_ABSOLUTE, _ABSOLUTE_MARKER)
-            pipe.execute_command(
-                "HEXPIRE", key, absolute, "NX", "FIELDS", 1, FIELD_ABSOLUTE
-            )
+            # HSET clears a field's TTL, so the idle clock is reapplied here.
             pipe.execute_command("HSET", key, FIELD_DATA, payload)
             pipe.execute_command("HEXPIRE", key, idle, "FIELDS", 1, FIELD_DATA)
         await pipe.execute()
@@ -984,6 +1265,20 @@ class RedisSessionStore(SessionStore):
             "HEXPIRE", key, absolute_remaining, "FIELDS", 1, session_id
         )
         await pipe.execute()
+
+    async def _delete_many(self, session_ids: list[str]) -> int:
+        if not session_ids:
+            return 0
+        pipe = self._redis.pipeline(transaction=False)
+        for session_id in session_ids:
+            pipe.delete(self.session_key(session_id))
+        # One DEL per key rather than one variadic DEL: on a cluster the keys
+        # span slots, and redis-py fans a pipeline out per node while a single
+        # multi-key DEL would be refused. Still one round trip per node.
+        return sum(int(reply or 0) for reply in await pipe.execute())
+
+    async def _index_clear(self, subject: str) -> None:
+        await self._redis.delete(self.index_key(subject))
 
     async def _index_remove(self, subject: str, session_id: str) -> None:
         await self._redis.hdel(self.index_key(subject), session_id)
@@ -1057,12 +1352,21 @@ def _all_ttls_positive(reply: Any) -> bool:
     return all(value is not None and int(value) > 0 for value in reply)
 
 
-def _ttl(reply: Any) -> int:
-    """Unwrap ``HTTL``'s one-element array reply into an int."""
+def _ttl(reply: Any) -> int | Deadline:
+    """Map ``HTTL``'s one-element array reply onto the deadline contract.
+
+    This is the only place that knows what ``-1`` and ``-2`` mean, which is
+    the point: the encoding stays inside the Redis backend.
+    """
     value = reply[0] if isinstance(reply, (list, tuple)) and reply else reply
     if value is None:
-        return TTL_NO_FIELD
-    return int(value)
+        return Deadline.ABSENT
+    seconds = int(value)
+    if seconds == _HTTL_NO_EXPIRY:
+        return Deadline.UNBOUNDED
+    if seconds == _HTTL_NO_FIELD:
+        return Deadline.ABSENT
+    return seconds
 
 
 class SyncSessionStore:
@@ -1088,30 +1392,36 @@ class SyncSessionStore:
 
         return anyio.from_thread.run(func)
 
-    def session_id(self, session: Session) -> str | None:
+    def session_id(self, state: SessionState) -> str | None:
         """The identifier this session is stored under, if any (no I/O)."""
-        return self._store.session_id(session)
+        return self._store.session_id(state)
 
     def rotate(
         self,
-        session: Session,
+        state: SessionState,
         *,
         subject: str | None = None,
         descriptor: dict[str, Any] | None = None,
     ) -> str:
         """Issue a new identifier, deleting the old key first (blocking)."""
         result: str = self._run(
-            lambda: self._store.rotate(session, subject=subject, descriptor=descriptor)
+            lambda: self._store.rotate(state, subject=subject, descriptor=descriptor)
         )
         return result
 
-    def reauthenticate(self, session: Session) -> None:
-        """Force a rotation on the way out of this request (blocking)."""
-        self._run(lambda: self._store.reauthenticate(session))
+    def reauthenticate(self, state: SessionState) -> None:
+        """Force a rotation on the way out of this request.
 
-    def revoke(self, session: Session) -> None:
+        No I/O, so no bridge: the async original only sets a flag the
+        middleware reads at response time.  Routing that through
+        ``anyio.from_thread.run`` burnt a worker thread and made the call
+        raise outside one, for two attribute writes.
+        """
+        state.rotated = True
+
+    def revoke(self, state: SessionState, *, subject: str | None = None) -> None:
         """End the session in hand and clear its cookie (blocking)."""
-        self._run(lambda: self._store.revoke(session))
+        self._run(lambda: self._store.revoke(state, subject=subject))
 
     def revoke_id(self, session_id: str, *, subject: str) -> bool:
         """End one session by ID, scoped to *subject* (blocking)."""

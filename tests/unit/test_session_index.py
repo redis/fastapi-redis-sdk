@@ -27,7 +27,7 @@ async def _make(store: RedisSessionStore, subject: str, **data) -> str:
     """Create a session and index it under *subject*."""
     sid = store.new_id()
     record = store.new_record({"user_id": subject, **data})
-    await store.save(sid, record)
+    await store.create(sid, record)
     await store.index(subject, sid, record, absolute_remaining=600)
     return sid
 

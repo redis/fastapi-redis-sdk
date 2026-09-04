@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from redis_fastapi.sessions import (
-    Session,
+from redis_fastapi.exceptions import (
     SessionConfigurationError,
     SessionError,
     SessionStoreError,
 )
+from redis_fastapi.sessions import Session
 
 
 class TestFlagsStartClean:

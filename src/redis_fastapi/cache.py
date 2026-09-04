@@ -33,7 +33,12 @@ from starlette.responses import Response
 from starlette.status import HTTP_304_NOT_MODIFIED
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from redis_fastapi.config import CACHE_STATUS_HEADER, get_settings
+from redis_fastapi.config import (
+    CACHE_ROUTE_SCOPE_KEY,
+    CACHE_STATUS_HEADER,
+    CACHE_SUPPRESS_VARY_SCOPE_KEY,
+    get_settings,
+)
 from redis_fastapi.deps import AsyncClient, _get_pool_state, get_async_redis
 from redis_fastapi.telemetry import (
     cache_span,
@@ -238,6 +243,36 @@ async def cache_hit_exception_handler(request: Request, exc: Exception) -> Respo
 # ---------------------------------------------------------------------------
 
 
+# Mirrors ``sessions.STATE_SCOPE_KEY``. Duplicated deliberately: caching must
+# work with the session feature absent, and importing it would couple them.
+_SESSION_SCOPE_KEY = "session"
+_SESSION_STATE_SCOPE_KEY = "redis_session_state"
+
+# Routes already warned about, so the safety net says it once rather than once
+# per request.
+_WARNED_ROUTES: set[str] = set()
+
+
+def _session_subject(request: Request) -> str | None:
+    """Who this request is, for a per-user cache key.
+
+    The **subject** rather than the session ID: it survives rotation, so a
+    privilege change does not throw the entry away, and it is shared across a
+    user's devices.  Falls back to the session ID for an anonymous session that
+    still holds data, and to ``None`` when there is no session at all.
+    """
+    state = request.scope.get(_SESSION_STATE_SCOPE_KEY)
+    if state is None:
+        return None
+    return getattr(state, "subject", None) or getattr(state, "session_id", None)
+
+
+def _session_was_read(request: Request) -> bool:
+    """Whether the endpoint actually touched the session on this request."""
+    session = request.scope.get(_SESSION_SCOPE_KEY)
+    return bool(getattr(session, "accessed", False))
+
+
 @dataclass
 class CachePending:
     """Signals :class:`CacheResponseCaptureMiddleware` to store the response.
@@ -253,6 +288,12 @@ class CachePending:
     private: bool = False
     redis: Any = field(default=None)
     write_through: bool = False
+    vary_on_session: bool | None = None
+    """What the route declared about session dependence.  ``None`` means the
+    developer did not say, which is what arms the safety net in
+    :func:`_store_cache_entry`."""
+    route: str = ""
+    """For the one-time warning, so it names something useful."""
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +383,7 @@ def cache(
     cache_prefix: str | None = None,
     key_builder: KeyBuilder | None = None,
     private: bool = False,
+    vary_on_session: bool | None = None,
 ) -> Any:
     """Return a ``Depends()``-compatible dependency for response caching.
 
@@ -362,6 +404,19 @@ def cache(
         key_builder: Custom key builder (sync or async).  Defaults to
             :func:`default_key_builder`.
         private: Emit ``Cache-Control: private, max-age=N``.
+        vary_on_session: Whether this response depends on the session.
+
+            * ``True`` - key the entry per user, and emit ``private``.  Use it
+              when the body differs by who is asking.
+            * ``False`` - one shared entry, and suppress the ``Vary: Cookie``
+              the session middleware would otherwise add.  Use it when the
+              endpoint reads the session - an auth dependency, say - but the
+              body is identical for everyone.
+            * ``None`` (default) - undeclared.  If the endpoint turns out to
+              have read the session the response is served but **not stored**,
+              and the route is named once in a warning.  Without that guard the
+              entry is shared across users, which is a cross-user data leak
+              rather than a performance problem.
 
     Returns:
         An async generator dependency suitable for use with ``Depends()``.
@@ -375,6 +430,9 @@ def cache(
         cache_prefix if cache_prefix is not None else _settings.pattern_prefix("cache")
     )
     _key_builder: KeyBuilder = key_builder or default_key_builder
+    # A per-user entry must not be stored by a shared cache downstream either,
+    # or we fix our own cache and poison the CDN one hop out (N-18).
+    _private: bool = private or vary_on_session is True
 
     # Flow: bypass → read cache → HIT (raise) or MISS (yield to endpoint)
     async def _dependency(
@@ -382,6 +440,13 @@ def cache(
         redis: AsyncClient = Depends(get_async_redis),
     ) -> AsyncGenerator[None, None]:
         cc = _parse_cache_control(request.headers.get("Cache-Control"))
+
+        # Tell the session middleware this route owns its Cache-Control, and
+        # - when the response is declared session-independent - that it does
+        # not vary by cookie after all.
+        request.scope[CACHE_ROUTE_SCOPE_KEY] = True
+        if vary_on_session is False:
+            request.scope[CACHE_SUPPRESS_VARY_SCOPE_KEY] = True
 
         # 1. Bypass: skip caching for non-GET or no-store requests
         if request.method != "GET" or "no-store" in cc:
@@ -393,6 +458,15 @@ def cache(
         cache_key = _key_builder(request, eviction_group=eviction_group, prefix=_prefix)
         if isawaitable(cache_key):
             cache_key = await cache_key
+
+        # 2b. Per-user entry when the route says the body depends on who is
+        #     asking.  This has to happen here, before the endpoint runs,
+        #     because the key is needed for the *lookup* - which is exactly why
+        #     the library cannot infer it from whether the session was read.
+        if vary_on_session is True:
+            subject = _session_subject(request)
+            if subject is not None:
+                cache_key = f"{cache_key}:u:{subject}"
 
         with cache_span(
             "cache.get",
@@ -420,7 +494,7 @@ def cache(
                 try:
                     raise CacheHitException(
                         _build_hit_response(
-                            cached_data, remaining_ttl, request, private
+                            cached_data, remaining_ttl, request, _private
                         )
                     )
                 except (json.JSONDecodeError, KeyError) as exc:
@@ -432,7 +506,12 @@ def cache(
                 span.set_attribute("cache.hit", False)
 
         request.state.redis_cache_pending = CachePending(
-            key=cache_key, ttl=_ttl, private=private, redis=redis
+            key=cache_key,
+            ttl=_ttl,
+            private=_private,
+            redis=redis,
+            vary_on_session=vary_on_session,
+            route=f"{request.method} {request.url.path}",
         )
         yield
 
@@ -721,6 +800,33 @@ async def _store_cache_entry(
     return extra_headers
 
 
+def _leaks_across_users(pending: CachePending, request: Request) -> bool:
+    """Whether storing this response would share one user's body with another.
+
+    True only when the endpoint actually read the session *and* the route said
+    nothing about whether the body depends on it.  Both halves matter: the read
+    is what makes a leak possible, and the silence is what makes it unintended.
+
+    Decided here rather than at lookup time because ``accessed`` is not known
+    until the endpoint has run - which is also why the per-user key has to be
+    declared rather than inferred.
+    """
+    if pending.vary_on_session is not None:
+        return False
+    if not _session_was_read(request):
+        return False
+    if pending.route not in _WARNED_ROUTES:
+        _WARNED_ROUTES.add(pending.route)
+        logger.warning(
+            "%s read the session but is cached without vary_on_session set; "
+            "the response was not stored. Pass vary_on_session=True to cache "
+            "it per user, or False if the response does not depend on the "
+            "session.",
+            pending.route or "This route",
+        )
+    return True
+
+
 class CacheResponseCaptureMiddleware:
     """ASGI middleware that intercepts responses and stores them in Redis.
 
@@ -807,7 +913,12 @@ class CacheResponseCaptureMiddleware:
             # 5. Final chunk: write to Redis (on 2xx) then send the full response
             body_bytes = bytes(response_body)
             extra_headers: list[tuple[bytes, bytes]] = []
-            if pending is not None and 200 <= response_status < 300:
+            if pending is not None and _leaks_across_users(pending, request):
+                # The endpoint read the session and nobody said whether the
+                # response depends on it. Storing a shared entry here is a
+                # cross-user data leak, so serve it and store nothing.
+                extra_headers = [(b"cache-control", b"private, no-store")]
+            elif pending is not None and 200 <= response_status < 300:
                 extra_headers = await _store_cache_entry(
                     pending,
                     body_bytes,

@@ -36,9 +36,12 @@ from typing import Any, Literal
 
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
-from redis.exceptions import RedisError
 
-from redis_fastapi.session_backend import FIELD_ABSOLUTE, FIELD_DATA
+from redis_fastapi.session_backend import (
+    FIELD_ABSOLUTE,
+    FIELD_DATA,
+    STORE_ERRORS,
+)
 from redis_fastapi.telemetry import record_session_event
 
 logger = logging.getLogger(__name__)
@@ -132,7 +135,7 @@ class SessionEvents:
             if not await self._version_ok():
                 return "none"
             return "field" if await self._config_ok() else "none"
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             logger.info("Could not probe session-event support: %s", exc)
             return "none"
 
@@ -216,7 +219,7 @@ class SessionEvents:
                 await self._dispatch(message.get("data"))
         except asyncio.CancelledError:
             raise
-        except (RedisError, OSError) as exc:
+        except STORE_ERRORS as exc:
             # Losing the subscription is not an application error. Say so once
             # and stop; nothing downstream depends on this stream.
             logger.warning("Session event subscription ended: %s", exc)

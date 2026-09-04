@@ -166,6 +166,42 @@ async def _check_cache_eviction_safety(ps: _PoolState) -> None:
         )
 
 
+async def _start_session_events(app: FastAPI, ps: _PoolState) -> Any:
+    """Start the session-event subscriber, when one was asked for.
+
+    Runs only when sessions are wired **and** ``session_events_enabled`` is
+    set, so no deployment pays for a feature it did not ask for.
+
+    Never raises.  On a server that cannot supply the events the subscriber
+    probes, logs one warning and does nothing further - the documented
+    best-effort contract.  Returns the object to stop at shutdown, or
+    ``None`` when nothing was started.
+    """
+    settings = get_settings()
+    if not settings.session_events_enabled:
+        return None
+    if not getattr(app.state, "_redis_sessions", False):
+        logger.warning(
+            "session_events_enabled is set but no session middleware is "
+            "registered, so nothing will be delivered. Call "
+            "FastAPIRedis(app).sessions()."
+        )
+        return None
+
+    from redis_fastapi.session_events import SessionEvents
+
+    try:
+        events = SessionEvents(
+            ps.get_async_client(), key_prefix=settings.prefix, db=settings.db
+        )
+        await events.start()
+    except Exception:
+        logger.warning("Session events could not be started", exc_info=True)
+        return None
+    app.state._redis_session_events = events
+    return events
+
+
 @asynccontextmanager
 async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage Redis connection pools across the application lifecycle.
@@ -211,9 +247,13 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     if getattr(app.state, "_redis_caching", False):
         await _check_cache_eviction_safety(ps)
 
+    events = await _start_session_events(app, ps)
+
     try:
         yield
     finally:
+        if events is not None:
+            await events.stop()
         ps.clear()
         if settings.cluster:
             await ps.async_cluster.aclose()  # type: ignore[union-attr]

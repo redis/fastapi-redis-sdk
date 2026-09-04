@@ -11,44 +11,30 @@ and saves it, and the exception hierarchy.  The Redis half lives in
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+import dataclasses
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from datetime import timedelta
+from enum import Enum, auto
+from typing import Any, cast
 
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from redis_fastapi.config import get_settings
-
-if TYPE_CHECKING:
-    from redis_fastapi.session_backend import SessionStore
+from redis_fastapi.config import (
+    CACHE_ROUTE_SCOPE_KEY,
+    CACHE_SUPPRESS_VARY_SCOPE_KEY,
+    get_settings,
+)
+from redis_fastapi.exceptions import (
+    SessionConfigurationError,
+)
+from redis_fastapi.session_backend import SessionState, SessionStore
+from redis_fastapi.types import Coder, Encryptor
 
 # Sentinel for ``pop``/``setdefault`` so that ``None`` stays a usable default.
 _MISSING: Any = object()
-
-
-class SessionError(Exception):
-    """Base for every error this feature raises.
-
-    Catching this catches the whole feature.  A ``redis.RedisError`` never
-    reaches application code - the store wraps it in
-    :class:`SessionStoreError`.
-    """
-
-
-class SessionConfigurationError(SessionError):
-    """A session setting is missing, invalid, or contradicts another one."""
-
-
-class SessionStoreError(SessionError):
-    """The store could not complete an operation.
-
-    Raised for every failed **write**, whatever ``session_fail_closed`` is set
-    to, because losing a login or a rotation must never be silent.  Failed
-    reads raise this only when ``session_fail_closed`` is true; otherwise they
-    yield an empty session.  Section 7 of the design explains the asymmetry.
-    """
 
 
 class Session(dict):  # type: ignore[type-arg]
@@ -74,7 +60,7 @@ class Session(dict):  # type: ignore[type-arg]
     top-level key, call ``save()``, or set ``session_always_save=True``.
     """
 
-    __slots__ = ("accessed", "modified", "sid", "revoked", "rotated")
+    __slots__ = ("accessed", "modified")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -85,13 +71,6 @@ class Session(dict):  # type: ignore[type-arg]
         # Set by the middleware after a load, and by the store after a
         # rotation.  ``None`` means this session has never been written, so
         # there is no key to delete and no cookie to replace.
-        self.sid: str | None = None
-        # The store sets these; the middleware acts on them at
-        # ``http.response.start``.  They are the only channel between the two
-        # halves of the feature, so they are attributes rather than a side
-        # table keyed on the request.
-        self.revoked = False
-        self.rotated = False
 
     # -- flags ---------------------------------------------------------------
 
@@ -253,29 +232,33 @@ class CookieSpec:
     http_only: bool
     same_site: str
 
+    def cleared(self) -> CookieSpec:
+        """The same cookie, as a deletion.
+
+        An empty value and ``Max-Age=0``, with every scoping attribute
+        untouched - which is the part that matters, because a browser removes
+        a cookie only when the clearing header repeats them exactly.
+
+        Deleting is therefore not a second rendering path with its own
+        function to keep in step; it is one field change to the spec the
+        builder was going to receive anyway.  A ``cookie_builder`` added to
+        emit ``Partitioned`` or a ``__Host-`` prefix applies to both without
+        knowing this method exists.
+        """
+        return dataclasses.replace(self, value="", max_age=0)
+
 
 def build_cookie(spec: CookieSpec) -> str:
-    """Render a ``Set-Cookie`` value.  The default ``cookie_builder``."""
+    """Render a ``Set-Cookie`` value.  The default ``cookie_builder``.
+
+    Renders a deletion too, when handed ``spec.cleared()``: an empty value and
+    ``Max-Age=0`` are what a deletion *is*.  There is deliberately no second
+    function for it, because two renderers that must stay in lockstep are two
+    renderers that will not.
+    """
     parts = [f"{spec.name}={spec.value}", f"Path={spec.path}"]
     if spec.max_age is not None:
         parts.append(f"Max-Age={spec.max_age}")
-    if spec.domain:
-        parts.append(f"Domain={spec.domain}")
-    if spec.secure:
-        parts.append("Secure")
-    if spec.http_only:
-        parts.append("HttpOnly")
-    parts.append(f"SameSite={spec.same_site.capitalize()}")
-    return "; ".join(parts)
-
-
-def clear_cookie(spec: CookieSpec) -> str:
-    """Render a ``Set-Cookie`` that deletes the cookie.
-
-    An empty value and ``Max-Age=0``.  Every attribute that scopes the cookie
-    must match the one that set it, or the browser keeps the original.
-    """
-    parts = [f"{spec.name}=", f"Path={spec.path}", "Max-Age=0"]
     if spec.domain:
         parts.append(f"Domain={spec.domain}")
     if spec.secure:
@@ -291,10 +274,129 @@ def clear_cookie(spec: CookieSpec) -> str:
 # ---------------------------------------------------------------------------
 
 SCOPE_KEY = "session"
+STATE_SCOPE_KEY = "redis_session_state"
 _STATE_ATTR = "_redis_session"
 
 # What ``principal_of`` returns when there is no identity to speak of.
 _NO_PRINCIPAL: Any = None
+
+
+class Outcome(Enum):
+    """What a response owes the session, decided once.
+
+    Eight mutually exclusive answers.  Naming them is not decoration: three
+    separate defects in this middleware were the same shape - overlapping
+    boolean conditions evaluated in an order where an earlier branch silently
+    shadowed a later one - and an ordered list of ``if ... return`` statements
+    cannot show that overlap to a reader or to a test.  Computing the answer
+    first, in one pure function, turns "these branches happen to be in the
+    right order" into a property that :func:`decide_outcome` states and the
+    suite enumerates.
+
+    The three defects, for the record: ``session.clear()`` read as a privilege
+    change and minted a new session instead of signing the user out; a handler
+    that wrote the identity and then rotated was rotated a second time and got
+    back a dead identifier; and a step-up on a failed response wrote the new
+    state under the old identifier.
+    """
+
+    NOTHING = auto()
+    """Not touched, or nothing left to do."""
+
+    CLEAR_COOKIE = auto()
+    """The store already ended it; the browser's copy is all that is left."""
+
+    SUPPRESS = auto()
+    """The principal changed on a failed response.  Persist nothing at all."""
+
+    SIGN_OUT = auto()
+    """The session was emptied.  Delete it, unindex it, clear the cookie."""
+
+    COOKIE_ONLY = auto()
+    """A handler rotated for itself.  Only the cookie is outstanding."""
+
+    ROTATE = auto()
+    """The principal changed, or a rotation was requested and not performed."""
+
+    WRITE = auto()
+    """An ordinary save."""
+
+    TOUCH = auto()
+    """Read-only, and the load did not advance the idle clock."""
+
+
+@dataclass(frozen=True)
+class _Signals:
+    """The flags :func:`decide_outcome` reads.
+
+    A record rather than ten positional arguments, so the decision can be
+    exercised over its whole input space without a store, a request or Redis.
+    """
+
+    revoked: bool
+    rotated: bool
+    changed: bool
+    accessed: bool
+    modified: bool
+    empty: bool
+    stored: bool
+    """The session has an identifier - it has been written at least once."""
+    id_changed: bool
+    """That identifier differs from the one the request arrived with."""
+    failed: bool
+    """The response status is 400 or more."""
+    always_save: bool
+    refresh_on_load: bool
+
+
+def decide_outcome(signals: _Signals) -> Outcome:
+    """Reduce the request's signals to exactly one :class:`Outcome`.
+
+    Pure, and total: every combination of inputs maps to one answer.  The
+    order of the tests below is the whole of the middleware's correctness, so
+    each one that must precede another says why.
+    """
+    # The store has already done the work; nothing may undo or repeat it.
+    if signals.revoked:
+        return Outcome.CLEAR_COOKIE
+
+    # A response the client saw fail must not hand out an authenticated
+    # session.  Writing the payload while skipping the rotation would store
+    # the new identity against the *old* identifier, which is the fixation
+    # this design exists to prevent, arrived at by being helpful.
+    if signals.failed and (signals.changed or signals.rotated):
+        return Outcome.SUPPRESS
+
+    # Before ROTATE: a handler that rotated for itself has already replaced
+    # the key.  Rotating again would delete what it just wrote and hand the
+    # caller back an identifier naming nothing.
+    if signals.id_changed:
+        return Outcome.COOKIE_ONLY
+
+    # Before ROTATE: emptying a session drops the principal to None, which is
+    # a change - so without this test a sign-out reads as a privilege change
+    # and mints the user a brand-new valid session.
+    if signals.modified and signals.empty and signals.stored:
+        return Outcome.SIGN_OUT
+
+    if signals.changed or signals.rotated:
+        return Outcome.ROTATE
+
+    # After every branch above, because each of them implies the session was
+    # touched even when the application never read it.
+    if not signals.accessed:
+        return Outcome.NOTHING
+
+    if signals.modified or signals.always_save:
+        return Outcome.WRITE
+
+    # The load was a plain read under this setting, so this is the only place
+    # left that can advance the idle clock.  Without it the clock freezes and
+    # every session is immortal until its absolute deadline.
+    if not signals.refresh_on_load and signals.stored:
+        return Outcome.TOUCH
+
+    return Outcome.NOTHING
 
 
 @dataclass
@@ -302,9 +404,14 @@ class _RequestState:
     """Per-request session bookkeeping, kept off the ``Session`` itself."""
 
     session: Session
+    # Everything about the session that is not its data. The store reads and
+    # writes this; ``store_state.data`` *is* the ``Session`` above, so a
+    # ``revoke`` that clears the data clears what the application holds.
+    store_state: SessionState
     loaded_id: str | None
     principal_before: Any
-    absolute_remaining: int | None
+    # Only for the ``descriptor_of`` seam, which is given the live request.
+    request: Request | None = None
 
 
 class SessionMiddleware:
@@ -331,6 +438,7 @@ class SessionMiddleware:
         principal_of: Callable[[Session], Any] | None = None,
         subject_of: Callable[[Session], str | None] | None = None,
         cookie_builder: Callable[[CookieSpec], str] | None = None,
+        descriptor_of: Callable[[Request, Session], dict[str, Any]] | None = None,
         skip: Callable[[Request], bool] | None = None,
     ) -> None:
         self.app = app
@@ -338,6 +446,7 @@ class SessionMiddleware:
         self._principal_of = principal_of or _default_principal_of
         self._subject_of = subject_of or _default_subject_of
         self._cookie_builder = cookie_builder or build_cookie
+        self._descriptor_of = descriptor_of
         self._skip = skip
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -347,7 +456,9 @@ class SessionMiddleware:
 
         request = Request(scope, receive=receive)
         if self._skip is not None and self._skip(request):
-            scope[SCOPE_KEY] = Session()
+            empty = Session()
+            scope[SCOPE_KEY] = empty
+            scope[STATE_SCOPE_KEY] = SessionState(data=empty)
             await self.app(scope, receive, send)
             return
 
@@ -356,6 +467,7 @@ class SessionMiddleware:
         state = await self._load(request, store, settings)
         scope[SCOPE_KEY] = state.session
         setattr(request.state, _STATE_ATTR, state)
+        scope[STATE_SCOPE_KEY] = state.store_state
 
         started = False
 
@@ -379,8 +491,8 @@ class SessionMiddleware:
         """Read the cookie, load the record, take the first principal snapshot."""
         raw_cookie = request.cookies.get(settings.session_cookie_name)
         session = Session()
+        store_state = SessionState(data=session)
         loaded_id: str | None = None
-        absolute_remaining: int | None = None
 
         # Validate before use. This is not cosmetic: the value is written back
         # into a Set-Cookie header, so an unvalidated one is a header-injection
@@ -391,15 +503,21 @@ class SessionMiddleware:
             )
             if loaded is not None:
                 session = Session(loaded.record.data)
-                session.sid = raw_cookie
                 loaded_id = raw_cookie
-                absolute_remaining = loaded.absolute_remaining
+                store_state = SessionState(
+                    data=session,
+                    session_id=raw_cookie,
+                    subject=self._subject_of_quietly(session),
+                    created=loaded.record.metadata.created,
+                    absolute_remaining=loaded.absolute_remaining,
+                )
 
         return _RequestState(
             session=session,
+            store_state=store_state,
             loaded_id=loaded_id,
             principal_before=self._snapshot(session),
-            absolute_remaining=absolute_remaining,
+            request=request,
         )
 
     def _snapshot(self, session: Session) -> Any:
@@ -427,106 +545,192 @@ class SessionMiddleware:
         status: int,
         headers: list[tuple[bytes, bytes]],
     ) -> list[tuple[bytes, bytes]]:
-        """Apply the write rule, then the cookie rule."""
+        """Decide once what this response owes, then do exactly that.
+
+        The decision is :func:`decide_outcome`, which is pure and lives apart
+        from the I/O so its branch order can be read, tested and argued about
+        on its own.  This method only carries it out.
+        """
         session = state.session
+        store_state = state.store_state
 
         if session.accessed:
-            # Without this a shared cache can serve one user's page to another.
-            headers.append((b"vary", b"Cookie"))
+            self._apply_cache_headers(scope_of(state), headers)
 
-        if session.revoked:
-            headers.append(
-                (b"set-cookie", clear_cookie(self._spec(settings, "", None)).encode())
+        # ``principal_of`` is user code and must not mark the session, so the
+        # snapshot is shielded. It is the one signal that costs anything.
+        changed = self._snapshot(session) != state.principal_before
+
+        outcome = decide_outcome(
+            _Signals(
+                revoked=store_state.revoked,
+                rotated=store_state.rotated,
+                changed=changed,
+                accessed=session.accessed,
+                modified=session.modified,
+                empty=not session,
+                stored=state.loaded_id is not None,
+                id_changed=(
+                    store_state.session_id is not None
+                    and store_state.session_id != state.loaded_id
+                ),
+                failed=status >= 400,
+                always_save=bool(settings.session_always_save),
+                refresh_on_load=bool(settings.session_refresh_on_load),
             )
+        )
+
+        if outcome is Outcome.NOTHING or outcome is Outcome.SUPPRESS:
             return headers
 
-        principal_after = self._snapshot(session)
-        changed = principal_after != state.principal_before
-        rotating = (session.rotated or changed) and status < 400
+        if outcome is Outcome.CLEAR_COOKIE:
+            return self._with_cookie(headers, settings, clear=True)
 
-        if changed and status >= 400:
-            # A response the client saw fail must not hand out an
-            # authenticated session. Persisting the data while skipping the
-            # rotation would store the new identity against the *old*,
-            # unrotated ID - precisely the fixation this design prevents,
-            # arrived at by being helpful. So this request writes nothing.
-            return headers
+        if outcome is Outcome.SIGN_OUT:
+            await store.revoke(store_state)
+            return self._with_cookie(headers, settings, clear=True)
 
-        if rotating:
+        if outcome is Outcome.COOKIE_ONLY:
+            # Any payload change the handler made *after* its rotate call is
+            # not in the record ``rotate`` wrote, so catch it here.
+            if session.modified:
+                await self._write(store, state, settings, create=False)
+            return self._with_cookie(
+                headers,
+                settings,
+                value=store_state.session_id or "",
+                absolute=store.absolute_seconds,
+            )
+
+        if outcome is Outcome.ROTATE:
             new_id = await store.rotate(
-                session, subject=self._subject_of(session) or None
+                store_state,
+                subject=self._subject_of_quietly(session) or None,
+                descriptor=self._descriptor(state),
             )
-            headers.append(
-                (
-                    b"set-cookie",
-                    self._cookie_builder(
-                        self._spec(settings, new_id, store.absolute_seconds)
-                    ).encode(),
-                )
+            return self._with_cookie(
+                headers, settings, value=new_id, absolute=store.absolute_seconds
             )
+
+        if outcome is Outcome.WRITE:
+            await self._write(
+                store, state, settings, create=store_state.session_id is None
+            )
+            return self._with_cookie(
+                headers,
+                settings,
+                value=store_state.session_id or "",
+                absolute=store_state.absolute_remaining,
+            )
+
+        if outcome is Outcome.TOUCH:
+            await store.touch(cast(str, state.loaded_id))
             return headers
 
-        if session.sid is not None and session.sid != state.loaded_id:
-            # A handler called ``store.rotate()`` itself, so the work is done
-            # and only the cookie is outstanding. Without this branch the
-            # browser would keep an identifier whose key the handler deleted,
-            # and the user would be signed out by their own step-up.
-            headers.append(
-                (
-                    b"set-cookie",
-                    self._cookie_builder(
-                        self._spec(settings, session.sid, store.absolute_seconds)
-                    ).encode(),
-                )
-            )
-            return headers
+        raise AssertionError(f"unhandled outcome {outcome!r}")  # pragma: no cover
 
-        if not session.accessed:
-            return headers
+    @staticmethod
+    def _apply_cache_headers(
+        scope: MutableMapping[str, Any], headers: list[tuple[bytes, bytes]]
+    ) -> None:
+        """Say how this response varies, and who may store it.
 
-        if session.modified or settings.session_always_save:
-            await self._write(store, state, settings)
-            headers.append(
-                (
-                    b"set-cookie",
-                    self._cookie_builder(
-                        self._spec(
-                            settings, session.sid or "", state.absolute_remaining
-                        )
-                    ).encode(),
-                )
-            )
-        elif not settings.session_refresh_on_load and state.loaded_id is not None:
-            # The load was a plain read under this setting, so this is the only
-            # place left that can advance the idle clock. Omitting this branch
-            # freezes the clock and makes every session immortal until its
-            # absolute deadline.
-            await store.touch(state.loaded_id)
+        Two rules, and both exist because the caching feature and this
+        middleware must agree rather than each appending a header of its own.
 
+        ``Vary: Cookie`` is **merged** into any existing value rather than
+        appended, so a response that already varies on ``Accept-Encoding``
+        ends up with one header listing both.  Two ``Vary`` lines are legal
+        but proxies handle them inconsistently.
+
+        It is **omitted** entirely when a ``cache(vary_on_session=False)``
+        route has said the body does not depend on the session.  The session
+        was read - by an auth dependency, typically - but the answer is the
+        same for everyone, and claiming otherwise forces a shared cache to
+        keep one copy per user of an identical payload.
+
+        ``Cache-Control: private`` is emitted only when no ``cache()`` owns
+        the route.  Where one does, it sets the directive itself from the
+        route's declaration, and a second writer here is what produced
+        ``max-age=300, private, no-store`` in one response.
+        """
+        if not scope.get(CACHE_SUPPRESS_VARY_SCOPE_KEY):
+            _merge_header(headers, b"vary", b"Cookie")
+        if not scope.get(CACHE_ROUTE_SCOPE_KEY):
+            _merge_header(headers, b"cache-control", b"private")
+
+    def _with_cookie(
+        self,
+        headers: list[tuple[bytes, bytes]],
+        settings: Any,
+        *,
+        value: str = "",
+        absolute: int | None = None,
+        clear: bool = False,
+    ) -> list[tuple[bytes, bytes]]:
+        """Append one ``Set-Cookie``, always through the configured builder.
+
+        Deletion goes through the same seam as creation.  A browser removes a
+        cookie only when the clearing header repeats every scoping attribute,
+        so a ``cookie_builder`` added to emit ``Partitioned`` or a ``__Host-``
+        prefix - the seam's whole purpose - has to be consulted here too.  It
+        was not, and the result was a sign-out that left the cookie in place.
+        """
+        spec = self._spec(settings, value, absolute)
+        if clear:
+            spec = spec.cleared()
+        headers.append((b"set-cookie", self._cookie_builder(spec).encode()))
         return headers
 
+    def _descriptor(self, state: _RequestState) -> dict[str, Any] | None:
+        """Evaluate the ``descriptor_of`` seam, if one was supplied."""
+        if self._descriptor_of is None or state.request is None:
+            return None
+        return self._descriptor_of(state.request, state.session)
+
+    def _subject_of_quietly(self, session: Session) -> str | None:
+        """Call ``subject_of`` without letting it mark the session.
+
+        Same reason as :meth:`_snapshot`: the middleware calls it on requests
+        the application never touched, and a read that sets ``accessed`` would
+        put ``Vary: Cookie`` on responses that do not vary by cookie.
+        """
+        accessed, modified = session.accessed, session.modified
+        try:
+            return self._subject_of(session)
+        finally:
+            session.accessed, session.modified = accessed, modified
+
     async def _write(
-        self, store: SessionStore, state: _RequestState, settings: Any
+        self, store: SessionStore, state: _RequestState, settings: Any, *, create: bool
     ) -> None:
         """Persist the payload, and re-assert the index entry beside it."""
         session = state.session
-        if session.sid is None:
-            session.sid = store.new_id()
-            state.absolute_remaining = store.absolute_seconds
-        record = store.new_record(session.raw())
-        await store.save(session.sid, record)
+        store_state = state.store_state
+        if store_state.session_id is None:
+            store_state.session_id = store.new_id()
+            store_state.absolute_remaining = store.absolute_seconds
+            create = True
+        record = store.new_record(session.raw(), created=store_state.created)
+        if create:
+            await store.create(store_state.session_id, record)
+            store_state.created = record.metadata.created
+        else:
+            await store.save(store_state.session_id, record)
 
-        subject = self._subject_of(session)
+        subject = self._subject_of_quietly(session)
+        store_state.subject = subject
         if subject:
-            # Re-asserted on every write, not only at login: HSETEX is
-            # idempotent, it costs nothing extra here, and it repairs an entry
-            # that a partial failure lost. The remaining absolute time, never a
-            # fresh lifetime.
+            # Re-asserted on every write, not only at login: it costs nothing
+            # extra here, and it repairs an entry that a partial failure lost.
+            # The remaining absolute time, never a fresh lifetime.
             await store.index(
                 subject,
-                session.sid,
+                store_state.session_id,
                 record,
-                absolute_remaining=state.absolute_remaining or store.absolute_seconds,
+                absolute_remaining=store_state.absolute_remaining
+                or store.absolute_seconds,
+                extra=self._descriptor(state),
             )
 
     def _spec(self, settings: Any, value: str, absolute: int | None) -> CookieSpec:
@@ -597,7 +801,17 @@ def add_redis_sessions(
     principal_keys: list[str] | None = None,
     subject_of: Callable[[Session], str | None] | None = None,
     cookie_builder: Callable[[CookieSpec], str] | None = None,
+    descriptor_of: Callable[[Request, Session], dict[str, Any]] | None = None,
     skip: Callable[[Request], bool] | None = None,
+    store: SessionStore | None = None,
+    store_factory: Callable[[Request], Any] | None = None,
+    coder: type[Coder] | None = None,
+    encryptor: Encryptor | None = None,
+    id_factory: Callable[[], str] | None = None,
+    key_prefix: str | None = None,
+    idle_ttl: int | timedelta | None = None,
+    absolute_ttl: int | timedelta | None = None,
+    gc_ttl: int | timedelta | None = None,
 ) -> None:
     """Register :class:`SessionMiddleware` on *app*.
 
@@ -619,9 +833,34 @@ def add_redis_sessions(
             anonymous one.  The subject need not be a user - it can be a
             tenant, a device, or an API client.
         cookie_builder: Renders the ``Set-Cookie`` value, for attributes this
-            package does not know about.
+            package does not know about.  Used for clearing the cookie as
+            well as setting it.
+        descriptor_of: What a device listing should show for this session -
+            an IP, a user agent, a device name.  Stored beside the session in
+            the index, never inside the payload, so it cannot appear in the
+            application's own ``request.session``.
         skip: Predicate for requests that need no session at all.  A request
             it returns true for costs zero Redis calls.
+        store: A ready-made store, used for every request.  The escape hatch
+            for a backend that is not Redis, and for a test double.
+        store_factory: Called per request to build one, when a single instance
+            will not do.  May be sync or async.
+        coder: Serializer for the envelope.  Defaults to ``JsonCoder``.
+        encryptor: Encrypts the serialized envelope at rest.  Encryption wraps
+            serialization, so the coder never sees ciphertext.
+        id_factory: Generates session IDs.  Its output is validated on every
+            call, because a seam supplying a security-critical value has to be
+            checked rather than trusted.
+        key_prefix: Overrides the key namespace.
+        idle_ttl: Idle clock, overriding ``session_idle_ttl``.  Accepts a
+            ``timedelta``.
+        absolute_ttl: Absolute clock, overriding ``session_absolute_ttl``.
+        gc_ttl: Backstop TTL, overriding ``session_gc_ttl``.
+
+    These last eight exist because the store constructor has always accepted
+    them and nothing reachable from here passed them on: the only way to change
+    a coder was to replace the whole dependency, and that did not reach the
+    middleware at all.
 
     Raises:
         SessionConfigurationError: If the cookie settings contradict each
@@ -647,14 +886,62 @@ def add_redis_sessions(
 
     from redis_fastapi.deps import get_session_store
 
+    # Tells the lifespan that a session-event subscriber may be worth starting;
+    # cache-only apps never set it. Safe before startup: the builder runs at
+    # app-construction time and the lifespan reads it later.
+    app.state._redis_sessions = True
+
+    from redis_fastapi.deps import _SessionStoreOptions
+
+    kwargs: dict[str, Any] = {
+        name: value
+        for name, value in (
+            ("coder", coder),
+            ("encryptor", encryptor),
+            ("id_factory", id_factory),
+            ("key_prefix", key_prefix),
+            ("idle_ttl", idle_ttl),
+            ("absolute_ttl", absolute_ttl),
+            ("gc_ttl", gc_ttl),
+        )
+        if value is not None
+    }
+    if store is not None and store_factory is not None:
+        raise SessionConfigurationError("Pass either store or store_factory, not both.")
+    app.state._redis_session_options = _SessionStoreOptions(
+        store=store, store_factory=store_factory, kwargs=kwargs
+    )
+
     app.add_middleware(
         SessionMiddleware,
         store_factory=get_session_store,
         principal_of=resolver,
         subject_of=subject_of,
         cookie_builder=cookie_builder,
+        descriptor_of=descriptor_of,
         skip=skip,
     )
+
+
+def session_state_of(request: Request) -> SessionState:
+    """Return the :class:`SessionState` the middleware built for *request*.
+
+    The handle the store operates on: the identifier, the subject, the
+    timestamps and the pending rotation or revocation.  Handlers need it to
+    call ``rotate``, ``revoke`` or ``session_id``; ``request.session`` remains
+    the way to reach the data.
+
+    Raises:
+        SessionConfigurationError: If no middleware is registered.
+    """
+    state = request.scope.get(STATE_SCOPE_KEY)
+    if not isinstance(state, SessionState):
+        raise SessionConfigurationError(
+            "No session was loaded for this request. Call "
+            "FastAPIRedis(app).lifespan().sessions() during setup, or "
+            "add_redis_sessions(app) directly."
+        )
+    return state
 
 
 def session_of(request: Request) -> Session:
@@ -675,3 +962,26 @@ def session_of(request: Request) -> Session:
             "add_redis_sessions(app) directly."
         )
     return session
+
+
+def _merge_header(
+    headers: list[tuple[bytes, bytes]], name: bytes, value: bytes
+) -> None:
+    """Add *value* to an existing header of that name, or append a new one.
+
+    Idempotent: a value already present is not repeated.
+    """
+    for index, (existing_name, existing_value) in enumerate(headers):
+        if existing_name.lower() != name:
+            continue
+        parts = [p.strip() for p in existing_value.split(b",") if p.strip()]
+        if value in parts:
+            return
+        headers[index] = (existing_name, b", ".join([*parts, value]))
+        return
+    headers.append((name, value))
+
+
+def scope_of(state: _RequestState) -> MutableMapping[str, Any]:
+    """The ASGI scope behind a request state, for reading cross-feature flags."""
+    return state.request.scope if state.request is not None else {}

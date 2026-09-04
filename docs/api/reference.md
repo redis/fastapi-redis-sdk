@@ -10,6 +10,7 @@ app = FastAPI()
 FastAPIRedis(app).lifespan()                    # connection pools only
 FastAPIRedis(app).lifespan().caching()          # + DI caching support
 FastAPIRedis(app).lifespan().rate_limiting()    # + DI rate limiting support
+FastAPIRedis(app).lifespan().sessions()         # + server-side sessions
 ```
 
 Or compose the lifespan directly:
@@ -331,3 +332,167 @@ Returned by `hit()` / `peek()`, and stashed on `request.state` so the middleware
 `RateLimitExceeded(Exception)` - control-flow exception raised by `rate_limit()` when a request is over the limit; carries the prebuilt 429 `Response`. It is turned into that response automatically once `add_redis_rate_limiting` (or `.rate_limiting()`) has registered its handler.
 
 `RateLimitMiddleware` - ASGI middleware that injects `X-RateLimit-*` headers on allowed responses and, when a global limit is configured, enforces it before routing. Registered for you by `add_redis_rate_limiting`; you rarely construct it directly.
+
+
+---
+
+## Session dependencies
+
+### `SessionDep`
+
+```python
+from redis_fastapi import SessionDep
+
+@app.post("/login")
+async def login(session: SessionDep):
+    session["user_id"] = 42          # writing the identity rotates the ID
+```
+
+`Annotated[Session, Depends(get_session)]` - the session payload as a `dict`
+subclass. Loaded before the application runs, so this performs no I/O.
+`request.session` returns the same object.
+
+### `SessionStateDep`
+
+```python
+from redis_fastapi import SessionStateDep, SessionStoreDep
+
+@app.post("/logout")
+async def logout(state: SessionStateDep, store: SessionStoreDep):
+    await store.revoke(state)
+```
+
+`Annotated[SessionState, Depends(get_session_state)]` - everything about the
+session that is not its data: `session_id`, `subject`, `created`,
+`absolute_remaining`, and the `revoked` / `rotated` flags. Operations that act
+on the session rather than its contents take this rather than the payload.
+
+### `SessionStoreDep` / `SyncSessionStoreDep`
+
+```python
+async def handler(store: SessionStoreDep): ...   # async endpoints
+def handler(store: SyncSessionStoreDep): ...     # def endpoints
+```
+
+`Annotated[SessionStore, Depends(get_session_store)]`. Typed as the abstract
+base, not the Redis implementation, so a substituted backend type-checks.
+`SyncSessionStore` bridges each call via `anyio.from_thread.run` and is usable
+only from FastAPI worker threads.
+
+### `get_session()` / `get_session_state()` / `get_session_store()` / `get_sync_session_store()`
+
+```python
+async def get_session_store(request: Request) -> SessionStore
+```
+
+`get_session_store` resolves in three steps: an entry in
+`app.dependency_overrides`, then a `store` or `store_factory` given to
+`add_redis_sessions`, then a `RedisSessionStore` built from the remaining
+options. It consults the override map itself, so one override covers both the
+middleware and your handlers.
+
+---
+
+## Session setup
+
+### `add_redis_sessions()` / `FastAPIRedis.sessions()`
+
+```python
+FastAPIRedis(app).lifespan().sessions(
+    principal_keys=["user_id", "role"],
+    subject_of=lambda s: s.get("tenant_id"),
+    descriptor_of=lambda req, s: {"ip": req.client.host},
+    cookie_builder=my_builder,
+    skip=lambda req: req.url.path.startswith("/health"),
+    store=None, store_factory=None,
+    coder=JsonCoder, encryptor=None, id_factory=None, key_prefix=None,
+    idle_ttl=None, absolute_ttl=None, gc_ttl=None,
+)
+```
+
+| Argument | Purpose |
+|---|---|
+| `principal_of` / `principal_keys` | What a change to triggers a rotation. Must be pure and return a verified identity. |
+| `subject_of` | What the reverse index is keyed on. `None` leaves the session out of it. |
+| `descriptor_of` | What a device listing shows. Stored beside the session, never inside it. |
+| `cookie_builder` | Renders `Set-Cookie`, for setting **and** clearing. |
+| `skip` | Requests needing no session, at zero Redis cost. |
+| `store` / `store_factory` | Supply a whole store. Mutually exclusive. |
+| `coder`, `encryptor`, `id_factory`, `key_prefix`, `idle_ttl`, `absolute_ttl`, `gc_ttl` | Passed to the store constructor. TTLs accept `int` seconds or `timedelta`. |
+
+---
+
+## `SessionStore`
+
+Abstract base owning the lifecycle. `RedisSessionStore` is the shipped
+implementation; `SessionStoreProtocol` is the structural type for substituting
+one without inheritance.
+
+| Method | Purpose |
+|---|---|
+| `load(session_id, *, refresh=True)` | Read a session and restart its idle clock. `None` for every way it can be absent. |
+| `create(session_id, record)` | Write a session that does not exist yet. The only method that writes the absolute deadline. |
+| `save(session_id, record)` | Update the payload, and only the payload. |
+| `touch(session_id)` | Restart the idle clock alone. |
+| `delete(session_id)` | Remove the session. |
+| `rotate(state, *, subject=None, descriptor=None)` | New identifier, old key deleted first. Returns the new ID. |
+| `reauthenticate(state)` | Ask the middleware to rotate on the way out. |
+| `revoke(state, *, subject=None)` | End this session and drop its index entry. |
+| `revoke_id(session_id, *, subject)` | End one session, refusing an ID not indexed under that subject. |
+| `revoke_all(subject)` | End every session of a subject. Returns keys removed. |
+| `list_for_subject(subject)` | Live sessions, verified before being reported. |
+| `count_for_subject(subject, *, limit=None)` | Upper-bound count; exact only at or above `limit`. Raises rather than failing open. |
+| `index(subject, session_id, record, *, absolute_remaining, extra=None)` | Record a session under its subject. |
+| `new_id()` / `is_valid_id(value)` | Generate and validate identifiers. |
+| `new_record(data, *, created=None)` | Build an envelope, carrying `created` forward. |
+| `session_id(state)` | The current identifier, or `None`. |
+
+A new backend implements the abstract primitives: `_read`, `_write`,
+`_expire`, `_delete`, `_delete_many`, `_index_add`, `_index_remove`,
+`_index_clear`, `_index_members`, `_alive`.
+
+---
+
+## Session data types
+
+| Type | Contents |
+|---|---|
+| `Session` | `dict` subclass with `accessed` / `modified` flags and `raw()`. Nothing else. |
+| `SessionState` | `data`, `session_id`, `subject`, `created`, `absolute_remaining`, `revoked`, `rotated`. |
+| `SessionRecord` | `data` plus `SessionMetadata`. |
+| `SessionMetadata` | `created`, `last_access`, `lifetime`. |
+| `SessionInfo` | One listing row: `session_id`, `created`, `last_access`, `descriptor`. |
+| `LoadedSession` | `record` plus `absolute_remaining`, returned by `load()`. |
+| `CookieSpec` | Cookie attributes; `cleared()` returns the deletion form. |
+| `Outcome` | What a response owes the session. Eight members. |
+| `Deadline` | `ABSENT` / `UNBOUNDED` — a deadline that is not a number. |
+
+---
+
+## Session errors
+
+```
+SessionError
+├── SessionConfigurationError    a missing or invalid setting
+└── SessionStoreError            the store failed; wraps the driver error
+```
+
+A failed **read** yields an empty session unless `session_fail_closed` is set.
+A failed **write** always raises. `count_for_subject` always raises, because
+there the store is the authorization answer.
+
+---
+
+## `SessionEvents`
+
+```python
+events = SessionEvents(redis, key_prefix="redis:fastapi", db=0)
+
+@events.on_session_end
+async def _(session_id: str, cause: Cause) -> None: ...
+```
+
+Started and stopped by the lifespan when `session_events_enabled` is set.
+`events.tier` is `"field"` when the server can deliver events and `"none"`
+otherwise — in which case handlers never fire. Requires Redis 8.8 and
+`notify-keyspace-events` including a subkey flag plus `h`.

@@ -18,8 +18,8 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from redis_fastapi.config import get_settings
-from redis_fastapi.session_backend import RedisSessionStore
-from redis_fastapi.sessions import Session, SessionStoreError
+from redis_fastapi.exceptions import SessionStoreError
+from redis_fastapi.session_backend import RedisSessionStore, SessionState
 
 
 class _BrokenPipeline:
@@ -91,8 +91,18 @@ class TestReadsFailOpen:
     ) -> None:
         assert await broken.list_for_subject("42") == []
 
-    async def test_a_failed_count_returns_zero(self, broken: RedisSessionStore) -> None:
-        assert await broken.count_for_subject("42") == 0
+    async def test_a_failed_count_raises_rather_than_answering_zero(
+        self, broken: RedisSessionStore
+    ) -> None:
+        """The one read that must **not** fail open.
+
+        Section 7's argument for an empty session is that the application's
+        own authorization still runs.  For a count the store *is* the answer,
+        and ``0`` is the permissive one - a concurrent-session cap would wave
+        every login through exactly when Redis is unhealthy.
+        """
+        with pytest.raises(SessionStoreError, match="Could not count sessions"):
+            await broken.count_for_subject("42")
 
 
 class TestFailClosedFlipsReadsOnly:
@@ -168,10 +178,16 @@ class TestTidyUpNeverFailsARequest:
             await broken._safe_delete(broken.new_id())
         assert "Could not remove a dead session key" in caplog.text
 
-    async def test_a_failed_liveness_check_reports_nothing_alive(
+    async def test_a_failed_liveness_check_answers_unknown_not_empty(
         self, broken: RedisSessionStore
     ) -> None:
-        assert await broken._verify(["a" * 30]) == set()
+        """``None`` and the empty set must stay distinguishable.
+
+        Conflating them let one transient pipeline error prune every index
+        entry for a subject, leaving live sessions that ``revoke_all`` could
+        no longer reach.
+        """
+        assert await broken._verify(["a" * 30]) is None
 
 
 class TestUnreachableStates:
@@ -198,7 +214,7 @@ class TestUnreachableStates:
     ) -> None:
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
         sid = store.new_id()
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": 42}))
         await fake_async_redis.execute_command(
             "HSETEX", store.session_key(sid), "KEEPTTL", "FIELDS", 1, "d", "{not json"
         )
@@ -231,13 +247,11 @@ class TestOsErrorsCountToo:
 class TestRevokeOnABrokenStore:
     async def test_revoke_surfaces_the_failure(self, broken: RedisSessionStore) -> None:
         """Revocation that quietly does nothing is the worst kind."""
-        session = Session({"user_id": 42})
-        session.sid = "a" * 30
+        state = SessionState(data={"user_id": 42}, session_id="a" * 30)
         with pytest.raises(SessionStoreError):
-            await broken.revoke(session)
+            await broken.revoke(state)
 
     async def test_rotate_surfaces_the_failure(self, broken: RedisSessionStore) -> None:
-        session = Session({"user_id": 42})
-        session.sid = "a" * 30
+        state = SessionState(data={"user_id": 42}, session_id="a" * 30)
         with pytest.raises(SessionStoreError):
-            await broken.rotate(session, subject="42")
+            await broken.rotate(state, subject="42")

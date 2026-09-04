@@ -6,12 +6,13 @@ https://fastapi.tiangolo.com/advanced/settings
 
 from __future__ import annotations
 
+import re
 import warnings
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.driver_info import DriverInfo
 
@@ -23,6 +24,21 @@ except PackageNotFoundError:
     from redis_fastapi import __version__ as LIB_VERSION
 DRIVER_INFO: DriverInfo = DriverInfo().add_upstream_driver(LIB_NAME, LIB_VERSION)
 CACHE_STATUS_HEADER: str = "X-Redis-Cache"
+
+# Scope keys the caching and session features use to agree about a response,
+# rather than each appending headers independently.  They live here because
+# neither feature may import the other: caching must work with sessions absent,
+# and deps.py already imports sessions, so cache -> sessions would be a cycle.
+CACHE_ROUTE_SCOPE_KEY: str = "redis_cache_route"
+"""Set by ``cache()``: this route owns its ``Cache-Control``."""
+CACHE_SUPPRESS_VARY_SCOPE_KEY: str = "redis_cache_no_vary"
+"""Set by ``cache(vary_on_session=False)``: the body does not vary by cookie."""
+
+# Cookie attributes are interpolated into a response header, so each is
+# constrained to characters that cannot terminate or split one.
+_COOKIE_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
+_COOKIE_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]+")
+_CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class RedisSettings(BaseSettings):
@@ -291,6 +307,47 @@ class RedisSettings(BaseSettings):
         default=False,
         description="Also initialize redis-py native OTel (connection/command metrics)",
     )
+
+    # -- Cookie attribute validation -------------------------------------------
+    #
+    # These three are interpolated straight into a ``Set-Cookie`` header.  The
+    # session *value* has been charset-checked since the first version
+    # precisely because an unvalidated one is a header-injection vector; the
+    # name, path and domain reach the same header by the same route and were
+    # not checked at all.  A CR or LF in any of them splits the header.
+
+    @field_validator("session_cookie_name")
+    @classmethod
+    def _check_cookie_name(cls, value: str) -> str:
+        """RFC 6265 token characters, narrowed to what a cookie name needs."""
+        if not value or not _COOKIE_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "session_cookie_name must be one or more of letters, digits, "
+                f"'-' and '_'; got {value!r}"
+            )
+        return value
+
+    @field_validator("session_cookie_path")
+    @classmethod
+    def _check_cookie_path(cls, value: str) -> str:
+        if not value.startswith("/") or _CTL_RE.search(value) or ";" in value:
+            raise ValueError(
+                "session_cookie_path must start with '/' and contain no "
+                f"control characters or ';'; got {value!r}"
+            )
+        return value
+
+    @field_validator("session_cookie_domain")
+    @classmethod
+    def _check_cookie_domain(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or not _COOKIE_DOMAIN_RE.fullmatch(value):
+            raise ValueError(
+                "session_cookie_domain must be a hostname of letters, digits, "
+                f"'-' and '.'; got {value!r}"
+            )
+        return value
 
     # -- KV fields that are silently ignored when url is set -----------------
     _KV_FIELDS: frozenset[str] = frozenset(
