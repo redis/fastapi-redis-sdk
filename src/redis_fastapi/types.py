@@ -60,5 +60,24 @@ def pydantic_model_coder(model_type: type[ModelT]) -> type[Coder]:
     return _PydanticModelCoder
 
 
+@runtime_checkable
+class Encryptor(Protocol):
+    """Protocol for encrypting a serialized payload at rest.
+
+    Encryption **wraps** serialization, never the reverse: the ``Coder`` turns
+    the value into bytes, and only then does the encryptor see them.  A coder
+    must never be handed ciphertext.
+
+    This package ships the seam and not an implementation, deliberately - see
+    the recipe in the sessions guide.  Ten lines of ``AESGCM`` in your own
+    codebase is a smaller liability for everyone than a cryptographic
+    primitive maintained here.
+    """
+
+    def encrypt(self, data: bytes) -> bytes: ...  # pragma: no cover
+
+    def decrypt(self, data: bytes) -> bytes: ...  # pragma: no cover
+
+
 # A key builder receives (request, eviction_group, prefix) and returns a cache key.
 KeyBuilder: TypeAlias = Callable[..., str | Awaitable[str]]

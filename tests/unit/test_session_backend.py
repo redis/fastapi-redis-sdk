@@ -10,6 +10,10 @@ from __future__ import annotations
 import pytest
 
 from redis_fastapi.config import get_settings
+from redis_fastapi.exceptions import (
+    SessionConfigurationError,
+    SessionStoreError,
+)
 from redis_fastapi.session_backend import (
     FIELD_ABSOLUTE,
     FIELD_DATA,
@@ -18,7 +22,6 @@ from redis_fastapi.session_backend import (
     SessionRecord,
     _StoreCapabilities,
 )
-from redis_fastapi.sessions import SessionConfigurationError, SessionStoreError
 
 
 @pytest.fixture()
@@ -91,7 +94,7 @@ class TestTwoFieldsTwoClocks:
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = store.new_id()
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": 42}))
 
         key = store.session_key(sid)
         assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
@@ -108,7 +111,7 @@ class TestTwoFieldsTwoClocks:
         """
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({"n": 1}))
+        await store.create(sid, store.new_record({"n": 1}))
 
         # Age the absolute clock, then write the payload many times over.
         await fake_async_redis.execute_command(
@@ -130,7 +133,7 @@ class TestTwoFieldsTwoClocks:
     ) -> None:
         """The ``-1`` row of the state table must be unreachable."""
         sid = store.new_id()
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         assert await _httl(fake_async_redis, store.session_key(sid), FIELD_ABSOLUTE) > 0
 
     async def test_zero_ttls_fall_back_to_gc_ttl(self, fake_async_redis) -> None:
@@ -139,7 +142,7 @@ class TestTwoFieldsTwoClocks:
             fake_async_redis, idle_ttl=0, absolute_ttl=0, gc_ttl=1234
         )
         sid = store.new_id()
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         key = store.session_key(sid)
         assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 1234)
         assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 1234)
@@ -150,7 +153,7 @@ class TestLoadStateTable:
 
     async def test_alive(self, store: RedisSessionStore) -> None:
         sid = store.new_id()
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": 42}))
         loaded = await store.load(sid)
         assert loaded is not None
         assert loaded.record.data == {"user_id": 42}
@@ -161,7 +164,7 @@ class TestLoadStateTable:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": 42}))
         await fake_async_redis.execute_command(
             "HDEL", key, FIELD_ABSOLUTE
         )  # simulate 'a' expiring
@@ -178,7 +181,7 @@ class TestLoadStateTable:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": 42}))
         await fake_async_redis.execute_command("HDEL", key, FIELD_DATA)
         assert await store.load(sid) is None
         assert await fake_async_redis.exists(key) == 0
@@ -195,7 +198,7 @@ class TestLoadStateTable:
         """
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=0)
         sid = store.new_id()
-        await store.save(sid, store.new_record({"user_id": 7}))
+        await store.create(sid, store.new_record({"user_id": 7}))
         loaded = await store.load(sid)
         assert loaded is not None
         assert loaded.record.data == {"user_id": 7}
@@ -212,7 +215,7 @@ class TestIdleRefresh:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         await fake_async_redis.execute_command(
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
@@ -224,7 +227,7 @@ class TestIdleRefresh:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         await fake_async_redis.execute_command(
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
@@ -241,7 +244,7 @@ class TestIdleRefresh:
         """
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         await fake_async_redis.execute_command(
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
@@ -253,7 +256,7 @@ class TestIdleRefresh:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         await fake_async_redis.execute_command(
             "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
         )
@@ -279,7 +282,7 @@ class TestSevenFourFallback:
         self, old_store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = old_store.new_id()
-        await old_store.save(sid, old_store.new_record({"user_id": 42}))
+        await old_store.create(sid, old_store.new_record({"user_id": 42}))
         loaded = await old_store.load(sid)
         assert loaded is not None
         assert loaded.record.data == {"user_id": 42}
@@ -288,7 +291,7 @@ class TestSevenFourFallback:
         self, old_store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = old_store.new_id()
-        await old_store.save(sid, old_store.new_record({}))
+        await old_store.create(sid, old_store.new_record({}))
         key = old_store.session_key(sid)
         assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
         assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
@@ -298,7 +301,7 @@ class TestSevenFourFallback:
     ) -> None:
         sid = old_store.new_id()
         key = old_store.session_key(sid)
-        await old_store.save(sid, old_store.new_record({}))
+        await old_store.create(sid, old_store.new_record({}))
         await fake_async_redis.execute_command(
             "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
         )
@@ -335,7 +338,7 @@ class TestDelete:
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = store.new_id()
-        await store.save(sid, store.new_record({}))
+        await store.create(sid, store.new_record({}))
         await store.delete(sid)
         assert await fake_async_redis.exists(store.session_key(sid)) == 0
         assert await store.load(sid) is None

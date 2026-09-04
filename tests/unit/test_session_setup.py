@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -9,17 +11,16 @@ from fastapi.testclient import TestClient
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import (
     SessionDep,
+    SessionStateDep,
     SessionStoreDep,
     SyncSessionStoreDep,
+    _get_pool_state,
     get_session_store,
     get_sync_session_store,
 )
+from redis_fastapi.exceptions import SessionConfigurationError
 from redis_fastapi.session_backend import RedisSessionStore, SyncSessionStore
-from redis_fastapi.sessions import (
-    SessionConfigurationError,
-    SessionMiddleware,
-    add_redis_sessions,
-)
+from redis_fastapi.sessions import SessionMiddleware, add_redis_sessions
 from redis_fastapi.setup import FastAPIRedis
 
 
@@ -156,9 +157,9 @@ class TestSyncEndpoint:
         Driving it through a real ``def`` endpoint is the only way to test it
         honestly - calling it directly from the main thread raises.
         """
-        app = FastAPI()
-        add_redis_sessions(app)
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        app = FastAPI()
+        add_redis_sessions(app, store=store)
 
         async def _async_store(request: Request) -> RedisSessionStore:
             return store
@@ -166,9 +167,6 @@ class TestSyncEndpoint:
         async def _sync_store(request: Request) -> SyncSessionStore:
             return SyncSessionStore(store)
 
-        for mw in app.user_middleware:
-            if "store_factory" in mw.kwargs:
-                mw.kwargs["store_factory"] = _async_store
         app.dependency_overrides[get_sync_session_store] = _sync_store
 
         @app.post("/login")
@@ -181,19 +179,19 @@ class TestSyncEndpoint:
             return {"n": store.count_for_subject("42")}
 
         @app.get("/devices")
-        def devices(session: SessionDep, store: SyncSessionStoreDep) -> dict:
+        def devices(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
             return {
                 "n": len(store.list_for_subject("42")),
-                "current": store.session_id(session) is not None,
+                "current": store.session_id(state) is not None,
             }
 
         @app.post("/rotate")
-        def rotate(session: SessionDep, store: SyncSessionStoreDep) -> dict:
-            return {"sid": store.rotate(session, subject="42")}
+        def rotate(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
+            return {"sid": store.rotate(state, subject="42")}
 
         @app.post("/step-up")
-        def step_up(session: SessionDep, store: SyncSessionStoreDep) -> dict:
-            store.reauthenticate(session)
+        def step_up(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
+            store.reauthenticate(state)
             return {"ok": True}
 
         @app.post("/revoke-one")
@@ -205,8 +203,8 @@ class TestSyncEndpoint:
             return {"n": store.revoke_all("42")}
 
         @app.post("/logout")
-        def logout(session: SessionDep, store: SyncSessionStoreDep) -> dict:
-            store.revoke(session)
+        def logout(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
+            store.revoke(state)
             return {"ok": True}
 
         with TestClient(app) as client:
@@ -227,3 +225,153 @@ class TestSyncEndpoint:
 
             client.post("/login")
             assert client.post("/revoke-all").json()["n"] >= 1
+
+
+class TestTheStoreIsInjectable:
+    """Every seam the store constructor offers must be reachable from setup.
+
+    Before this, ``get_session_store`` built a ``RedisSessionStore`` with no
+    options and the middleware held the raw function, so a ``coder`` could only
+    be supplied by replacing the whole dependency - and that did not reach the
+    middleware at all.  The proof it was wrong is that this suite used to
+    rewrite ``app.user_middleware[i].kwargs`` in five places.
+    """
+
+    def test_a_supplied_store_is_used_by_the_middleware(self, fake_async_redis) -> None:
+        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        app = FastAPI()
+        add_redis_sessions(app, store=store)
+
+        seen: list[object] = []
+
+        @app.post("/login")
+        async def login(session: SessionDep, injected: SessionStoreDep) -> dict:
+            session["user_id"] = 42
+            seen.append(injected)
+            return {}
+
+        with TestClient(app) as client:
+            assert client.post("/login").status_code == 200
+        assert seen == [store], "the handler and the middleware disagreed"
+
+    def test_dependency_overrides_reaches_the_middleware(
+        self, fake_async_redis
+    ) -> None:
+        """The middleware runs before dependency resolution, so it has to
+        consult the override map itself."""
+        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        app = FastAPI()
+        add_redis_sessions(app)
+
+        async def _override(request: Request) -> RedisSessionStore:
+            return store
+
+        app.dependency_overrides[get_session_store] = _override
+
+        @app.post("/login")
+        async def login(session: SessionDep) -> dict:
+            session["user_id"] = 42
+            return {}
+
+        with TestClient(app) as client:
+            assert client.post("/login").status_code == 200
+        # No lifespan ran, so reaching the real pool would have raised.
+
+    def test_a_store_factory_is_called_per_request(self, fake_async_redis) -> None:
+        calls: list[int] = []
+
+        async def factory(request: Request) -> RedisSessionStore:
+            calls.append(1)
+            return RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+
+        app = FastAPI()
+        add_redis_sessions(app, store_factory=factory)
+
+        @app.get("/read")
+        async def read(session: SessionDep) -> dict:
+            return {"n": session.get("n")}
+
+        with TestClient(app) as client:
+            client.get("/read")
+            client.get("/read")
+        assert len(calls) >= 2
+
+    def test_constructor_options_reach_the_built_store(
+        self, fake_async_redis, monkeypatch
+    ) -> None:
+        get_settings.cache_clear()
+        monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
+        get_settings.cache_clear()
+
+        app = FastAPI()
+        add_redis_sessions(
+            app,
+            store_factory=None,
+            idle_ttl=timedelta(minutes=5),
+            key_prefix="custom",
+            id_factory=lambda: "z" * 40,
+        )
+        _get_pool_state(app).async_pool = fake_async_redis.connection_pool
+
+        captured: list[RedisSessionStore] = []
+
+        @app.get("/probe")
+        async def probe(store: SessionStoreDep) -> dict:
+            captured.append(store)  # type: ignore[arg-type]
+            return {}
+
+        with TestClient(app) as client:
+            client.get("/probe")
+
+        store = captured[0]
+        assert store.idle_seconds == 300, "timedelta was not honoured"
+        assert store.session_key("x").startswith("custom:session:")
+        assert store.new_id() == "z" * 40
+        get_settings.cache_clear()
+
+    def test_store_and_store_factory_together_are_refused(self) -> None:
+        with pytest.raises(SessionConfigurationError, match="not both"):
+            add_redis_sessions(FastAPI(), store=object(), store_factory=lambda r: None)
+
+
+class TestSessionCarriesNoTransportState:
+    """Proposal 2: ``Session`` is a dict with two flags, and nothing else.
+
+    The store used to write ``sid``/``subject``/``revoked``/``rotated`` onto
+    the object the application holds, which made those four a public mutable
+    contract and forced ``session_backend`` to import ``sessions`` purely so it
+    could mutate it.
+    """
+
+    def test_only_the_two_flags_remain(self) -> None:
+        from redis_fastapi.sessions import Session
+
+        assert set(Session.__slots__) == {"accessed", "modified"}
+
+    def test_the_backend_does_not_import_the_request_half(self) -> None:
+        """The layering boundary, asserted rather than assumed."""
+        import pathlib
+
+        source = pathlib.Path("src/redis_fastapi/session_backend.py").read_text()
+        assert "from redis_fastapi.sessions import" not in source
+        assert "import redis_fastapi.sessions" not in source
+
+    def test_the_handle_is_reachable_from_a_handler(self, fake_async_redis) -> None:
+        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        app = FastAPI()
+        add_redis_sessions(app, store=store)
+
+        @app.post("/login")
+        async def login(session: SessionDep) -> dict:
+            session["user_id"] = 42
+            return {}
+
+        @app.get("/whoami")
+        async def whoami(state: SessionStateDep, st: SessionStoreDep) -> dict:
+            return {"sid": st.session_id(state), "subject": state.subject}
+
+        with TestClient(app) as client:
+            client.post("/login")
+            body = client.get("/whoami").json()
+        assert body["sid"]
+        assert body["subject"] == "42"

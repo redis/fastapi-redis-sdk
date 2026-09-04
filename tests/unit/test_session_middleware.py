@@ -14,7 +14,12 @@ from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
-from redis_fastapi.deps import SessionDep, SessionStoreDep, get_session_store
+from redis_fastapi.deps import (
+    SessionDep,
+    SessionStateDep,
+    SessionStoreDep,
+    get_session_store,
+)
 from redis_fastapi.session_backend import RedisSessionStore
 from redis_fastapi.sessions import add_redis_sessions
 
@@ -49,9 +54,6 @@ def app(fake_async_redis, monkeypatch) -> FastAPI:
     application.dependency_overrides[get_session_store] = _store
     # The middleware resolves the store directly, not through DI, so point it
     # at the same fake instance.
-    for mw in application.user_middleware:
-        if "store_factory" in mw.kwargs:
-            mw.kwargs["store_factory"] = _store
 
     @application.get("/read")
     async def read(session: SessionDep) -> dict:
@@ -78,13 +80,13 @@ def app(fake_async_redis, monkeypatch) -> FastAPI:
         return {"counter": session["counter"]}
 
     @application.post("/logout")
-    async def logout(session: SessionDep, store: SessionStoreDep) -> dict:
-        await store.revoke(session)
+    async def logout(state: SessionStateDep, store: SessionStoreDep) -> dict:
+        await store.revoke(state)
         return {"ok": True}
 
     @application.post("/step-up")
-    async def step_up(session: SessionDep, store: SessionStoreDep) -> dict:
-        return {"sid": await store.rotate(session, subject="42")}
+    async def step_up(state: SessionStateDep, store: SessionStoreDep) -> dict:
+        return {"sid": await store.rotate(state, subject="42")}
 
     @application.post("/promote")
     async def promote(session: SessionDep) -> dict:
@@ -239,10 +241,7 @@ class TestSkip:
             return store
 
         application = FastAPI()
-        add_redis_sessions(application, skip=lambda request: True)
-        for mw in application.user_middleware:
-            if "store_factory" in mw.kwargs:
-                mw.kwargs["store_factory"] = _store
+        add_redis_sessions(application, skip=lambda request: True, store_factory=_store)
 
         @application.get("/x")
         async def x(session: SessionDep) -> dict:
@@ -298,16 +297,9 @@ class TestCookieOnlyMode:
         monkeypatch.setenv("REDIS_SESSION_ABSOLUTE_TTL", "0")
         get_settings.cache_clear()
 
-        application = FastAPI()
-        add_redis_sessions(application)
         store = RedisSessionStore(fake_async_redis, idle_ttl=0, absolute_ttl=0)
-
-        async def _store(request: Request) -> RedisSessionStore:
-            return store
-
-        for mw in application.user_middleware:
-            if "store_factory" in mw.kwargs:
-                mw.kwargs["store_factory"] = _store
+        application = FastAPI()
+        add_redis_sessions(application, store=store)
 
         @application.post("/w")
         async def w(session: SessionDep) -> dict:
@@ -329,16 +321,9 @@ class TestSecureAndDomainAttributes:
         monkeypatch.setenv("REDIS_SESSION_COOKIE_DOMAIN", "example.com")
         get_settings.cache_clear()
 
-        application = FastAPI()
-        add_redis_sessions(application)
         store = RedisSessionStore(fake_async_redis)
-
-        async def _store(request: Request) -> RedisSessionStore:
-            return store
-
-        for mw in application.user_middleware:
-            if "store_factory" in mw.kwargs:
-                mw.kwargs["store_factory"] = _store
+        application = FastAPI()
+        add_redis_sessions(application, store=store)
 
         @application.post("/w")
         async def w(session: SessionDep) -> dict:
