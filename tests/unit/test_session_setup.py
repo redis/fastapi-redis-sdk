@@ -296,6 +296,49 @@ class TestTheStoreIsInjectable:
             client.get("/read")
         assert len(calls) >= 2
 
+    def test_the_store_constructor_takes_a_timedelta_on_every_clock(
+        self, fake_async_redis
+    ) -> None:
+        """Half of the convention the §9 settings table used to contradict.
+
+        The other half is in ``test_config.py``: the settings are ``int``
+        seconds, and this is the path where a ``timedelta`` reads better and
+        is accepted.
+        """
+        store = RedisSessionStore(
+            fake_async_redis,
+            idle_ttl=timedelta(minutes=15),
+            absolute_ttl=timedelta(hours=8),
+            gc_ttl=timedelta(days=30),
+        )
+        assert store.idle_seconds == 900
+        assert store.absolute_seconds == 28800
+
+    def test_the_builder_forwards_a_timedelta_to_the_store(
+        self, fake_async_redis
+    ) -> None:
+        """``.sessions(**store_options)`` is the documented path, so pin it."""
+        app = FastAPI()
+        FastAPIRedis(app).sessions(
+            store_factory=None,
+            idle_ttl=timedelta(minutes=45),
+            absolute_ttl=timedelta(hours=2),
+        )
+        _get_pool_state(app).async_pool = fake_async_redis.connection_pool
+
+        captured: list[RedisSessionStore] = []
+
+        @app.get("/probe")
+        async def probe(store: SessionStoreDep) -> dict:
+            captured.append(store)  # type: ignore[arg-type]
+            return {}
+
+        with TestClient(app) as client:
+            client.get("/probe")
+
+        assert captured[0].idle_seconds == 2700
+        assert captured[0].absolute_seconds == 7200
+
     def test_constructor_options_reach_the_built_store(
         self, fake_async_redis, monkeypatch
     ) -> None:

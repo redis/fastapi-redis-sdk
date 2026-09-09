@@ -1,9 +1,9 @@
-"""OpenTelemetry instrumentation for fastapi-redis-sdk cache operations.
+"""OpenTelemetry instrumentation for fastapi-redis-sdk.
 
-Provides spans and metrics for cache(), cache_evict(), cache_put(),
-and CacheBackend operations.  All OTel imports are guarded - when the
-``opentelemetry`` packages are not installed every helper is a silent
-no-op.
+Provides spans and metrics for cache(), cache_evict(), cache_put() and
+CacheBackend operations, for rate-limit checks, and for the session store.
+All OTel imports are guarded - when the ``opentelemetry`` packages are not
+installed every helper is a silent no-op.
 
 Enable via::
 
@@ -346,9 +346,22 @@ def session_span(
 def record_session_operation(*, operation: str, result: str) -> None:
     """Count a session operation.
 
+    The label sets below are exhaustive, and they are the emitted ones rather
+    than the intended ones: a dashboard filtering on a label the store never
+    sends shows a permanently empty series, which reads as "nothing is
+    happening" instead of "nothing is measured".
+
     Args:
-        operation: load, save, touch, rotate, revoke, revoke_all, list, count.
-        result: hit, miss, expired or error.
+        operation: ``load``, ``create``, ``save``, ``touch``, ``rotate``,
+            ``revoke``, ``revoke_id``, ``revoke_all``, ``list`` or ``count``.
+            ``create`` and ``save`` are separate because a create is a new
+            session - the sign-in rate - while a save updates an existing one.
+            ``delete`` and ``index`` are deliberately absent: both are always
+            part of one of the above and counting them would double-count it.
+        result: ``hit``, ``miss``, ``expired`` or ``error``.  ``miss`` means
+            there was nothing to do - no such session, an empty index, an
+            identifier that is not this subject's.  ``expired`` is emitted by
+            ``load`` alone.
     """
     if not _state.enabled or _state.session_operations is None:
         return
@@ -372,7 +385,9 @@ def record_session_event(*, cause: str, result: str) -> None:
     """Count a session-end notification.
 
     Args:
-        cause: idle, absolute or revoked.
+        cause: ``idle`` or ``absolute``.  There is no third value: a
+            revocation is a ``DEL``, which publishes no subkey notification,
+            so no handler is ever called with one.
         result: delivered or dropped.
     """
     if not _state.enabled or _state.session_events is None:

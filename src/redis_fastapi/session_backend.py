@@ -17,11 +17,12 @@ See ``docs/specs/session-design.md`` Sections 3 and 4.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import secrets
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum, auto
@@ -59,6 +60,11 @@ STORE_ERRORS: tuple[type[BaseException], ...] = (
     RedisClusterException,
     OSError,
 )
+
+# What a *composite* operation can fail with: a driver error from a primitive
+# it calls directly, or this module's own wrapper around one raised deeper
+# down.  ``_observe`` counts both as one failed operation.
+OBSERVED_ERRORS: tuple[type[BaseException], ...] = (SessionStoreError, *STORE_ERRORS)
 
 # Hash field names.  Two characters, and identical in every session key.
 # Section 13.2: a uniform schema is what a future compact-hash encoding would
@@ -339,9 +345,17 @@ class SessionStore(ABC):
 
     The lifecycle is a security control, so it is written once here rather
     than once per backend.  A new backend implements the abstract primitives
-    at the bottom of this class - ten of them, listed there - and inherits the
-    identifier rules, the two-clock policy, the envelope format and the error
-    handling.
+    at the bottom of this class - eleven of them, listed there - and inherits
+    the identifier rules, the two-clock policy, the envelope format and the
+    error handling.
+
+    **The underscore on those eleven means "applications never call this",
+    not "do not override this".**  The prefix is what separates policy from
+    mechanism - ``delete()`` applies the failure policy, ``_delete()`` removes
+    the key - and the two could not share a name.  Overriding them is
+    supported and is how this class is meant to be extended; it is simply not
+    a documented, supported product surface, so the published guide does not
+    describe it and no compatibility promise attaches to it.
 
     Section 7 of ``session-mgmt.md`` gives the reason this is an abstract base
     class and not a bare protocol.  ``SessionStoreProtocol`` describes the much
@@ -528,6 +542,30 @@ class SessionStore(ABC):
             ),
         )
 
+    # -- instrumentation ------------------------------------------------------
+
+    @contextlib.contextmanager
+    def _observe(self, operation: str) -> Iterator[None]:
+        """Span, latency and the ``error`` count for one store operation.
+
+        The outcome count is the caller's, because only the caller knows
+        whether nothing-to-do is a ``miss`` or a ``hit``.  Failure is not:
+        every operation that raises counts the same way, and doing it here is
+        what keeps the ``error`` series from depending on someone remembering
+        an ``except`` arm.
+
+        A composite operation records **twice** on failure, once for itself
+        and once for the inner operation that failed - a rotation whose
+        ``create`` fails is both a failed create and a failed rotation, and a
+        dashboard wants to see both.  The spans nest for the same reason.
+        """
+        with session_span(f"session.{operation}"), timed_session(operation):
+            try:
+                yield
+            except OBSERVED_ERRORS:
+                record_session_operation(operation=operation, result="error")
+                raise
+
     # -- lifecycle -----------------------------------------------------------
 
     async def load(
@@ -643,8 +681,14 @@ class SessionStore(ABC):
         expired.
 
         *absolute* is the deadline TTL on a create, and ``None`` on an update.
+        It also names the operation for telemetry: the two report separately
+        because a create is a session that did not exist a moment ago - the
+        sign-in rate, and the most useful single number a session dashboard
+        can show - while a save is a session being updated.  Reporting both
+        under ``save`` understated one and polluted the other.
         """
-        with session_span("session.save"), timed_session("save"):
+        operation = "create" if absolute is not None else "save"
+        with session_span(f"session.{operation}"), timed_session(operation):
             try:
                 await self._write(
                     session_id,
@@ -653,20 +697,26 @@ class SessionStore(ABC):
                     absolute=absolute,
                 )
             except STORE_ERRORS as exc:
-                record_session_operation(operation="save", result="error")
+                record_session_operation(operation=operation, result="error")
                 raise SessionStoreError(f"Could not save session: {exc}") from exc
-        record_session_operation(operation="save", result="hit")
+        record_session_operation(operation=operation, result="hit")
 
     async def touch(self, session_id: str) -> None:
         """Restart the idle clock without rewriting the payload.
 
         Only needed under ``session_refresh_on_load=False``; the default load
         already refreshed in the same round trip as the read.
+
+        A counter and no span: one command is not worth a span, but the count
+        is the only way to confirm that ``refresh_on_load=False`` is doing
+        anything at all.
         """
         try:
             await self._expire(session_id, self.idle_seconds)
         except STORE_ERRORS as exc:
+            record_session_operation(operation="touch", result="error")
             raise SessionStoreError(f"Could not refresh session: {exc}") from exc
+        record_session_operation(operation="touch", result="hit")
 
     async def delete(self, session_id: str) -> None:
         """Remove a session outright.
@@ -721,6 +771,17 @@ class SessionStore(ABC):
         Raises:
             SessionStoreError: On any store failure.
         """
+        with self._observe("rotate"):
+            return await self._rotate(state, subject=subject, descriptor=descriptor)
+
+    async def _rotate(
+        self,
+        state: SessionState,
+        *,
+        subject: str | None,
+        descriptor: dict[str, Any] | None,
+    ) -> str:
+        """Body of :meth:`rotate`, so the span wraps the whole four trips."""
         subject = subject if subject is not None else state.subject
         old_id = state.session_id
         if old_id is not None:
@@ -788,16 +849,22 @@ class SessionStore(ABC):
         of and eventually refuses a legitimate login.
         """
         old_id = state.session_id
-        if old_id is not None:
-            await self.delete(old_id)
-            resolved = subject if subject is not None else state.subject
-            if resolved:
-                await self._index_drop(resolved, old_id)
-        state.data.clear()
-        state.session_id = None
-        state.subject = None
-        state.revoked = True
-        state.rotated = False
+        with self._observe("revoke"):
+            if old_id is not None:
+                await self.delete(old_id)
+                resolved = subject if subject is not None else state.subject
+                if resolved:
+                    await self._index_drop(resolved, old_id)
+            state.data.clear()
+            state.session_id = None
+            state.subject = None
+            state.revoked = True
+            state.rotated = False
+        # ``miss`` is a session that was never written: there was no key to
+        # delete and no cookie to replace, so nothing reached Redis.
+        record_session_operation(
+            operation="revoke", result="hit" if old_id is not None else "miss"
+        )
 
     async def revoke_id(self, session_id: str, *, subject: str) -> bool:
         """End one session by ID, and refuse an ID not indexed under *subject*.
@@ -812,16 +879,24 @@ class SessionStore(ABC):
             subject's - including when it has already expired.
         """
         if not self.is_valid_id(session_id):
+            record_session_operation(operation="revoke_id", result="miss")
             return False
-        try:
-            members = await self._index_members(subject)
-        except STORE_ERRORS as exc:
-            raise SessionStoreError(f"Could not read the session index: {exc}") from exc
-        if session_id not in members:
-            return False
-        await self.delete(session_id)
-        await self._index_drop(subject, session_id)
-        return True
+        with self._observe("revoke_id"):
+            try:
+                members = await self._index_members(subject)
+            except STORE_ERRORS as exc:
+                raise SessionStoreError(
+                    f"Could not read the session index: {exc}"
+                ) from exc
+            if session_id not in members:
+                # Worth its own label: a run of these is either a broken UI or
+                # somebody trying identifiers that are not theirs.
+                record_session_operation(operation="revoke_id", result="miss")
+                return False
+            await self.delete(session_id)
+            await self._index_drop(subject, session_id)
+            record_session_operation(operation="revoke_id", result="hit")
+            return True
 
     async def revoke_all(self, subject: str) -> int:
         """End every session belonging to *subject*.
@@ -835,18 +910,18 @@ class SessionStore(ABC):
             lower than the number of entries it held whenever some of those
             sessions had already died.
         """
-        try:
-            members = await self._index_members(subject)
-            if not members:
-                record_session_operation(operation="revoke_all", result="miss")
-                return 0
-            removed = await self._delete_many(list(members))
-            await self._index_clear(subject)
-        except STORE_ERRORS as exc:
-            record_session_operation(operation="revoke_all", result="error")
-            raise SessionStoreError(f"Could not revoke sessions: {exc}") from exc
-        record_session_operation(operation="revoke_all", result="hit")
-        return removed
+        with self._observe("revoke_all"):
+            try:
+                members = await self._index_members(subject)
+                if not members:
+                    record_session_operation(operation="revoke_all", result="miss")
+                    return 0
+                removed = await self._delete_many(list(members))
+                await self._index_clear(subject)
+            except STORE_ERRORS as exc:
+                raise SessionStoreError(f"Could not revoke sessions: {exc}") from exc
+            record_session_operation(operation="revoke_all", result="hit")
+            return removed
 
     # -- the reverse lookup ---------------------------------------------------
 
@@ -907,40 +982,55 @@ class SessionStore(ABC):
         entries are pruned on the way past.  Two round trips whatever the
         session count: one to read the index, one to verify the batch.
         """
-        try:
-            members = await self._index_members(subject)
-        except STORE_ERRORS as exc:
-            self._read_failed(exc)
-            return []
-        if not members:
-            return []
-
-        live = await self._verify(list(members))
-        infos: list[SessionInfo] = []
-        dead: list[str] = []
-        for session_id, raw in members.items():
-            if live is not None and session_id not in live:
-                dead.append(session_id)
-                continue
-            infos.append(self._to_info(session_id, raw))
-        for session_id in dead:
-            # Best-effort tidy-up on a read path: failing a device listing
-            # because we could not prune a stale row helps nobody.
+        # Deliberately not ``_observe``: this read fails **open**, so the
+        # error has to be counted where the exception is swallowed.  Under
+        # ``fail_closed`` it escapes as well, and ``_observe`` would then
+        # count the same failure a second time.
+        with session_span("session.list"), timed_session("list"):
             try:
-                await self._index_remove(subject, session_id)
+                members = await self._index_members(subject)
             except STORE_ERRORS as exc:
-                logger.warning("Could not prune a dead index entry: %s", exc)
-        infos.sort(key=lambda info: info.last_access, reverse=True)
-        return infos
+                record_session_operation(operation="list", result="error")
+                self._read_failed(exc)
+                return []
+            if not members:
+                record_session_operation(operation="list", result="miss")
+                return []
+
+            live = await self._verify(list(members))
+            infos: list[SessionInfo] = []
+            dead: list[str] = []
+            for session_id, raw in members.items():
+                if live is not None and session_id not in live:
+                    dead.append(session_id)
+                    continue
+                infos.append(self._to_info(session_id, raw))
+            for session_id in dead:
+                # Best-effort tidy-up on a read path: failing a device listing
+                # because we could not prune a stale row helps nobody.
+                try:
+                    await self._index_remove(subject, session_id)
+                except STORE_ERRORS as exc:
+                    logger.warning("Could not prune a dead index entry: %s", exc)
+            infos.sort(key=lambda info: info.last_access, reverse=True)
+            record_session_operation(
+                operation="list", result="hit" if infos else "miss"
+            )
+            return infos
 
     async def count_for_subject(self, subject: str, *, limit: int | None = None) -> int:
         """How many sessions *subject* has, as an upper bound by default.
 
-        Counting the index is ``O(1)`` and needs no verification, which is what
-        makes a "cap concurrent sessions" check cheap on every login.  Pass
-        *limit* to make the count exact **only when it matters**: below the
-        limit the fast answer is returned, and the verification round trip is
-        paid solely by the request that is about to be refused.
+        The fast path is ``_index_size`` - one ``HLEN`` - and it transfers a
+        single integer.  That is what makes a "cap concurrent sessions" check
+        cheap on every login: reading the members instead would ship every
+        identifier **and every descriptor** across the wire to compute their
+        length, and a descriptor holds whatever ``descriptor_of`` returns.
+
+        Pass *limit* to make the count exact **only when it matters**: below
+        the limit the fast answer is returned, and both the members read and
+        the verification round trip are paid solely by the request that is
+        about to be refused.
 
         **This one does not fail open.**  Section 7's argument for an empty
         session on a failed read is that the application's own authorization
@@ -951,22 +1041,25 @@ class SessionStore(ABC):
         Raises:
             SessionStoreError: If the count could not be established.
         """
-        try:
-            members = await self._index_members(subject)
-        except STORE_ERRORS as exc:
-            raise SessionStoreError(
-                f"Could not count sessions for the subject: {exc}"
-            ) from exc
-        upper = len(members)
-        if limit is None or upper < limit:
-            return upper
-        live = await self._verify(list(members))
-        if live is None:
-            raise SessionStoreError(
-                "Could not verify session liveness while counting; refusing to "
-                "answer rather than under-count."
-            )
-        return len(live)
+        with self._observe("count"):
+            try:
+                upper = await self._index_size(subject)
+                if limit is None or upper < limit:
+                    record_session_operation(operation="count", result="hit")
+                    return upper
+                members = await self._index_members(subject)
+            except STORE_ERRORS as exc:
+                raise SessionStoreError(
+                    f"Could not count sessions for the subject: {exc}"
+                ) from exc
+            live = await self._verify(list(members))
+            if live is None:
+                raise SessionStoreError(
+                    "Could not verify session liveness while counting; refusing to "
+                    "answer rather than under-count."
+                )
+            record_session_operation(operation="count", result="hit")
+            return len(live)
 
     async def _verify(self, session_ids: list[str]) -> set[str] | None:
         """Which of *session_ids* are alive, or ``None`` if we could not ask.
@@ -1043,6 +1136,13 @@ class SessionStore(ABC):
             logger.warning("Could not remove a dead session key: %s", exc)
 
     # -- the whole surface a new backend implements --------------------------
+    #
+    # Eleven methods.  Underscore-prefixed because no application calls them,
+    # *not* because a backend may not override them - overriding them is the
+    # only way to write one, and Python refuses to instantiate a subclass that
+    # leaves one out.  Each docstring below carries the rule that is easy to
+    # get wrong, because these docstrings are the only statement of the
+    # contract: it is deliberately not described in the published docs.
 
     @abstractmethod
     async def _read(
@@ -1111,6 +1211,18 @@ class SessionStore(ABC):
 
         An **upper bound**: entries can name sessions that have since died, so
         a caller must verify before reporting them.
+        """
+
+    @abstractmethod
+    async def _index_size(self, subject: str) -> int:
+        """How many entries a subject's index holds.
+
+        The same **upper bound** as ``_index_members``, and it exists so that
+        ``count_for_subject`` need not read the descriptors to count them.
+        Implement it with whatever counts without transferring the values -
+        ``HLEN`` on a hash, ``SCARD`` on a set.  Falling back to
+        ``len(await self._index_members(subject))`` is correct but gives up
+        the only reason this method is separate.
         """
 
 
@@ -1286,6 +1398,9 @@ class RedisSessionStore(SessionStore):
     async def _index_members(self, subject: str) -> dict[str, bytes | str]:
         raw = await self._redis.hgetall(self.index_key(subject))
         return {(k.decode() if isinstance(k, bytes) else k): v for k, v in raw.items()}
+
+    async def _index_size(self, subject: str) -> int:
+        return int(await self._redis.hlen(self.index_key(subject)))
 
     async def _alive(self, session_ids: list[str]) -> set[str]:
         """One pipelined ``HTTL`` per candidate, sent as a single batch.

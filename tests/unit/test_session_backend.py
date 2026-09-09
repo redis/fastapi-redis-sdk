@@ -22,6 +22,7 @@ from redis_fastapi.session_backend import (
     SessionRecord,
     _StoreCapabilities,
 )
+from tests.conftest import about
 
 
 @pytest.fixture()
@@ -33,17 +34,6 @@ def store(fake_async_redis) -> RedisSessionStore:
 async def _httl(redis, key: str, field: str) -> int:
     reply = await redis.execute_command("HTTL", key, "FIELDS", 1, field)
     return int(reply[0])
-
-
-def _about(actual: int, expected: int) -> bool:
-    """TTL equality, allowing for a second boundary crossing mid-test.
-
-    Redis counts down in whole seconds, so a TTL set to N reads back as N or
-    N-1 depending on where the call landed.  Asserting equality makes the
-    suite flaky for no gain; the guarantees under test are all about which
-    clock moved, not about sub-second precision.
-    """
-    return expected - 1 <= actual <= expected
 
 
 class TestKeySchema:
@@ -97,8 +87,8 @@ class TestTwoFieldsTwoClocks:
         await store.create(sid, store.new_record({"user_id": 42}))
 
         key = store.session_key(sid)
-        assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
 
     async def test_writing_the_payload_never_extends_the_deadline(
         self, store: RedisSessionStore, fake_async_redis
@@ -120,11 +110,11 @@ class TestTwoFieldsTwoClocks:
         for n in range(5):
             await store.save(sid, store.new_record({"n": n}))
 
-        assert await _httl(fake_async_redis, key, FIELD_ABSOLUTE) <= 100, (
-            "field 'a' was refreshed by a payload write - the absolute "
-            "deadline is no longer absolute"
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
+            "field 'a' moved on a payload write - refreshed, shortened or "
+            "deleted; the absolute deadline is no longer absolute"
         )
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60), (
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60), (
             "field 'd' should have been refreshed by the write"
         )
 
@@ -144,8 +134,8 @@ class TestTwoFieldsTwoClocks:
         sid = store.new_id()
         await store.create(sid, store.new_record({}))
         key = store.session_key(sid)
-        assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 1234)
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 1234)
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 1234)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 1234)
 
 
 class TestLoadStateTable:
@@ -220,7 +210,7 @@ class TestIdleRefresh:
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
         await store.load(sid)
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
 
     async def test_refresh_false_leaves_the_idle_clock_alone(
         self, store: RedisSessionStore, fake_async_redis
@@ -232,7 +222,9 @@ class TestIdleRefresh:
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
         await store.load(sid, refresh=False)
-        assert await _httl(fake_async_redis, key, FIELD_DATA) <= 5
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 5), (
+            "a plain read moved the idle clock"
+        )
 
     async def test_touch_advances_the_idle_clock(
         self, store: RedisSessionStore, fake_async_redis
@@ -249,7 +241,7 @@ class TestIdleRefresh:
             "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
         )
         await store.touch(sid)
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
 
     async def test_touch_does_not_extend_the_absolute_clock(
         self, store: RedisSessionStore, fake_async_redis
@@ -261,7 +253,9 @@ class TestIdleRefresh:
             "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
         )
         await store.touch(sid)
-        assert await _httl(fake_async_redis, key, FIELD_ABSOLUTE) <= 100
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
+            "touch moved the absolute clock"
+        )
 
 
 class TestSevenFourFallback:
@@ -293,8 +287,8 @@ class TestSevenFourFallback:
         sid = old_store.new_id()
         await old_store.create(sid, old_store.new_record({}))
         key = old_store.session_key(sid)
-        assert _about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
-        assert _about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
 
     async def test_repeated_writes_still_never_extend_the_deadline(
         self, old_store: RedisSessionStore, fake_async_redis
@@ -306,7 +300,9 @@ class TestSevenFourFallback:
             "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
         )
         await old_store.save(sid, old_store.new_record({"n": 2}))
-        assert await _httl(fake_async_redis, key, FIELD_ABSOLUTE) <= 100
+        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
+            "the 7.4 write path moved the absolute clock"
+        )
 
 
 class TestEnvelope:

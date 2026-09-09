@@ -149,12 +149,54 @@ class TestTheOrdinaryCases:
     def test_always_save_writes_without_a_modification(self) -> None:
         assert decide_outcome(_signals(always_save=True)) is Outcome.WRITE
 
+    def test_always_save_does_not_write_an_empty_session(self) -> None:
+        """The anonymous-reader trap, decided here rather than at the store.
+
+        ``accessed`` is set by reading, so without the ``empty`` qualifier
+        every crawler that reached a route calling ``session.get(...)`` was
+        minted an identifier, a Redis key and a cookie.
+        """
+        assert decide_outcome(_signals(always_save=True, empty=True)) is Outcome.NOTHING
+
+    def test_always_save_still_touches_an_empty_stored_session(self) -> None:
+        """The idle clock must not freeze as a side effect of the guard."""
+        assert (
+            decide_outcome(
+                _signals(
+                    always_save=True,
+                    empty=True,
+                    stored=True,
+                    refresh_on_load=False,
+                )
+            )
+            is Outcome.TOUCH
+        )
+
+    def test_always_save_writes_the_case_it_exists_for(self) -> None:
+        """A nested mutation implies a top-level key holding it, so non-empty."""
+        assert (
+            decide_outcome(_signals(always_save=True, empty=False, stored=True))
+            is Outcome.WRITE
+        )
+
     def test_a_sign_in_rotates(self) -> None:
         assert decide_outcome(_signals(changed=True, modified=True)) is Outcome.ROTATE
 
 
 class TestInvariantsOverTheWholeSpace:
     """Properties that must hold for *every* input, not just the examples."""
+
+    def test_always_save_never_creates_a_session_from_nothing(self) -> None:
+        """Over all 2048 inputs: an empty, never-stored session stays unwritten.
+
+        ``WRITE`` on a session with no identifier is a create, so this is the
+        property that keeps ``always_save`` from minting a key per anonymous
+        visitor. A handler that emptied a *stored* session is a different
+        case - that is a sign-out, and ``SIGN_OUT`` handles it above.
+        """
+        for signals in _every_combination():
+            if signals.empty and not signals.stored and not signals.modified:
+                assert decide_outcome(signals) is not Outcome.WRITE
 
     def test_a_failed_response_never_rotates(self) -> None:
         """§4.3: a response the client saw fail must not issue a new identity."""

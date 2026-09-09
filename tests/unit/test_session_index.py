@@ -15,6 +15,7 @@ from redis_fastapi.session_backend import (
     FIELD_DATA,
     RedisSessionStore,
 )
+from tests.conftest import about
 
 
 @pytest.fixture()
@@ -136,6 +137,37 @@ class TestCounting:
         await _make(store, "42")
         assert await store.count_for_subject("42", limit=5) == 1
 
+    async def test_the_fast_path_never_transfers_the_descriptors(
+        self, store: RedisSessionStore
+    ) -> None:
+        """Counting is ``HLEN``, not ``HGETALL`` and ``len()``.
+
+        The descriptors hold whatever ``descriptor_of`` returns - the guide
+        suggests an IP and a user agent - so counting a subject with two
+        hundred sessions through the members would ship kilobytes to compute
+        one integer, on every login.
+        """
+        for _ in range(3):
+            await _make(store, "42", agent="a" * 200)
+
+        async def _refuse(subject: str) -> dict[str, bytes | str]:
+            raise AssertionError("the fast path read the index members")
+
+        store._index_members = _refuse  # type: ignore[method-assign]
+        assert await store.count_for_subject("42") == 3
+        assert await store.count_for_subject("42", limit=9) == 3
+
+    async def test_the_size_and_the_members_agree(
+        self, store: RedisSessionStore
+    ) -> None:
+        """The two primitives are one upper bound read two ways."""
+        for _ in range(4):
+            await _make(store, "42")
+        await _make(store, "99")
+        assert await store._index_size("42") == len(await store._index_members("42"))
+        assert await store._index_size("99") == 1
+        assert await store._index_size("nobody") == 0
+
 
 class TestRevokeById:
     async def test_revokes_a_session_of_the_right_subject(
@@ -227,9 +259,10 @@ class TestIndexEntryLifetime:
         )  # the remainder, not 600
 
         reply = await fake_async_redis.execute_command("HTTL", key, "FIELDS", 1, sid)
-        assert int(reply[0]) <= 100, (
-            "the index entry's clock was restarted - it can now outlive the "
-            "session it names"
+        assert about(int(reply[0]), 90), (
+            "the entry's clock is not the remainder it was re-asserted with: "
+            "restarted (600) means it can outlive the session it names, and "
+            "-2 means the entry was dropped and the session is unrevocable"
         )
 
     async def test_an_expired_remainder_writes_no_entry(

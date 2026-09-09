@@ -387,7 +387,21 @@ def decide_outcome(signals: _Signals) -> Outcome:
     if not signals.accessed:
         return Outcome.NOTHING
 
-    if signals.modified or signals.always_save:
+    # ``always_save`` is qualified by ``not empty``, and the qualifier is the
+    # whole difference between a setting and a footgun.  ``accessed`` is set
+    # by *reading* - including Starlette's own ``mark_accessed()`` when a
+    # handler touches ``request.session`` at all - so the unqualified test
+    # wrote a key and set a cookie for every anonymous visitor to any route
+    # that so much as asked ``session.get("user_id")``.  On a public page that
+    # is one Redis key per crawler, per health check, per preflight, held for
+    # ``gc_ttl``.
+    #
+    # Nothing is lost that the setting exists for.  Its purpose is nested
+    # mutation - ``session["a"]["b"] = 1``, which no ``dict`` subclass can see
+    # - and that implies a top-level key already holding the nested value, so
+    # the session is not empty.  What it no longer does is create a session
+    # out of an empty one, which no nested mutation could have produced.
+    if signals.modified or (signals.always_save and not signals.empty):
         return Outcome.WRITE
 
     # The load was a plain read under this setting, so this is the only place
