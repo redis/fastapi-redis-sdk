@@ -6,14 +6,15 @@ https://fastapi.tiangolo.com/advanced/settings
 
 from __future__ import annotations
 
+import json
 import re
 import warnings
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.driver_info import DriverInfo
 
 LIB_NAME: str = "fastapi-redis-sdk"
@@ -277,15 +278,21 @@ class RedisSettings(BaseSettings):
         description=(
             "Write the payload on every request that touched the session, "
             "even when no mutation was detected.  The escape route for a "
-            "change inside a nested value, which no dict subclass can see."
+            "change inside a nested value, which no dict subclass can see.  "
+            "Costs a write on every request that read the session, so prefer "
+            "reassigning the top-level key.  An empty session is exempt: "
+            "reading one does not create it, because 'touched' includes a "
+            "plain read and that would mint a key per anonymous visitor."
         ),
     )
-    session_principal_keys: list[str] = Field(
+    session_principal_keys: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["user_id"],
         description=(
             "Session keys the rotation trigger watches.  A change to any of "
             "them on a successful response rotates the session ID.  Add 'role' "
-            "or 'scopes' for OWASP's privilege-change rotation."
+            "or 'scopes' for OWASP's privilege-change rotation.  From the "
+            "environment, comma-separated: REDIS_SESSION_PRINCIPAL_KEYS="
+            "user_id,role.  A JSON array is still accepted."
         ),
     )
     session_events_enabled: bool = Field(
@@ -315,6 +322,65 @@ class RedisSettings(BaseSettings):
     # precisely because an unvalidated one is a header-injection vector; the
     # name, path and domain reach the same header by the same route and were
     # not checked at all.  A CR or LF in any of them splits the header.
+
+    @field_validator("session_principal_keys", mode="before")
+    @classmethod
+    def _split_principal_keys(cls, value: Any) -> Any:
+        """Accept ``user_id,role`` from the environment, and JSON as well.
+
+        The only list-typed setting in this package, so this is the precedent
+        rather than a break from one.  Comma-separated is what an operator
+        will type, what every other tool in a ``.env`` file accepts, and what
+        Django, Rails and Spring Boot all take for the same kind of setting.
+        JSON-in-an-environment-variable is the outlier - and it was not a
+        choice we made, it is what pydantic-settings does with any field whose
+        annotation is not a scalar.
+
+        ``NoDecode`` on the annotation is what makes this reachable.  Without
+        it ``EnvSettingsSource`` calls ``json.loads`` on the raw string and
+        raises ``SettingsError`` **before** any validator on this class runs,
+        so a comma-separated value did not fail validation - the application
+        did not start.  A ``mode="before"`` validator alone does not help; it
+        never sees the value.
+
+        The JSON branch is kept so that no existing configuration breaks.
+
+        The one cost: a session key containing a comma cannot be named from
+        the environment.  Session keys are Python identifiers in every
+        realistic case, and the JSON form is still there for one that is not.
+
+        **Empty is refused**, and this check is why splitting is not purely a
+        convenience.  Before this validator, ``REDIS_SESSION_PRINCIPAL_KEYS=``
+        left blank could not get through at all - ``json.loads("")`` fails and
+        the application does not start.  Splitting a blank value yields ``[]``
+        instead, and an empty list makes ``_default_principal_of`` return the
+        same sentinel on every request, so no privilege change and no sign-in
+        ever rotates the ID.  That is the fixation this feature exists to
+        prevent, arrived at through a typo in a ``.env`` file.
+        """
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "session_principal_keys looked like a JSON array but "
+                        f"could not be parsed ({exc}); comma-separated is "
+                        "simpler: user_id,role"
+                    ) from exc
+            else:
+                # Empty parts dropped, so a trailing comma is not a key "".
+                value = [part.strip() for part in text.split(",") if part.strip()]
+        if isinstance(value, (list, tuple, set)) and not value:
+            raise ValueError(
+                "session_principal_keys must name at least one session key.  "
+                "An empty list means no sign-in and no privilege change ever "
+                "rotates the session ID, which is the fixation this feature "
+                "exists to prevent.  Pass principal_of=... to decide "
+                "rotation some other way."
+            )
+        return value
 
     @field_validator("session_cookie_name")
     @classmethod

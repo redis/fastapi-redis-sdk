@@ -47,7 +47,27 @@ from redis_fastapi.telemetry import record_session_event
 logger = logging.getLogger(__name__)
 
 Tier = Literal["none", "field"]
-Cause = Literal["idle", "absolute", "revoked"]
+
+# Two members, and there is no third.  ``Cause`` is a ``Literal`` in a public
+# callback signature, so it is a promise about which values a handler can be
+# called with: a caller writing the exhaustive ``match`` that a type checker
+# rewards must not be left with an arm that can never run and that mypy will
+# not let them delete.
+#
+# **Revocation is deliberately absent, and it is not a version problem.**
+# ``revoke`` is a ``DEL`` of the whole key, and ``DEL`` emits no subkey
+# notification at any Redis version - it is not among the commands that do,
+# and the mechanism forbids it structurally, because a subkey event is
+# published only when at least one subkey is present and a deleted key has
+# none left to name.  Observing a revocation needs a second subscription to
+# the key-level ``__keyevent@<db>__:del`` under different flags, which Section
+# 13.4 declined to build.  If that tier is ever added, widening this union is
+# the ordinary cost of widening any union - smaller than shipping a member
+# nothing can produce.
+Cause = Literal["idle", "absolute"]
+
+# Exported, so a caller under mypy --strict can name the type of the callable
+# ``on_session_end`` requires them to pass.
 Handler = Callable[[str, Cause], Awaitable[None]]
 
 # Subkey notifications arrived in Redis 8.8.  There is no key-level tier here
@@ -60,11 +80,22 @@ _MIN_VERSION = (8, 8)
 # The channel that names both the key and the field.
 _CHANNEL = "__subkeyevent@{db}__:hexpired"
 
-# Flags that must be present in ``notify-keyspace-events``.  The four subkey
-# channels are S, T, I and V, and they are **independent of K and E** -
-# enabling standard keyspace notifications does not enable these, and the
-# reverse holds too.  This is the commonest configuration mistake.
-_SUBKEY_FLAGS = frozenset("STIV")
+# Flags that must be present in ``notify-keyspace-events``.
+#
+# Redis 8.8 adds four subkey channels with a flag each - S for
+# ``__subkeyspace@``, T for ``__subkeyevent@``, I for ``__subkeyspaceitem@``
+# and V for ``__subkeyspaceevent@`` - and all four are **independent of K and
+# E**: enabling standard keyspace notifications does not enable these, and the
+# reverse holds too.  That is the commonest configuration mistake.
+#
+# **Only T counts here, not any of the four.**  This module subscribes to
+# ``__subkeyevent@<db>__:hexpired`` and nothing else, so a server with S, I or
+# V but no T publishes to channels nobody is listening on.  Accepting any of
+# the four made ``tier`` report ``"field"`` on such a server while no event
+# could ever arrive - which defeats the one check the guide offers against
+# exactly that ("if prompt closure matters, check ``events.tier``").  Redis
+# accepts a subscription to any channel name, so nothing else notices.
+_SUBKEY_FLAG = "T"
 _HASH_FLAG = "h"
 
 REQUIRED_CONFIG = "Th"
@@ -79,7 +110,7 @@ class SessionEvents:
         events = SessionEvents(redis, key_prefix="redis:fastapi")
 
         @events.on_session_end
-        async def _(session_id: str, cause: str) -> None:
+        async def _(session_id: str, cause: Cause) -> None:
             await close_sockets_for(session_id)
 
         await events.start()
@@ -111,7 +142,11 @@ class SessionEvents:
         The handler receives the session ID and the cause: ``"idle"`` when the
         user went quiet, ``"absolute"`` when the deadline passed however
         active they were.  Distinguishing the two is the whole reason this
-        needs Redis 8.8.
+        needs Redis 8.8, and they are the only two values - a revocation is a
+        ``DEL``, which publishes no subkey event.  See :data:`Cause`.
+
+        Returns:
+            *handler*, so this works as a decorator.
         """
         self._handlers.append(handler)
         return handler
@@ -163,13 +198,15 @@ class SessionEvents:
     async def _config_ok(self) -> bool:
         config = await self._redis.config_get("notify-keyspace-events")
         flags = str(config.get("notify-keyspace-events", ""))
-        if not (set(flags) & _SUBKEY_FLAGS) or _HASH_FLAG not in flags:
+        if _SUBKEY_FLAG not in flags or _HASH_FLAG not in flags:
             logger.warning(
                 "Session events need notify-keyspace-events to include '%s' "
-                "(a subkey channel plus hash events); this server has %r. "
-                "Handlers will not fire. Note that the subkey flags S/T/I/V "
-                "are independent of K and E. This library will not set the "
-                "option for you: it is server-wide and affects every other "
+                "(the __subkeyevent@ channel plus hash events); this server "
+                "has %r. Handlers will not fire. Note that 'T' specifically: "
+                "S, I and V enable the other three subkey channels, which "
+                "this module does not subscribe to, and all four are "
+                "independent of K and E. This library will not set the option "
+                "for you: it is server-wide and affects every other "
                 "application on the instance.",
                 REQUIRED_CONFIG,
                 flags,

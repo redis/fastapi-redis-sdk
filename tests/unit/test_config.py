@@ -7,6 +7,7 @@ import warnings
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from redis_fastapi.config import DRIVER_INFO, RedisSettings
 
@@ -170,6 +171,114 @@ class TestPoolKwargs:
 
 
 @pytest.mark.unit
+class TestPrincipalKeysFromTheEnvironment:
+    """``REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`` must work.
+
+    It used to be a hard startup failure. ``session_principal_keys`` is the
+    only list-typed field in the package, so pydantic-settings called
+    ``json.loads`` on the raw string and raised ``SettingsError`` - not a
+    fallback, not a warning: the application did not start. Comma-separated is
+    what an operator types, and what Django, Rails and Spring Boot all accept
+    for the same kind of setting.
+    """
+
+    def _keys(self, raw: str) -> list[str]:
+        with patch.dict(os.environ, {"REDIS_SESSION_PRINCIPAL_KEYS": raw}, clear=True):
+            return RedisSettings().session_principal_keys
+
+    def test_a_comma_separated_list(self) -> None:
+        assert self._keys("user_id,role") == ["user_id", "role"]
+
+    def test_a_single_key_needs_no_punctuation(self) -> None:
+        assert self._keys("user_id") == ["user_id"]
+
+    def test_whitespace_and_empty_parts_are_tidied(self) -> None:
+        """A trailing comma is a typo, not a key named ``""``."""
+        assert self._keys("  user_id , role ,, scopes ") == [
+            "user_id",
+            "role",
+            "scopes",
+        ]
+
+    def test_a_json_array_still_works(self) -> None:
+        """The old form stays valid, so no existing configuration breaks."""
+        assert self._keys('["user_id","role"]') == ["user_id", "role"]
+
+    def test_malformed_json_says_what_to_do_instead(self) -> None:
+        with pytest.raises(ValidationError, match="comma-separated is simpler"):
+            self._keys('["user_id",')
+
+    def test_the_default_survives_an_unset_variable(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            assert RedisSettings().session_principal_keys == ["user_id"]
+
+    def test_a_list_passed_in_python_is_untouched(self) -> None:
+        settings = RedisSettings(session_principal_keys=["a", "b"])
+        assert settings.session_principal_keys == ["a", "b"]
+
+
+class TestPrincipalKeysRefusesEmpty:
+    """An empty list would silently disable rotation altogether.
+
+    ``_default_principal_of`` over no keys returns the same sentinel on every
+    request, so no sign-in and no privilege change is ever detected - the
+    fixation the feature exists to prevent. Before the comma split a blank
+    value could not get through, because ``json.loads("")`` fails and the
+    application does not start. Splitting one yields ``[]``, so the refusal
+    has to be explicit or the convenience would open the hole.
+    """
+
+    @pytest.mark.parametrize("raw", ["", "   ", ",", ",,,", " , , "])
+    def test_a_blank_or_comma_only_value_is_refused(self, raw: str) -> None:
+        with patch.dict(os.environ, {"REDIS_SESSION_PRINCIPAL_KEYS": raw}, clear=True):
+            with pytest.raises(ValidationError, match="at least one session key"):
+                RedisSettings()
+
+    def test_an_explicit_empty_json_array_is_refused_too(self) -> None:
+        """Reachable before this change, and just as broken then."""
+        with patch.dict(os.environ, {"REDIS_SESSION_PRINCIPAL_KEYS": "[]"}, clear=True):
+            with pytest.raises(ValidationError, match="at least one session key"):
+                RedisSettings()
+
+    def test_an_empty_list_in_python_is_refused_too(self) -> None:
+        with pytest.raises(ValidationError, match="at least one session key"):
+            RedisSettings(session_principal_keys=[])
+
+    def test_the_message_names_the_way_out(self) -> None:
+        """Whoever wants no key-based rotation passes their own function."""
+        with pytest.raises(ValidationError, match="principal_of"):
+            RedisSettings(session_principal_keys=[])
+
+
+class TestTheTtlConvention:
+    """Settings take `int` seconds; runtime Python calls take either.
+
+    The design's §9 table said `int | timedelta` for these three fields while
+    the code said `int`, and nothing here pinned either side. The code was
+    right and the table is now corrected, so these tests exist to stop the
+    fields being widened to "match" a document that no longer says that.
+
+    The reason the fields cannot sensibly be widened is the second test: from
+    the environment every value is a string, and pydantic reads `"1800"` as
+    1800 seconds but `"PT30M"` as ISO-8601 - one field with two syntaxes,
+    where the operator-friendly one is the plain integer.
+    """
+
+    def test_the_three_session_ttls_are_integer_seconds(self) -> None:
+        for field in ("session_idle_ttl", "session_absolute_ttl", "session_gc_ttl"):
+            annotation = RedisSettings.model_fields[field].annotation
+            assert annotation is int, f"{field} is {annotation}, not int"
+
+    def test_a_duration_string_is_refused_rather_than_guessed(self) -> None:
+        with patch.dict(os.environ, {"REDIS_SESSION_IDLE_TTL": "PT30M"}, clear=True):
+            with pytest.raises(ValidationError):
+                RedisSettings()
+
+    def test_seconds_from_the_environment_are_read_as_seconds(self) -> None:
+        with patch.dict(os.environ, {"REDIS_SESSION_IDLE_TTL": "1800"}, clear=True):
+            assert RedisSettings().session_idle_ttl == 1800
+
+
 class TestFromEnv:
     def test_defaults_no_env(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

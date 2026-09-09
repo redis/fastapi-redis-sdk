@@ -255,8 +255,9 @@ absolute limit without any test noticing. With two fields that outcome is not a 
 must avoid — it is unreachable. For a security control, the difference is the whole
 point.
 
-Both settings accept an `int` or a `timedelta`, as `cache()` already does in this
-package. With both at zero the session is cookie-only: no `max-age` on the cookie, so the
+Both settings are an `int` number of seconds. The store constructor and `.sessions()`
+also accept a `timedelta`; Section 9 gives the convention and why a settings field cannot
+sensibly take one. With both at zero the session is cookie-only: no `max-age` on the cookie, so the
 browser drops it when it closes, and **both** fields get `gc_ttl` so Redis eventually
 collects what the browser abandoned.
 
@@ -1033,7 +1034,12 @@ call:
 — so a listing needs no read of the session records themselves.
 
 **Abstract, and this is the whole surface a new backend implements:** `_read`, `_write`,
-`_expire`, `_delete`, `_index_add`, `_index_remove`, `_index_members`.
+`_expire`, `_delete`, `_delete_many`, `_alive`, `_index_add`, `_index_remove`,
+`_index_clear`, `_index_members`, `_index_size`.
+
+`_index_size` is separate from `_index_members` for one reason: `count_for_subject` runs
+on every login under a concurrent-session cap, and counting through the members would
+transfer every identifier and every descriptor to compute their length.
 
 `SessionStoreProtocol` describes only what the middleware and the dependencies call, so a
 test or another package can supply an object with no inheritance.
@@ -1398,14 +1404,14 @@ Fields on `RedisSettings`, beside the existing `rate_limit_*` ones and following
 | `session_cookie_path`       | `str`                         | `"/"`               | `Path` attribute. Narrow it (e.g. `"/admin"`) and other paths neither send nor receive the cookie.                                                                                                                                                                                                                                                              |
 | `session_cookie_same_site`  | `"lax" \| "strict" \| "none"` | `"lax"`             | `SameSite` attribute. `"none"` requires `session_cookie_https_only=True`; the two are checked together and a contradiction raises `SessionConfigurationError`.                                                                                                                                                                                                  |
 | `session_cookie_https_only` | `bool`                        | `True`              | Adds `Secure`, so the browser sends the cookie over HTTPS only. **On by default**; turn it off for local development over plain HTTP and nowhere else.                                                                                                                                                                                                          |
-| `session_idle_ttl`          | `int \| timedelta`            | `1800` (30 min)     | The idle clock. The session dies this long after the last request that carried its cookie. Stored as the TTL of field `d`. `0` disables the idle clock.                                                                                                                                                                                                         |
-| `session_absolute_ttl`      | `int \| timedelta`            | `28800` (8 h)       | The absolute clock. The session dies this long after creation however active the user is. Stored as the TTL of field `a`. `0` disables it, in which case `a` takes `session_gc_ttl` — see Section 3.2, which explains why `a` is never left unexpiring.                                                                                                         |
-| `session_gc_ttl`            | `int \| timedelta`            | `2592000` (30 days) | Backstop TTL for a key whose real deadline is unknown: cookie-only mode, or `session_absolute_ttl=0`. Never reached in normal operation; it exists so Redis can always collect an abandoned key.                                                                                                                                                                |
+| `session_idle_ttl`          | `int` (seconds)               | `1800` (30 min)     | The idle clock. The session dies this long after the last request that carried its cookie. Stored as the TTL of field `d`. `0` disables the idle clock.                                                                                                                                                                                                         |
+| `session_absolute_ttl`      | `int` (seconds)               | `28800` (8 h)       | The absolute clock. The session dies this long after creation however active the user is. Stored as the TTL of field `a`. `0` disables it, in which case `a` takes `session_gc_ttl` — see Section 3.2, which explains why `a` is never left unexpiring.                                                                                                         |
+| `session_gc_ttl`            | `int` (seconds)               | `2592000` (30 days) | Backstop TTL for a key whose real deadline is unknown: cookie-only mode, or `session_absolute_ttl=0`. Never reached in normal operation; it exists so Redis can always collect an abandoned key.                                                                                                                                                                |
 | `session_refresh_on_load`   | `bool`                        | `True`              | `True`: the load uses `HGETEX`, so any request carrying the cookie restarts the idle clock in the same round trip. `False`: the load uses `HGET` and only a request that touched `request.session` refreshes it, at the cost of a second round trip. Section 4.2 gives both branches.                                                                           |
 | `session_fail_closed`       | `bool`                        | `False`             | Behaviour when Redis is unreachable **on read**. `False` yields an empty session, so the caller looks anonymous and the application's own authorization rejects them. `True` raises `SessionStoreError` instead, for a deployment that prefers a 503 to an anonymous page. **Writes always raise, whatever this is set to** — Section 7 explains the asymmetry. |
-| `session_always_save`       | `bool`                        | `False`             | Write the payload on every request that touched the session, even when no mutation was detected. The escape route for the one fault no `dict` subclass can see: a change inside a nested value, `session["a"]["b"] = 1` (Section 8). Costs a write per request; prefer reassigning the top-level key.                                                           |
-| `session_principal_keys` | `list[str]` | `["user_id"]` | Session keys the rotation trigger watches. A change to any of them on a successful response rotates the ID. Add `"role"` or `"scopes"` for OWASP's privilege-change rotation. Section 5.1; use `principal_of` when a list of keys cannot express it. |
-| `session_events_enabled`    | `bool`                        | `False`             | Subscribe to Redis notifications and call registered handlers when a session ends (Section 13.4, F-21). **Best-effort.** On a server below 8.8, or one where `notify-keyspace-events` lacks the subkey flags, or where `CONFIG GET` is unavailable, the store logs one warning at startup and the handlers never fire. Never enable the server setting on the operator's behalf.                                              |
+| `session_always_save`       | `bool`                        | `False`             | Write the payload on every request that touched the session, even when no mutation was detected. The escape route for the one fault no `dict` subclass can see: a change inside a nested value, `session["a"]["b"] = 1` (Section 8). Costs a write on every request that **read** the session - `accessed` is set by reading - so prefer reassigning the top-level key. **An empty session is exempt**: `WRITE` requires `not empty`, because without it every anonymous visitor to a session-touching route would be minted an identifier, a key and a cookie. Nothing is lost, since a nested mutation implies a top-level key already holding the value. |
+| `session_principal_keys` | `list[str]` | `["user_id"]` | Session keys the rotation trigger watches. A change to any of them on a successful response rotates the ID. Add `"role"` or `"scopes"` for OWASP's privilege-change rotation. **Comma-separated from the environment** — `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`; a JSON array is also accepted. Section 5.1; use `principal_of` when a list of keys cannot express it. |
+| `session_events_enabled`    | `bool`                        | `False`             | Subscribe to Redis notifications and call registered handlers when a session ends (Section 13.4, F-21). **Best-effort.** On a server below 8.8, or one where `notify-keyspace-events` lacks `Th`, or where `CONFIG GET` is unavailable, the store logs one warning at startup and the handlers never fire. Never enable the server setting on the operator's behalf.                                              |
 | `session_key_prefix`        | `str \| None`                 | `None`              | Overrides the key namespace. `None` uses `settings.pattern_prefix()`, giving `redis:fastapi:session:` and `redis:fastapi:sessions-of:`. A callable prefix is a constructor argument rather than a setting, since an environment variable cannot carry one (Section 9, extension points).                                                                        |
 
 #### Three things the §5 list in `session-mgmt.md` names that are deliberately not settings
@@ -1434,8 +1440,45 @@ a vulnerability that nobody reads the documentation to discover.
 **The two TTL defaults are deliberately different from each other**, because they are
 different controls. 30 minutes of idle and 8 hours absolute is the shape OWASP describes
 for an application someone uses through a working day: inactivity signs you out quickly,
-and no session survives past the day regardless. Both accept a `timedelta`, as `cache()`
-already does in this package.
+and no session survives past the day regardless.
+
+**The one list-typed setting takes a comma-separated value.** `session_principal_keys`
+is the only non-scalar field in the package, and pydantic-settings `json.loads` any such
+field's raw environment value — so `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role` was not a
+validation failure, it was a `SettingsError` and the application did not start. The field
+carries `NoDecode` and a `mode="before"` validator that splits on commas and still
+accepts a JSON array. `NoDecode` is what makes this reachable at all: without it the
+environment source raises before any validator on the class runs, so a `mode="before"`
+validator alone never sees the value. That is why the floor on `pydantic-settings` is
+2.7.0.
+
+An empty result is **refused** rather than accepted. With no keys,
+`_default_principal_of` returns the same sentinel on every request, so no sign-in and no
+privilege change is ever detected — the fixation Section 5.1 exists to prevent, reached
+through a blank line in a `.env` file. Whoever wants rotation decided some other way
+passes `principal_of`.
+
+**Settings take `int` seconds; runtime Python takes either.** This is the convention the
+rest of the SDK already follows — the `cache()`, `cache_evict()` and `cache_put()`
+dependency factories take an `int`, while `CacheBackend.set()` takes `int | timedelta` —
+and the session code follows it exactly: the three settings above are `int`, and
+`RedisSessionStore(...)`, `add_redis_sessions(...)` and `.sessions(...)` all accept a
+`timedelta`. An earlier draft of the table above said `int | timedelta` for the settings.
+It was written before the convention was checked, and the code was right.
+
+A settings field could not take a `timedelta` cleanly in any case. The value arrives from
+the environment as a string, and pydantic reads `"1800"` as 1800 seconds but also accepts
+ISO-8601 `"PT30M"` — one field, two syntaxes, and `PT30M` in a `.env` file is worse for an
+operator than `1800`, not better. Whoever wants a `timedelta` for readability has it on
+the path where readability matters:
+
+```python
+FastAPIRedis(app).lifespan().sessions(idle_ttl=timedelta(minutes=30))
+RedisSessionStore(client, absolute_ttl=timedelta(hours=8))
+```
+
+This costs the `starsessions` migration nothing: their `lifetime=timedelta(...)` maps to
+`sessions(absolute_ttl=timedelta(...))` unchanged.
 
 An earlier draft also carried `refresh_threshold`, to suppress a second round trip that
 only existed because the idle refresh was a separate `EXPIRE`. `HGETEX` folds that refresh
@@ -1453,9 +1496,19 @@ nothing when the import failed, and `disable_telemetry()` resets the state.
 
 | Instrument                          | Type      | Attributes                                                                                |
 |-------------------------------------|-----------|-------------------------------------------------------------------------------------------|
-| `redis_fastapi.sessions.operations` | counter   | `operation` = load/save/touch/rotate/revoke/revoke_all; `result` = hit/miss/expired/error |
-| `redis_fastapi.sessions.latency`    | histogram | `operation`                                                                               |
-| `redis_fastapi.sessions.events`     | counter   | `cause` = idle/absolute/revoked; `result` = delivered/dropped                             |
+| `redis_fastapi.sessions.operations` | counter   | `operation` = load/create/save/touch/rotate/revoke/revoke_id/revoke_all/list/count; `result` = hit/miss/expired/error |
+| `redis_fastapi.sessions.latency`    | histogram | `operation`, the same set less `touch`                                                                               |
+| `redis_fastapi.sessions.events`     | counter   | `cause` = idle/absolute; `result` = delivered/dropped                             |
+
+`create` and `save` carry separate labels although they share one code path: a create
+is a session that did not exist a moment ago - the sign-in rate - and reporting it as a
+save understated one series and polluted the other. A rotation therefore counts as both
+a `rotate` and a `create`, which is what makes the Section 5.1 backstop readable: sign-ins
+with no rotations is the anomaly.
+
+`delete` and `index` are deliberately uninstrumented. Both are always part of another
+operation and already inside its span, so counting them would double-count that
+operation.
 
 **No session ID may become a span attribute or a metric label.** Neither may a subject
 identifier, which is usually a user ID. Section 5 of `session-mgmt.md` makes this an
@@ -1753,7 +1806,7 @@ is easy to miss:
 |---------|------------------------------------------|------------------------------------------|-----------------------------|
 | `none`  | —                                        | —                                        | —                           |
 | `key`   | 7.4, plus `Eghx` in `notify-keyspace-events` | `__keyevent@<db>__:del`               | **No**                      |
-| `field` | **8.8**, plus `h` and one of `S`/`T`/`I`/`V` | `__subkeyevent@<db>__:hexpired`, whose payload names the field | **Yes** — `d` is idle, `a` is absolute |
+| `field` | **8.8**, plus `h` and **`T`** | `__subkeyevent@<db>__:hexpired`, whose payload names the field | **Yes** — `d` is idle, `a` is absolute |
 
 At the `key` tier a subscriber learns that a session key went away and nothing else. It
 cannot separate an idle death from an absolute one, and it cannot separate either from a
@@ -1771,7 +1824,15 @@ Two different questions, and the code must ask both:
 
 1. **Can the server do it?** Read `redis_version` from `INFO server`.
 2. **Is it switched on?** Read `notify-keyspace-events` with `CONFIG GET` and look for `h`
-   together with one of `S`, `T`, `I`, `V`.
+   together with **`T`**, not one of `S`/`T`/`I`/`V`.
+
+**`T` specifically, because 8.8 adds four subkey channels and this subscribes to one.**
+`S` is `__subkeyspace@`, `I` is `__subkeyspaceitem@`, `V` is `__subkeyspaceevent@`, and
+only `T` is `__subkeyevent@`. Redis accepts a subscription to any channel name, so on a
+server set to `Sh` the subscribe succeeds and no event ever arrives. Accepting any of the
+four therefore made `tier` report `"field"` where nothing could be delivered, which
+defeats the `events.tier` check this section tells callers to rely on. An earlier draft of
+this list said "one of", and the code followed it.
 
 **The four subkey flags are independent of `K` and `E`.** Enabling standard keyspace
 notifications does not enable subkey notifications, and the reverse holds too. This will
@@ -1831,7 +1892,7 @@ A `SessionEvents` object built in the lifespan, holding one subscriber task per 
 events = store.events()                       # tier probed once, at startup
 
 @events.on_session_end
-async def _(sid: str, cause: Literal["idle", "absolute", "revoked"]) -> None:
+async def _(sid: str, cause: Cause) -> None:        # Literal["idle", "absolute"]
     await close_sockets_for(sid)
 
 print(events.tier)        # "field" or "none"
@@ -1839,6 +1900,19 @@ print(events.tier)        # "field" or "none"
 
 `cause` is what the `field` tier buys and the `key` tier cannot give. At tier `none` the
 handler is held and never called.
+
+**`Cause` has two members and must not have three.** A revocation is a `DEL`, and `DEL`
+emits no subkey notification at any version: it is not among the commands that do, and the
+mechanism forbids it, because a subkey event is published only when at least one subkey is
+present and a deleted key has none left to name. An earlier draft included `"revoked"`.
+A `Literal` in a public callback signature is a promise about the inhabited set, so a
+member nothing can produce leaves a caller's exhaustive `match` with an arm that never
+runs and that a type checker will not let them delete. If the `key` tier is ever built,
+widening the union then is the ordinary cost of widening any union.
+
+`Cause`, `Tier` and `Handler` are all exported. `Handler` in particular, because a caller
+under `mypy --strict` has to be able to name the type of the callable `on_session_end`
+requires.
 
 ### 13.5 Considered, and not in version 1
 

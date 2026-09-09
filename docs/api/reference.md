@@ -447,10 +447,6 @@ one without inheritance.
 | `new_record(data, *, created=None)` | Build an envelope, carrying `created` forward. |
 | `session_id(state)` | The current identifier, or `None`. |
 
-A new backend implements the abstract primitives: `_read`, `_write`,
-`_expire`, `_delete`, `_delete_many`, `_index_add`, `_index_remove`,
-`_index_clear`, `_index_members`, `_alive`.
-
 ---
 
 ## Session data types
@@ -492,7 +488,14 @@ events = SessionEvents(redis, key_prefix="redis:fastapi", db=0)
 async def _(session_id: str, cause: Cause) -> None: ...
 ```
 
+| Type | Values |
+|---|---|
+| `Cause` | `"idle"`, `"absolute"`. No third member — a revocation is a `DEL`, which publishes no subkey notification. |
+| `Tier` | `"field"`, `"none"`. |
+| `Handler` | `Callable[[str, Cause], Awaitable[None]]`, for annotating what you register. |
+
 Started and stopped by the lifespan when `session_events_enabled` is set.
 `events.tier` is `"field"` when the server can deliver events and `"none"`
 otherwise — in which case handlers never fire. Requires Redis 8.8 and
-`notify-keyspace-events` including a subkey flag plus `h`.
+`notify-keyspace-events` including `Th` — `T` for the `__subkeyevent@`
+channel, `h` for hash events.

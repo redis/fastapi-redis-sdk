@@ -362,14 +362,30 @@ class TestRevokeAllCostAndCount:
 
 
 class TestCountDoesNotFailOpen:
-    async def test_an_unreadable_index_raises(self, fake_async_redis) -> None:
+    async def test_an_uncountable_index_raises(self, fake_async_redis) -> None:
         class _Broken(RedisSessionStore):
-            async def _index_members(self, subject: str) -> dict[str, bytes | str]:
+            async def _index_size(self, subject: str) -> int:
                 raise RedisConnectionError("down")
 
         store = _Broken(fake_async_redis)
         with pytest.raises(SessionStoreError, match="Could not count sessions"):
             await store.count_for_subject("42")
+
+    async def test_an_unreadable_index_at_the_limit_raises(
+        self, fake_async_redis
+    ) -> None:
+        """The members read only happens at the limit, and it must raise too."""
+
+        class _Broken(RedisSessionStore):
+            async def _index_members(self, subject: str) -> dict[str, bytes | str]:
+                raise RedisConnectionError("down")
+
+        store = _Broken(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        record = store.new_record({"user_id": "42"})
+        for _ in range(2):
+            await store.index("42", store.new_id(), record, absolute_remaining=600)
+        with pytest.raises(SessionStoreError, match="Could not count sessions"):
+            await store.count_for_subject("42", limit=2)
 
     async def test_an_unverifiable_count_at_the_limit_raises(
         self, fake_async_redis

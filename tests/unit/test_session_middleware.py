@@ -369,3 +369,105 @@ class TestAnExplicitRotateIsNotRepeated:
         client.post("/login")
         client.post("/step-up")
         assert client.get("/read").json() == {"user_id": 42}
+
+
+class TestAlwaysSaveDoesNotMintAnonymousSessions:
+    """``session_always_save=True`` used to write a key for every reader.
+
+    ``accessed`` is set by *reading* - Starlette's own ``mark_accessed()``
+    fires when a handler touches ``request.session`` at all - and the write
+    test was ``modified or always_save``. So a public route calling
+    ``session.get("user_id")`` minted an identifier, a Redis key and a
+    ``Set-Cookie`` for every crawler, health check and preflight, held for
+    ``gc_ttl``. Nobody turning on a nested-mutation workaround expects to
+    start persisting anonymous traffic.
+    """
+
+    @pytest.fixture()
+    def always_save_app(self, fake_async_redis, monkeypatch) -> FastAPI:
+        get_settings.cache_clear()
+        monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
+        monkeypatch.setenv("REDIS_SESSION_ALWAYS_SAVE", "true")
+        monkeypatch.setenv("REDIS_SESSION_IDLE_TTL", "60")
+        monkeypatch.setenv("REDIS_SESSION_ABSOLUTE_TTL", "600")
+        get_settings.cache_clear()
+
+        application = FastAPI()
+        add_redis_sessions(application)
+        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+
+        async def _store(request: Request) -> RedisSessionStore:
+            return store
+
+        application.dependency_overrides[get_session_store] = _store
+
+        @application.get("/read")
+        async def read(session: SessionDep) -> dict:
+            return {"signed_in": session.get("user_id") is not None}
+
+        @application.post("/login")
+        async def login(session: SessionDep) -> dict:
+            session["user_id"] = 42
+            return {"ok": True}
+
+        @application.post("/nested")
+        async def nested(session: SessionDep) -> dict:
+            """The case the setting exists for: no method of ``Session`` sees it."""
+            session["prefs"]["theme"] = "dark"
+            return {"ok": True}
+
+        application.state._store = store
+        yield application
+        get_settings.cache_clear()
+
+    async def test_an_anonymous_read_writes_nothing(
+        self, always_save_app: FastAPI, fake_async_redis
+    ) -> None:
+        with TestClient(always_save_app) as client:
+            response = client.get("/read")
+        assert response.json() == {"signed_in": False}
+        assert "set-cookie" not in response.headers, "an anonymous visitor got an ID"
+        assert await fake_async_redis.keys("*") == [], "a key was written for nobody"
+
+    async def test_a_crawler_hitting_it_a_hundred_times_leaves_no_keys(
+        self, always_save_app: FastAPI, fake_async_redis
+    ) -> None:
+        """The cost was per unique visitor, so the count is the point."""
+        with TestClient(always_save_app) as client:
+            for _ in range(100):
+                assert client.get("/read").status_code == 200
+        assert await fake_async_redis.keys("*") == []
+
+    async def test_a_real_sign_in_still_writes(self, always_save_app: FastAPI) -> None:
+        """The guard must not cost the ordinary path anything."""
+        with TestClient(always_save_app) as client:
+            response = client.post("/login")
+        assert "session" in _set_cookies(response)
+
+    async def test_a_nested_mutation_still_persists(
+        self, always_save_app: FastAPI, fake_async_redis
+    ) -> None:
+        """What the setting is for, and the reason (a) is safe.
+
+        A nested mutation needs a top-level key already holding the nested
+        value, so the session is never empty when it happens.
+        """
+        with TestClient(always_save_app) as client:
+            client.post("/login")
+            sid = client.cookies["session"]
+            # Seed a nested value through the ordinary path.
+            client.post("/login")
+            store = always_save_app.state._store
+            loaded = await store.load(sid)
+            record = store.new_record(
+                {**loaded.record.data, "prefs": {"theme": "light"}}
+            )
+            await store.save(sid, record)
+
+            assert client.post("/nested").status_code == 200
+
+            after = await store.load(sid)
+        assert after is not None
+        assert after.record.data["prefs"]["theme"] == "dark", (
+            "the one fault the setting exists to cover was not written"
+        )

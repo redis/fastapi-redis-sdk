@@ -30,7 +30,9 @@ classifiers = [
 dependencies = [
     "redis>=6.0.0",
     "fastapi>=0.115.0",
-    "pydantic-settings>=2.0.0",
+    # 2.7.0 for the NoDecode annotation, which config.py needs to accept a
+    # comma-separated REDIS_SESSION_PRINCIPAL_KEYS.
+    "pydantic-settings>=2.7.0",
     "pydantic>=2.12.5",
     "anyio>=4.13.0",
 ]

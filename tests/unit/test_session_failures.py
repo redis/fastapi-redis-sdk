@@ -48,6 +48,9 @@ class _BrokenRedis:
     async def hgetall(self, key: str) -> dict:
         raise RedisConnectionError("Redis is down")
 
+    async def hlen(self, key: str) -> int:
+        raise RedisConnectionError("Redis is down")
+
     async def info(self, section: str) -> dict:
         raise RedisConnectionError("Redis is down")
 

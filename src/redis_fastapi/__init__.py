@@ -62,7 +62,7 @@ from redis_fastapi.session_backend import (
     SessionStoreProtocol,
     SyncSessionStore,
 )
-from redis_fastapi.session_events import Cause, SessionEvents, Tier
+from redis_fastapi.session_events import Cause, Handler, SessionEvents, Tier
 from redis_fastapi.sessions import (
     CookieSpec,
     Outcome,
@@ -92,6 +92,7 @@ __all__ = [
     "CookieSpec",
     "Encryptor",
     "FastAPIRedis",
+    "Handler",
     "Identifier",
     "JsonCoder",
     "KeyBuilder",
