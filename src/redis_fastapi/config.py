@@ -6,13 +6,15 @@ https://fastapi.tiangolo.com/advanced/settings
 
 from __future__ import annotations
 
+import json
+import re
 import warnings
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.driver_info import DriverInfo
 
 LIB_NAME: str = "fastapi-redis-sdk"
@@ -23,6 +25,21 @@ except PackageNotFoundError:
     from redis_fastapi import __version__ as LIB_VERSION
 DRIVER_INFO: DriverInfo = DriverInfo().add_upstream_driver(LIB_NAME, LIB_VERSION)
 CACHE_STATUS_HEADER: str = "X-Redis-Cache"
+
+# Scope keys the caching and session features use to agree about a response,
+# rather than each appending headers independently.  They live here because
+# neither feature may import the other: caching must work with sessions absent,
+# and deps.py already imports sessions, so cache -> sessions would be a cycle.
+CACHE_ROUTE_SCOPE_KEY: str = "redis_cache_route"
+"""Set by ``cache()``: this route owns its ``Cache-Control``."""
+CACHE_SUPPRESS_VARY_SCOPE_KEY: str = "redis_cache_no_vary"
+"""Set by ``cache(vary_on_session=False)``: the body does not vary by cookie."""
+
+# Cookie attributes are interpolated into a response header, so each is
+# constrained to characters that cannot terminate or split one.
+_COOKIE_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
+_COOKIE_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]+")
+_CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class RedisSettings(BaseSettings):
@@ -173,6 +190,121 @@ class RedisSettings(BaseSettings):
         default=False,
         description=("Emit IETF draft RateLimit / RateLimit-Policy response headers."),
     )
+    # -- Sessions --------------------------------------------------------------
+    session_cookie_name: str = Field(
+        default="session",
+        description=(
+            "Name of the session cookie.  Matches Starlette's and "
+            "starsessions' default so a migration keeps existing cookie names."
+        ),
+    )
+    session_cookie_domain: str | None = Field(
+        default=None,
+        description=(
+            "Cookie Domain attribute.  None scopes the cookie to the exact "
+            "host that set it; setting it also exposes the cookie to "
+            "subdomains."
+        ),
+    )
+    session_cookie_path: str = Field(
+        default="/",
+        description="Cookie Path attribute.",
+    )
+    session_cookie_same_site: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        description=(
+            "Cookie SameSite attribute.  'none' requires "
+            "session_cookie_https_only=True."
+        ),
+    )
+    session_cookie_https_only: bool = Field(
+        default=True,
+        description=(
+            "Add Secure to the session cookie, so the browser sends it over "
+            "HTTPS only.  On by default; turn it off for local development "
+            "over plain HTTP and nowhere else."
+        ),
+    )
+    session_idle_ttl: int = Field(
+        default=1800,
+        ge=0,
+        description=(
+            "Idle clock, in seconds.  The session dies this long after the "
+            "last request that carried its cookie.  Stored as the TTL of hash "
+            "field 'd'.  0 disables the idle clock, and the field then takes "
+            "session_gc_ttl."
+        ),
+    )
+    session_absolute_ttl: int = Field(
+        default=28800,
+        ge=0,
+        description=(
+            "Absolute clock, in seconds.  The session dies this long after "
+            "creation however active the user is.  Stored as the TTL of hash "
+            "field 'a', which is written once and never refreshed.  0 disables "
+            "it, and the field then takes session_gc_ttl."
+        ),
+    )
+    session_gc_ttl: int = Field(
+        default=2592000,
+        gt=0,
+        description=(
+            "Backstop TTL for a field whose real deadline is unknown: "
+            "cookie-only mode, or session_absolute_ttl=0.  Never reached in "
+            "normal operation; it exists so Redis can always collect an "
+            "abandoned key."
+        ),
+    )
+    session_refresh_on_load: bool = Field(
+        default=True,
+        description=(
+            "True: the load uses HGETEX, so any request carrying the cookie "
+            "restarts the idle clock in the same round trip.  False: only a "
+            "request that touched the session refreshes it, at the cost of a "
+            "second round trip."
+        ),
+    )
+    session_fail_closed: bool = Field(
+        default=False,
+        description=(
+            "Behaviour when Redis is unreachable on READ.  False yields an "
+            "empty session, so the caller looks anonymous and the "
+            "application's own authorization rejects them.  True raises "
+            "instead.  Writes always raise, whatever this is set to."
+        ),
+    )
+    session_always_save: bool = Field(
+        default=False,
+        description=(
+            "Write the payload on every request that touched the session, "
+            "even when no mutation was detected.  The escape route for a "
+            "change inside a nested value, which no dict subclass can see.  "
+            "Costs a write on every request that read the session, so prefer "
+            "reassigning the top-level key.  An empty session is exempt: "
+            "reading one does not create it, because 'touched' includes a "
+            "plain read and that would mint a key per anonymous visitor."
+        ),
+    )
+    session_principal_keys: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["user_id"],
+        description=(
+            "Session keys the rotation trigger watches.  A change to any of "
+            "them on a successful response rotates the session ID.  Add 'role' "
+            "or 'scopes' for OWASP's privilege-change rotation.  From the "
+            "environment, comma-separated: REDIS_SESSION_PRINCIPAL_KEYS="
+            "user_id,role.  A JSON array is still accepted."
+        ),
+    )
+    session_events_enabled: bool = Field(
+        default=False,
+        description=(
+            "Subscribe to Redis notifications and call registered handlers "
+            "when a session ends.  Best-effort: on a server that cannot "
+            "supply them the store logs one warning at startup and the "
+            "handlers never fire."
+        ),
+    )
+
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(
         default=False,
@@ -182,6 +314,106 @@ class RedisSettings(BaseSettings):
         default=False,
         description="Also initialize redis-py native OTel (connection/command metrics)",
     )
+
+    # -- Cookie attribute validation -------------------------------------------
+    #
+    # These three are interpolated straight into a ``Set-Cookie`` header.  The
+    # session *value* has been charset-checked since the first version
+    # precisely because an unvalidated one is a header-injection vector; the
+    # name, path and domain reach the same header by the same route and were
+    # not checked at all.  A CR or LF in any of them splits the header.
+
+    @field_validator("session_principal_keys", mode="before")
+    @classmethod
+    def _split_principal_keys(cls, value: Any) -> Any:
+        """Accept ``user_id,role`` from the environment, and JSON as well.
+
+        The only list-typed setting in this package, so this is the precedent
+        rather than a break from one.  Comma-separated is what an operator
+        will type, what every other tool in a ``.env`` file accepts, and what
+        Django, Rails and Spring Boot all take for the same kind of setting.
+        JSON-in-an-environment-variable is the outlier - and it was not a
+        choice we made, it is what pydantic-settings does with any field whose
+        annotation is not a scalar.
+
+        ``NoDecode`` on the annotation is what makes this reachable.  Without
+        it ``EnvSettingsSource`` calls ``json.loads`` on the raw string and
+        raises ``SettingsError`` **before** any validator on this class runs,
+        so a comma-separated value did not fail validation - the application
+        did not start.  A ``mode="before"`` validator alone does not help; it
+        never sees the value.
+
+        The JSON branch is kept so that no existing configuration breaks.
+
+        The one cost: a session key containing a comma cannot be named from
+        the environment.  Session keys are Python identifiers in every
+        realistic case, and the JSON form is still there for one that is not.
+
+        **Empty is refused**, and this check is why splitting is not purely a
+        convenience.  Before this validator, ``REDIS_SESSION_PRINCIPAL_KEYS=``
+        left blank could not get through at all - ``json.loads("")`` fails and
+        the application does not start.  Splitting a blank value yields ``[]``
+        instead, and an empty list makes ``_default_principal_of`` return the
+        same sentinel on every request, so no privilege change and no sign-in
+        ever rotates the ID.  That is the fixation this feature exists to
+        prevent, arrived at through a typo in a ``.env`` file.
+        """
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "session_principal_keys looked like a JSON array but "
+                        f"could not be parsed ({exc}); comma-separated is "
+                        "simpler: user_id,role"
+                    ) from exc
+            else:
+                # Empty parts dropped, so a trailing comma is not a key "".
+                value = [part.strip() for part in text.split(",") if part.strip()]
+        if isinstance(value, (list, tuple, set)) and not value:
+            raise ValueError(
+                "session_principal_keys must name at least one session key.  "
+                "An empty list means no sign-in and no privilege change ever "
+                "rotates the session ID, which is the fixation this feature "
+                "exists to prevent.  Pass principal_of=... to decide "
+                "rotation some other way."
+            )
+        return value
+
+    @field_validator("session_cookie_name")
+    @classmethod
+    def _check_cookie_name(cls, value: str) -> str:
+        """RFC 6265 token characters, narrowed to what a cookie name needs."""
+        if not value or not _COOKIE_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "session_cookie_name must be one or more of letters, digits, "
+                f"'-' and '_'; got {value!r}"
+            )
+        return value
+
+    @field_validator("session_cookie_path")
+    @classmethod
+    def _check_cookie_path(cls, value: str) -> str:
+        if not value.startswith("/") or _CTL_RE.search(value) or ";" in value:
+            raise ValueError(
+                "session_cookie_path must start with '/' and contain no "
+                f"control characters or ';'; got {value!r}"
+            )
+        return value
+
+    @field_validator("session_cookie_domain")
+    @classmethod
+    def _check_cookie_domain(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or not _COOKIE_DOMAIN_RE.fullmatch(value):
+            raise ValueError(
+                "session_cookie_domain must be a hostname of letters, digits, "
+                f"'-' and '.'; got {value!r}"
+            )
+        return value
 
     # -- KV fields that are silently ignored when url is set -----------------
     _KV_FIELDS: frozenset[str] = frozenset(
