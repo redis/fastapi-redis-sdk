@@ -214,7 +214,7 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        ps.clear()
+        await ps.clear()
         if settings.cluster:
             await ps.async_cluster.aclose()  # type: ignore[union-attr]
             ps.async_cluster = None

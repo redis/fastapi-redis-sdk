@@ -19,6 +19,7 @@ Usage::
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -308,9 +309,12 @@ def _build_hit_response(
         KeyError: If the entry is missing required keys.
     """
     entry = json.loads(cached_data)
-    body_bytes = (
-        entry["body"].encode() if isinstance(entry["body"], str) else entry["body"]
-    )
+    if entry.get("encoding") == "base64":
+        body_bytes = base64.b64decode(entry["body"])
+    else:
+        body_bytes = (
+            entry["body"].encode() if isinstance(entry["body"], str) else entry["body"]
+        )
     etag: str = entry["etag"]
     cc_value = _cache_control_value(remaining_ttl, private)
 
@@ -694,7 +698,8 @@ async def _store_cache_entry(
         (b"cache-control", cc_value.encode()),
     ]
     entry = {
-        "body": body_bytes.decode(errors="replace"),
+        "body": base64.b64encode(body_bytes).decode("ascii"),
+        "encoding": "base64",
         "etag": etag,
     }
     try:

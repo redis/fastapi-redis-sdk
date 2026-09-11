@@ -7,8 +7,6 @@ non-HTTP scopes, pool lifecycle, Cache-Control parsing, concurrency.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import fakeredis.aioredis
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
@@ -417,10 +415,14 @@ class TestNonHTTPScopePassthrough:
 
 @pytest.mark.unit
 class TestPoolStateLifecycle:
-    def test_clear_resets_cached_clients(self) -> None:
+    async def test_clear_resets_cached_clients(self) -> None:
+        from unittest.mock import AsyncMock
+
         ps = _PoolState()
-        ps._async_client = MagicMock()
-        ps.clear()
+        mock_client = AsyncMock()
+        ps._async_client = mock_client
+        await ps.clear()
+        mock_client.aclose.assert_awaited_once()
         assert ps._async_client is None
 
 
@@ -540,3 +542,145 @@ class TestConcurrency:
 
             for r in results:
                 assert r.status_code == 200
+
+
+# ===================================================================
+# 13. Binary-safe body encoding (M1)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestBase64BodyEncoding:
+    """Response bodies with non-UTF-8 bytes must survive cache round-trip
+    without data loss (base64 encoding)."""
+
+    def test_binary_body_survives_round_trip(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+        counts = [0]
+
+        # Use binary content that cannot survive UTF-8 decode+encode
+        binary_body = bytes(range(256))
+
+        @app.get("/bin", dependencies=[Depends(cache(ttl=300))])
+        async def bin_ep() -> StreamingResponse:
+            counts[0] += 1
+            return StreamingResponse(
+                iter([binary_body]), media_type="application/octet-stream"
+            )
+
+        async def _fake() -> fakeredis.aioredis.FakeRedis:
+            return fake_async_redis
+
+        app.dependency_overrides[get_async_redis] = _fake
+        get_settings.cache_clear()
+
+        try:
+            with TestClient(app) as c:
+                r1 = c.get("/bin")
+                assert r1.status_code == 200
+                assert r1.content == binary_body
+
+                r2 = c.get("/bin")
+                assert r2.status_code == 200
+                assert r2.content == binary_body
+        finally:
+            get_settings.cache_clear()
+
+    async def test_valid_utf8_body_also_uses_base64(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        import json
+
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+
+        @app.get("/utf8", dependencies=[Depends(cache(ttl=300))])
+        async def utf8_ep() -> dict:
+            return {"text": "hello"}
+
+        async def _fake() -> fakeredis.aioredis.FakeRedis:
+            return fake_async_redis
+
+        app.dependency_overrides[get_async_redis] = _fake
+        get_settings.cache_clear()
+
+        try:
+            with TestClient(app) as c:
+                c.get("/utf8")
+
+            settings = get_settings()
+            key = default_key_builder(
+                _make_request("/utf8"), prefix=settings.pattern_prefix("cache")
+            )
+            raw = await fake_async_redis.get(key)
+            entry = json.loads(raw)
+            assert entry.get("encoding") == "base64"
+        finally:
+            get_settings.cache_clear()
+
+    def test_build_hit_response_decodes_base64_body(self) -> None:
+        import base64
+        import json
+        from unittest.mock import MagicMock
+
+        from redis_fastapi.cache import _build_hit_response
+
+        body = b"\x80\x81\x82\x83"
+        entry = {
+            "body": base64.b64encode(body).decode("ascii"),
+            "encoding": "base64",
+            "etag": 'W/"abc123"',
+        }
+        request = MagicMock()
+        request.headers = {}
+
+        response = _build_hit_response(json.dumps(entry).encode(), 60, request, False)
+        assert response.status_code == 200
+        assert response.body == body
+
+    def test_build_hit_response_304_not_modified(self) -> None:
+        import base64
+        import json
+        from unittest.mock import MagicMock
+
+        from redis_fastapi.cache import _build_hit_response
+
+        body = b"hello"
+        etag = 'W/"abc123"'
+        entry = {
+            "body": base64.b64encode(body).decode("ascii"),
+            "encoding": "base64",
+            "etag": etag,
+        }
+        request = MagicMock()
+        request.headers = {"if-none-match": etag}
+
+        response = _build_hit_response(json.dumps(entry).encode(), 60, request, False)
+        assert response.status_code == 304
+
+
+# ===================================================================
+# 14. Pool state client close (L5)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestPoolStateClientClose:
+    """_PoolState.clear() should close the AsyncRedis client."""
+
+    async def test_clear_closes_client(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from redis_fastapi.deps import _PoolState
+
+        state = _PoolState()
+        mock_client = AsyncMock()
+        state._async_client = mock_client
+
+        await state.clear()
+
+        mock_client.aclose.assert_awaited_once()
+        assert state._async_client is None
