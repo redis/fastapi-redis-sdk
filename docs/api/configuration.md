@@ -58,7 +58,7 @@ Returns the full prefix for a given pattern name.
 
 ```python
 settings = get_settings()
-settings.pattern_prefix("cache")  # "redis:fastapi:cache"
+settings.pattern_prefix("cache")       # "redis:fastapi:cache"
 ```
 
 ## `get_settings()`

@@ -113,7 +113,9 @@ async def get_items():
     ...
 ```
 
-On a **cache hit** the endpoint is skipped (response served from Redis). On a **miss** the response is captured and stored. Adds `X-Redis-Cache` (HIT/MISS), `Cache-Control`, and `ETag` headers with 304 Not Modified support.
+On a **cache hit** the endpoint is skipped (response served from Redis). On a **miss** the response is captured and stored. Adds `X-Redis-Cache` (`HIT`/`MISS`/`BYPASS`), `Cache-Control` and `ETag` headers, with `304 Not Modified` for `If-None-Match` and `If-Modified-Since`.
+
+An entry stores the response's own header fields and replays them on a hit, so `Link`, `Content-Disposition`, `Content-Language` and your own headers survive. Only text representations are stored, and `Date` and `Set-Cookie` are deliberately withheld — see [Cache scope](../guide/architecture.md#cache-scope) and [Headers a hit carries](../guide/architecture.md#headers-a-hit-carries).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

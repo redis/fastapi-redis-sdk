@@ -71,6 +71,8 @@ class CacheBackend:
         self._eviction_group = eviction_group
         self._coder: type[Coder] = coder or JsonCoder
         settings = get_settings()
+        # The same prefix cache() keys by, so delete_group() clears backend
+        # values and cache() entries alike.
         self._prefix = settings.pattern_prefix("cache")
 
     # ------------------------------------------------------------------

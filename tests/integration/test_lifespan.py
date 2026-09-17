@@ -5,6 +5,8 @@ Scenarios: #12 lifespan opens/closes pools, #13 CLIENT SETINFO LIB-NAME.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +51,70 @@ class TestLifespanPoolManagement:
         # After lifespan, pool is cleared
         ps = _get_pool_state(app)
         assert ps.async_pool is None
+
+    async def test_client_aclose_releases_no_pooled_connection(
+        self, real_redis: sync_redis.Redis
+    ) -> None:
+        """``clear()`` has no connection to close; the pool owns them all.
+
+        Measured on the server with ``INFO clients``, because only the server
+        knows what is still open - and asserted while the event loop is still
+        running, since loop teardown closes every socket on it and would mask
+        the difference.
+
+        The cached client is built with ``connection_pool=`` passed in, so
+        ``auto_close_connection_pool`` is ``False`` and ``Redis.aclose()``
+        disconnects nothing.  ``ConnectionPool.aclose()`` is what frees the
+        connections, and the lifespan already calls it.  That is why
+        ``_PoolState.clear()`` stays synchronous and closes no client.
+        """
+        fanout = 5
+
+        def connected() -> int:
+            return int(real_redis.info("clients")["connected_clients"])
+
+        def settle(target: int) -> int:
+            # The server reaps closed sockets asynchronously.
+            for _ in range(40):
+                if connected() <= target:
+                    break
+                time.sleep(0.05)
+            return connected()
+
+        baseline = connected()
+
+        ps = _PoolState()
+        ps.async_pool = _PoolState.build_async_pool()
+        client = ps.get_async_client()
+        assert client.auto_close_connection_pool is False
+
+        try:
+            # Concurrent commands force the pool to open several connections.
+            await asyncio.gather(*(client.ping() for _ in range(fanout)))
+            peak = connected()
+            assert peak >= baseline + fanout, (
+                f"expected {fanout} new connections, baseline {baseline}, now {peak}"
+            )
+
+            # Closing the *client* frees none of them.
+            await client.aclose()
+            assert connected() == peak, (
+                "Redis.aclose() disconnected pooled connections; the premise "
+                "that clear() need not close the client no longer holds"
+            )
+
+            # Closing the *pool* frees all of them.
+            ps.clear()
+            assert ps._async_client is None
+            await ps.async_pool.aclose()
+            assert settle(baseline) <= baseline, (
+                f"pool.aclose() left connections open: baseline {baseline}, "
+                f"peak {peak}, now {connected()}"
+            )
+        finally:
+            if ps.async_pool is not None:
+                await ps.async_pool.aclose()
+                ps.async_pool = None
 
     def test_deps_use_lifespan_pools(self) -> None:
         """AsyncRedisDep should use the lifespan-managed pool."""

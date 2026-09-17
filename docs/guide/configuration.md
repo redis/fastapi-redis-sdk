@@ -166,6 +166,7 @@ When enabled, `AsyncRedisDep` yields an `AsyncRedisCluster`.
 ## Key Prefix
 
 All pattern data is prefixed with `redis:fastapi` by default, producing keys like `redis:fastapi:cache:...`.
+Putting a build identifier here gives every deploy a cold cache — see [Upgrading across a stored-shape change](caching.md#upgrading-across-a-stored-shape-change).
 
 ```bash
 export REDIS_PREFIX=myapp:redis

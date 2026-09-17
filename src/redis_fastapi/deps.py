@@ -102,10 +102,8 @@ class _PoolState:
             self._async_client = client
         return client
 
-    async def clear(self) -> None:
-        """Reset cached clients and close connections (called during lifespan shutdown)."""
-        if self._async_client is not None:
-            await self._async_client.aclose()
+    def clear(self) -> None:
+        """Reset cached clients (called during lifespan shutdown)."""
         self._async_client = None
         self.ratelimit_capabilities = None
 
