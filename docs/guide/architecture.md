@@ -273,6 +273,240 @@ Cache *reads* and short-circuiting happen entirely in the DI layer via
 
 ---
 
+## Cache scope
+
+`cache()` stores **text representations** — JSON, but also plain text, HTML,
+CSV, XML and JavaScript. The word JSON describes the *envelope*, not what you
+may return: an entry is a JSON document whose `body` is a text field, stored
+alongside the response's own header fields — so the media type it was served
+as, and the rest of its metadata, are replayed on a hit. See
+[Headers a hit carries](#headers-a-hit-carries).
+
+Unstructured payloads are covered. A FastAPI endpoint that returns a bare
+string or a number sends it as JSON — `return "hello"` goes over the wire as
+`"hello"` with `Content-Type: application/json` — so scalars need no special
+handling; they fall under the `application/json` row below.
+
+The content type decides whether we store, and the library checks it against
+an allowlist, **refusing anything it does not recognise** rather than storing
+a representation it cannot reproduce:
+
+| Stored                                               | Refused                                                                                        |
+|------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `application/json`                                   | `application/octet-stream`, `application/pdf`, `application/msgpack`, `application/x-protobuf` |
+| Anything `application/…+json` or `application/…+xml` | `image/*`, `audio/*`, `video/*` — including `image/svg+xml`                                    |
+| `application/xml`, `application/javascript`          | `multipart/*`                                                                                  |
+| Any `text/*`                                         | A response with no `Content-Type` at all                                                       |
+| `charset=utf-8`, `charset=us-ascii`, or no charset   | Any other charset — `iso-8859-1`, `utf-16`                                                     |
+
+A refusal **never changes what the caller receives**. The response is served
+whole, with its own headers and status, and only the Redis write is skipped.
+You can see it two ways: the response carries `X-Redis-Cache: BYPASS`, and the
+library logs the reason once per route:
+
+```text
+WARNING  /thumbnails/{id} was served but not cached: content type 'image/png'
+         is not a text representation.  cache() stores serializable text
+         representations only; see 'Cache scope' in the caching guide.
+```
+
+Once per route and reason, not once per request — a refused route will not
+flood your logs.
+
+### Binary belongs somewhere else
+
+`cache()` refuses binary **by choice, not by necessity**. An entry is a JSON
+envelope with a text `body`, and base64 could carry arbitrary bytes through it
+— an earlier version of this library did exactly that. So no claim below rests
+on the format being unable to hold the bytes. The reasons are about HTTP
+semantics and about where binary belongs, and they hold whatever your storage
+costs:
+
+- **A CDN serves those bytes closer to the user, and serves them correctly.**
+  It answers from a node near the caller and implements `Range` and
+  conditional requests properly — the two things this library refuses rather
+  than half-supports. Binary is where `Range` matters most: seeking in video,
+  paging a large PDF. When the endpoint sets no `ETag` of its own the stored
+  validator is a weak one, and a weak validator cannot serve a range at all.
+- **Binary is usually immutable and content-addressed** — asset digests,
+  thumbnail hashes. A long `max-age` at the edge then needs no invalidation,
+  which is the one advantage Redis has over a CDN, and the one you would not
+  be using.
+- **Memory is a sizing question, not a wall.** Ten thousand 200 KB thumbnails
+  is 2 GB, and on open-source Redis that is 2 GB of RAM. On Redis Software or
+  Redis Cloud, [Flex](https://redis.io/docs/latest/operate/rs/databases/flash/)
+  tiers warm values onto locally attached NVMe: the RAM limit floors at 10% of
+  total memory, keeping at least 20% of values in RAM is recommended, key names
+  stay in RAM whatever happens to their values, and cold reads cost
+  milliseconds rather than microseconds. If you run on Flex, read this bullet
+  as capacity planning rather than as an objection.
+
+`MAX_CACHEABLE_BODY_SIZE` is unrelated to all three: it bounds what your ASGI
+worker buffers in process memory while the middleware captures the body, which
+no storage tier affects.
+
+`cache()` earns its keep on the opposite shape: small, costly-to-compute,
+often-requested payloads that change, where the saving is the computation
+rather than the bytes.
+
+### Caching a streamed response defeats the streaming
+
+The capture middleware has to see a whole body before it can store it. A
+`StreamingResponse` on a cached route is therefore drained in full before the
+client receives its first byte, and the peak buffer is one body per request
+in flight.
+
+Do not put `cache()` on a route that streams for a reason. If the point of
+streaming is time-to-first-byte or a body too large to hold in memory, caching
+it takes both away.
+
+Bodies over `MAX_CACHEABLE_BODY_SIZE` (10 MiB) are passed through and marked
+`BYPASS`, so an oversized response is a refusal rather than a memory problem.
+
+### `Vary` is not honoured
+
+The cache key comes from the request path and its sorted query parameters —
+never from a request header. `default_key_builder` cannot see `Accept`,
+`Accept-Encoding`, `Authorization` or `Range`, so a `Vary` header on the
+response does not affect which entry is read.
+
+It is still **stored and replayed**. Dropping it would strip the origin's
+instruction from every cache downstream of you as well, so a CDN in front
+would treat your single stored variant as the only one there is. A response
+carrying `Vary: *` is refused outright: RFC 9111 §4.1 says such a response
+may never be reused, and the lookup ignores `Vary`, so refusing the store is
+the only place that rule can be honoured.
+
+One URL that negotiates on a request header therefore has **one** entry, and
+the first variant stored is the one everyone gets. If a route serves WebP to
+clients that accept it and JPEG to the rest, or switches language on
+`Accept-Language`, pass a `key_builder` that folds the deciding header into
+the key:
+
+```python
+def key_with_language(request, eviction_group="", prefix=""):
+    base = default_key_builder(request, eviction_group=eviction_group, prefix=prefix)
+    lang = request.headers.get("accept-language", "*")
+    return f"{base}:lang={lang}"
+
+@app.get("/articles/{slug}", dependencies=[Depends(cache(ttl=300, key_builder=key_with_language))])
+async def article(slug: str): ...
+```
+
+Fold in only the header you negotiate on. A key that includes `Accept-Encoding`
+or the full `Accept` splits the entry across every browser variant and the hit
+rate collapses.
+
+### Headers a hit carries
+
+An entry stores the body, the validator, and **every header field the endpoint
+sent** apart from five groups. A hit is rebuilt from that block, so the
+representation metadata your endpoint set — `Link`, `Content-Disposition`,
+`Content-Language`, `X-Total-Count`, anything of your own — arrives on the hit
+exactly as it did on the miss, repeated fields and their order included.
+
+What an entry deliberately leaves out:
+
+| Group | Fields | Why |
+|-------|--------|-----|
+| Owned by this library | `Cache-Control`, `ETag`, `X-Redis-Cache` | Re-emitted on every hit from the entry's own TTL and validator |
+| Connection-specific ([RFC 9110 §7.6.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-7.6.1)) | `Connection` and the fields it names, `Keep-Alive`, `Proxy-Connection`, `TE`, `Transfer-Encoding`, `Upgrade` | A recipient must remove them before forwarding |
+| Proxy-specific ([RFC 9111 §3.1](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.1)) | `Proxy-Authenticate`, `Proxy-Authentication-Info`, `Proxy-Authorization` | A `MUST NOT` unless the proxy's identity is in the key, which it is not |
+| Framing | `Content-Length` | Recomputed from the replayed body |
+| Policy | `Date`, `Set-Cookie` | See the two warnings below |
+
+A `304` carries less still: per
+[RFC 9110 §15.4.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.4.5)
+only `ETag`, `Cache-Control`, `Vary`, `Content-Location` and `Expires` are
+replayed, since the rest describes a body the response does not contain.
+
+`Cache-Control` is worth calling out: on a cached route this library owns the
+field outright, on the miss as well as the hit. An endpoint that sets
+`Cache-Control: public, max-age=600` on a route wrapped in `cache()` has that
+value **replaced** by the library's own, so both responses carry one
+consistent policy. Use the `private=True` argument rather than the header.
+
+Bodies have `MAX_CACHEABLE_BODY_SIZE`; header blocks have
+`MAX_CACHEABLE_HEADER_SIZE` (8 KiB). A response whose metadata exceeds it is
+served and marked `BYPASS`, like any other refusal.
+
+!!! warning "A cached route cannot set cookies"
+
+    `Set-Cookie` is not stored, which is the safe direction — a shared entry
+    that replayed one caller's session cookie to the next caller would be a
+    session leak. The cost is that a cached route **silently stops setting
+    cookies** after the first request: the caller who takes the miss gets the
+    cookie, everyone served from the entry does not.
+
+    Do not put `cache()` on a route that establishes a session, sets a CSRF
+    token, or otherwise depends on `Set-Cookie`.
+
+To supply one of the withheld fields on every response, set it in
+**middleware** rather than in the endpoint. Middleware runs outside the cache,
+so it is applied to a hit as well as to a miss, and its value is recomputed per
+response instead of being stored. That is the remedy for the cookie limitation
+below, and the right home for anything per-request — a request id, a trace
+header, a fresh signature.
+
+!!! note "Extension responses are not marked"
+
+    A response the middleware cannot buffer — `http.response.pathsend`,
+    `zerocopysend`, `trailers`, `debug` — is forwarded whole and never stored,
+    but it carries **no** `X-Redis-Cache` header at all rather than `BYPASS`,
+    since nothing about it was cached and it must not claim a `MISS`. It is
+    the one served-but-not-stored case you cannot spot from the response
+    alone.
+
+!!! warning "A per-caller header leaks like a per-caller body"
+
+    Because an entry now stores the headers your endpoint set, a header whose
+    value depends on **who asked** is replayed to everyone the entry serves.
+    A route returning `X-Account-Tier` or `X-User-Id` hands the first
+    caller's value to every later caller, exactly as a per-caller body would.
+
+    The remedy is the same one: fold the caller into the key with a custom
+    `key_builder`, as under
+    [Authenticated routes are not keyed per user](caching.md#rfc-9111-conformance). If a
+    header is diagnostic rather than part of the representation — a request id,
+    a trace id — set it in middleware instead, where it is recomputed per
+    response and never stored.
+
+### Compression middleware must wrap the cache
+
+The capture middleware stores the body it sees. If a compression middleware
+sits *inside* it, what it sees is already compressed, `Content-Encoding` is
+set, and every response is refused — caching is off for every client that
+sends `Accept-Encoding: gzip`, which is every browser, with nothing to show
+it but one log line.
+
+Starlette applies the **last** registered middleware outermost, so register
+compression **after** `caching()`:
+
+```python
+app = FastAPI()
+FastAPIRedis(app).lifespan().caching()
+app.add_middleware(GZipMiddleware, minimum_size=1000)   # outside the cache
+```
+
+```python
+# Wrong - the cache sees gzip bytes and refuses every response
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+FastAPIRedis(app).lifespan().caching()
+```
+
+With the correct order the cache stores the identity representation and the
+compression middleware compresses both the miss and the hit on the way out.
+The same applies to any middleware that rewrites the body — encrypt, sign,
+minify: it belongs outside `caching()`, or the entry stores its output
+instead of your endpoint's.
+
+An endpoint that returns an already-compressed body of its own — setting
+`Content-Encoding` by hand — is refused whatever the ordering. RFC 9110 §8.4
+makes `Content-Encoding` the instruction for decoding the body, and an entry
+that stored the bytes without it would replay something no client can read.
+
+---
+
 ## Storage model - strings vs hashes
 
 Every cached entry is stored as a standalone Redis

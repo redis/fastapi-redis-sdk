@@ -128,7 +128,8 @@ async def update_profile(body: Profile, user: User = Depends(get_current_user)):
 
 ### Cache keys
 
-Keys follow the pattern `{prefix}:{{eviction_group}}:{path}:{sorted_query_params}`.
+Keys follow the pattern
+`{prefix}:{{eviction_group}}:{path}:{sorted_query_params}`.
 Slashes become colons; query parameters are sorted alphabetically.
 
 When an eviction group is provided it is wrapped in Redis
@@ -193,20 +194,47 @@ single node.  For typical HTTP response caching this is not a problem
 large, consider splitting it into multiple smaller eviction groups to
 distribute load across the cluster.
 
+#### Upgrading across a stored-shape change
+
+Entries carry no format marker, and `CacheBackend` keys by the same prefix as
+`cache()`. So when a release changes the shape of a stored entry, clear the
+cache prefix as part of the upgrade rather than letting two shapes meet.
+
+A rolling deploy cannot do that safely: while old and new pods both serve
+traffic they share one keyspace, and flushing at any point in the rollout
+leaves the old pods free to repopulate the old shape for the new ones to read.
+Upgrade across a shape change with a maintenance window — stop the old
+release, clear the prefix, start the new one. The release notes call out the
+releases where this applies.
+
+!!! tip "Invalidating on every deploy"
+
+    To get a cold cache on **every** deploy — because your handlers changed
+    what they return, say — put a build identifier in the prefix:
+
+    ```bash
+    REDIS_PREFIX=redis:fastapi:build-a3f91c
+    ```
+
+    Keys then move wholesale each release, old ones expire on their TTL, and
+    nothing needs invalidating by hand. This also covers the shape-change
+    case, since a new build never reads the previous build's keys.
+
 ### HTTP cache headers
 
 Every `cache()` response includes these headers automatically:
 
 | Header | Value |
 |--------|-------|
-| `X-Redis-Cache` | `HIT` or `MISS` |
+| `X-Redis-Cache` | `HIT`, `MISS`, or `BYPASS` when the response was served but not stored (see [Cache scope](architecture.md#cache-scope)) |
 | [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) | `max-age=<remaining_ttl>` when TTL > 0, or `no-cache` when TTL = 0 (always revalidate via ETag). Adds `private` prefix when `private=True`. |
-| [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag) | Weak ETag of the cached body |
+| [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag) | The endpoint's own `ETag` when it set one, strong validators included; otherwise a weak tag derived from the body |
 
 **Request directives** - the following `Cache-Control` directives sent by the
 client are respected:
 
 - [`If-None-Match`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-None-Match) with a matching ETag returns [**304 Not Modified**](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304).
+- [`If-Modified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since) returns **304** when the endpoint set a `Last-Modified` and the client's copy is not older. `If-None-Match` takes precedence when both are sent, as [RFC 9110 §13.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.2.2) requires.
 - `Cache-Control: no-cache` forces a cache refresh.
 - `Cache-Control: no-store` bypasses caching entirely.
 - `Cache-Control: max-age=N` - a cached entry older than *N* seconds is
@@ -225,6 +253,113 @@ client are respected:
 async def my_profile(user: User = Depends(get_current_user)):
     return user.profile
 ```
+
+### Cache scope
+
+`cache()` stores **text representations** only — JSON, plain text, HTML, CSV,
+XML, JavaScript. It refuses anything else, including all binary, and a refusal
+never changes what the caller receives: the response is served whole and marked
+`X-Redis-Cache: BYPASS`, with the reason logged once per route. An entry also
+replays the header fields your endpoint set, apart from the ones this library
+owns and the ones it withholds by policy — `Date` and `Set-Cookie` among them.
+
+For the full allowlist, every refusal reason, the headers a hit carries, and
+the middleware ordering that compression requires, see
+[Cache scope](architecture.md#cache-scope) in the architecture guide.
+
+### RFC 9111 conformance
+
+[RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html) governs HTTP caching,
+and a Redis entry shared between requests is a **shared cache** under it. Where
+this library follows the specification and where it deliberately does not:
+
+| Section                                                             | Requirement                                                                                                                                                                                      | This library                                                                                                                                                                                                                                                                                                                                                                            |
+|---------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [§3](https://www.rfc-editor.org/rfc/rfc9111.html#section-3)         | Store only a cacheable method and a status the cache can reproduce                                                                                                                               | **Follows.** `cache()` reads and stores `GET` only, and stores only a `200`. An entry carries no status, so a stored `201` would come back as a `200`; refusing it keeps the status honest. `cache_put()` stores any `2xx`, because its body is installed as the representation for a *later* `GET` and the writing response is never replayed.                                         |
+| [§3.1](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.1)     | "Caches MUST include all received response header fields … when storing a response"                                                                                                              | **Follows in part.** An entry stores every received header field, including unrecognized ones, apart from five groups: the fields this library re-emits, the connection-specific and proxy-specific fields §3.1 itself excludes, the recomputed `Content-Length`, and `Date` and `Set-Cookie` by decision. Trailer fields are discarded, which §3.1 permits, and are never merged into the header block. The two remaining deviations are deliberate: replaying `Date` would double-count the entry's age (see the warning below), and replaying `Set-Cookie` from a shared entry would leak a session. See [Headers a hit carries](architecture.md#headers-a-hit-carries). |
+| [§3.2](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.2)     | Update stored header fields on validation                                                                                                                                                        | **Not applicable.** This is an origin-side cache. It never revalidates against an upstream.                                                                                                                                                                                                                                                                                             |
+| [§3.3](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.3)     | "a cache MUST NOT store incomplete or partial-content responses if it does not support the Range and Content-Range header fields", and MUST NOT send a partial response without marking it `206` | **Follows.** Three guards: a response carrying `Content-Range` is refused, a request carrying `Range` is refused, and any status other than `200` is refused. Without them a `206` would be stored under the full-resource key and replayed to the next client as a truncated `200`.                                                                                                    |
+| [§3.4](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.4)     | Combining partial content                                                                                                                                                                        | **Not applicable.** No partial entry is ever stored.                                                                                                                                                                                                                                                                                                                                    |
+| [§3.5](https://www.rfc-editor.org/rfc/rfc9111.html#section-3.5)     | "A shared cache MUST NOT use a cached response to a request with an Authorization header field" unless the response permits shared storage                                                       | **Deviates.** Read the warning below before caching an authenticated route.                                                                                                                                                                                                                                                                                                             |
+| [§4](https://www.rfc-editor.org/rfc/rfc9111.html#section-4)         | Reuse only on a matching URI and method, while fresh                                                                                                                                             | **Follows.** The key is the path plus sorted query, only `GET` reads it, and the Redis TTL is the freshness lifetime.                                                                                                                                                                                                                                                                   |
+| [§4](https://www.rfc-editor.org/rfc/rfc9111.html#section-4)         | "a cache MUST generate an Age header field"                                                                                                                                                      | **Deviates deliberately.** `Cache-Control: max-age` is emitted already reduced by the entry's age, so a downstream cache works out the same remaining freshness an `Age` header would give it. Sending both would subtract the age twice and expire the response early. **Read the warning below before changing this.**                                                                |
+| [§4.1](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.1)     | Match every request header nominated by `Vary`                                                                                                                                                   | **Deviates in part.** The key never includes a request header, so `Vary` is not honoured on lookup. It *is* stored and replayed, so a cache downstream still receives the origin's instruction, and a response carrying `Vary: *` — which may never be reused — is refused rather than stored. See [`Vary` is not honoured](architecture.md#vary-is-not-honoured).                              |
+| [§4.2](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2)     | Freshness                                                                                                                                                                                        | **Follows.** Redis owns it. An expired entry is a missing key, so a stale entry cannot be read.                                                                                                                                                                                                                                                                                         |
+| [§4.3](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3)     | Validation                                                                                                                                                                                       | **Follows.** `If-None-Match` against the stored `ETag` returns `304`, and `If-Modified-Since` against a stored `Last-Modified` does too — with `If-None-Match` taking precedence when both are present, as §13.2.2 requires. An endpoint that sets its own `ETag` keeps it, strong validator included; when it sets none we generate a weak tag from the body, and a weak validator cannot serve a range request — one more reason `Range` is refused. |
+| [§4.4](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.4)     | "A cache MUST invalidate the target URI … when it receives a non-error status code in response to an unsafe request method"                                                                      | **Deviates.** A `POST`, `PUT`, `PATCH` or `DELETE` does not drop the entry by itself. Put `cache_evict()` or `cache_put()` on the writing route — see [Combining patterns](#combining-patterns).                                                                                                                                                                                        |
+| [§5.2.1](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1) | Request directives                                                                                                                                                                               | **Follows in part.** Honours `no-store`, `no-cache` and `max-age`. Ignores `min-fresh`, `max-stale`, `only-if-cached` and `no-transform`.                                                                                                                                                                                                                                               |
+| [§5.2.2](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2) | Response directives                                                                                                                                                                              | **Follows in part.** Refuses to store a response that sets `no-store` or `private`, since a Redis entry is shared. Emits `private` when `private=True`.                                                                                                                                                                                                                                 |
+
+!!! warning "Authenticated routes are not keyed per user"
+
+    A `cache()` entry is **shared**. The key does not include the caller, so a
+    route behind `Authorization` serves the first caller's body to everyone
+    until the TTL expires. RFC 9111 §3.5 forbids exactly this, and the library
+    does not stop you — `private=True` changes the `Cache-Control` header it
+    emits, not the key it writes.
+
+    Before caching a route whose body depends on who is asking, fold the
+    caller into the key:
+
+    ```python
+    def key_per_user(request, eviction_group="", prefix=""):
+        base = default_key_builder(
+            request, eviction_group=eviction_group, prefix=prefix
+        )
+        return f"{base}:u:{request.state.user_id}"
+
+    @app.get(
+        "/me/profile",
+        dependencies=[
+            Depends(cache(ttl=60, private=True, key_builder=key_per_user))
+        ],
+    )
+    async def my_profile(user: User = Depends(get_current_user)): ...
+    ```
+
+    If the body is identical for every caller — an auth check that gates
+    access without changing the content — the shared entry is correct and
+    needs no change.
+
+!!! warning "Do not add an Age header on its own"
+
+    On a hit the library emits `Cache-Control: max-age=<seconds the Redis key
+    has left>` and **no** `Age` header, while the ASGI server stamps a fresh
+    `Date` on every response. A hit therefore looks like a response generated
+    just now that happens to have less life left:
+
+    ```text
+    hit 1   cache-control: max-age=120   date: 13:43:17   (redis ttl 120)
+    hit 2   cache-control: max-age=117   date: 13:43:20   (redis ttl 117)
+    hit 3   cache-control: max-age=114   date: 13:43:23   (redis ttl 114)
+    ```
+
+    Those three facts are **one decision, not three**. A downstream cache
+    works out `current_age` from the `Age` header and from `Date`, then serves
+    the response while `max-age > current_age`. Because `Date` is always now
+    and `Age` is absent, `current_age` starts at zero, so the reduced
+    `max-age` *is* the whole remaining lifetime. The arithmetic comes out
+    right — but only because all three parts agree.
+
+    Change one part on its own and it stops coming out right. Take an entry
+    with a 300-second TTL and 120 seconds left, so its age is 180:
+
+    - **Add an `Age` header while `max-age` stays reduced** and the age counts
+      twice. The hit carries `max-age=120` and `Age: 180`; a downstream cache
+      computes `current_age = 180`, finds `120 > 180` false, and treats every
+      hit as **stale on arrival**. Downstream caching collapses silently — the
+      responses still look correct in a browser.
+    - **Store and replay the entry's original `Date`** and the same
+      double-count happens with no `Age` header at all, because the cache then
+      derives the age from `Date` instead of from zero.
+
+    To conform to RFC 9111 §4, change the whole encoding together: store the
+    configured TTL in the entry, emit that constant value as `max-age`, and
+    emit `Age` as `stored_ttl - remaining_ttl`. A hit then carries
+    `max-age=300` with `Age: 180`, which leaves the same 120 seconds, and
+    replaying `Date` becomes safe as well.
+
+    Half of that change is worse than none of it.
 
 ### Testing
 

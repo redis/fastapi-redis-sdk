@@ -60,7 +60,7 @@ async def get_product(product_id: int):
     return await db.get_product(product_id)
 ```
 
-`cache_evict()` and `cache_put()` handle invalidation and write-through with matching keys, and `CacheBackendDep` exposes imperative `get`/`set`/`delete`/`has`/`delete_group` for conditional logic. Cached responses carry `X-Redis-Cache` (HIT/MISS), `Cache-Control`, and `ETag` headers with 304 Not Modified support.
+`cache_evict()` and `cache_put()` handle invalidation and write-through with matching keys, and `CacheBackendDep` exposes imperative `get`/`set`/`delete`/`has`/`delete_group` for conditional logic. Cached responses carry `X-Redis-Cache` (`HIT`/`MISS`/`BYPASS`), `Cache-Control` and `ETag` headers, with `304 Not Modified` for both `If-None-Match` and `If-Modified-Since`, and replay the response's own header fields on a hit.
 
 See the [Caching Guide](docs/guide/caching.md) for the full patterns, `CacheBackend` usage, Pydantic model caching, feature comparison, and best practices.
 

@@ -561,7 +561,13 @@ class TestCacheBackend:
             pending = CachePending(
                 key="decorator-key", ttl=settings.default_ttl, redis=fake
             )
-        await _store_cache_entry(pending, b'{"v": 1}', {})
+        await _store_cache_entry(
+            pending,
+            b'{"v": 1}',
+            '{"v": 1}',
+            [(b"content-type", b"application/json")],
+            {},
+        )
         decorator_ttl = await fake.ttl("decorator-key")
 
         # -- backend path: set() with no ttl --
