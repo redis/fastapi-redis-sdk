@@ -8,10 +8,9 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v0.json)](https://astral.sh/ruff)
-[![codecov](https://codecov.io/gh/redis/fastapi-redis-sdk/branch/main/graph/badge.svg?token=yenl5fzxxr)](https://codecov.io/gh/redis/fastapi-redis-sdk)
-[![PyPI Downloads](https://static.pepy.tech/badge/fastapi-redis-sdk/month)](https://pepy.tech/projects/fastapi-redis-sdk)
+[![codecov](https://img.shields.io/codecov/c/github/redis/fastapi-redis-sdk?token=yenl5fzxxr&logo=codecov&logoColor=white&label=)](https://codecov.io/gh/redis/fastapi-redis-sdk)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/fastapi-redis-sdk?period=month&units=abbreviation&left_color=grey&right_color=blue&left_text=downloads%2Fmonth)](https://pepy.tech/projects/fastapi-redis-sdk)
 [![Guide](https://img.shields.io/badge/mkdocs-guide-526CFE?logo=materialformkdocs&logoColor=white)](https://redis.github.io/fastapi-redis-sdk/)
-
 
 [![Discord](https://img.shields.io/discord/697882427875393627.svg?style=social&logo=discord)](https://discord.gg/redis)
 [![Twitch](https://img.shields.io/twitch/status/redisinc?style=social)](https://www.twitch.tv/redisinc)
