@@ -7,6 +7,7 @@ import warnings
 from unittest.mock import patch
 
 import pytest
+from redis.asyncio import SSLConnection
 
 from redis_fastapi.config import DRIVER_INFO, RedisSettings
 
@@ -123,7 +124,7 @@ class TestTLSKwargs:
     def test_ssl_minimal(self) -> None:
         s = RedisSettings(ssl=True)
         kw = s._tls_kwargs()
-        assert kw["ssl"] is True
+        assert kw["connection_class"] is SSLConnection
         assert kw["ssl_check_hostname"] is True
         assert "ssl_certfile" not in kw
 
@@ -144,7 +145,7 @@ class TestTLSKwargs:
     def test_tls_kwargs_propagate_to_connection_kwargs(self) -> None:
         s = RedisSettings(ssl=True, ssl_ca_certs="/ca.pem")
         kw = s.connection_kwargs()
-        assert kw["ssl"] is True
+        assert kw["connection_class"] is SSLConnection
         assert kw["ssl_ca_certs"] == "/ca.pem"
 
 

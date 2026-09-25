@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.asyncio import SSLConnection
 from redis.driver_info import DriverInfo
 
 LIB_NAME: str = "fastapi-redis-sdk"
@@ -223,7 +224,7 @@ class RedisSettings(BaseSettings):
         """Build SSL-related kwargs for ``ConnectionPool`` / ``from_url``."""
         if not self.ssl:
             return {}
-        kw: dict[str, Any] = {"ssl": True}
+        kw: dict[str, Any] = {"connection_class": SSLConnection}
         if self.ssl_certfile:
             kw["ssl_certfile"] = self.ssl_certfile
         if self.ssl_keyfile:
