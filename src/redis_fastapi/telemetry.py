@@ -1,9 +1,9 @@
-"""OpenTelemetry instrumentation for fastapi-redis-sdk cache operations.
+"""OpenTelemetry instrumentation for fastapi-redis-sdk.
 
-Provides spans and metrics for cache(), cache_evict(), cache_put(),
-and CacheBackend operations.  All OTel imports are guarded - when the
-``opentelemetry`` packages are not installed every helper is a silent
-no-op.
+Provides spans and metrics for cache(), cache_evict(), cache_put() and
+CacheBackend operations, for rate-limit checks, and for the session store.
+All OTel imports are guarded - when the ``opentelemetry`` packages are not
+installed every helper is a silent no-op.
 
 Enable via::
 
@@ -51,6 +51,11 @@ class _OTelState:
     # Rate-limit metric instruments
     ratelimit_requests: Any = None
     ratelimit_latency: Any = None
+
+    # Session metric instruments
+    session_operations: Any = None
+    session_latency: Any = None
+    session_events: Any = None
 
 
 _state = _OTelState()
@@ -113,6 +118,21 @@ def enable_telemetry() -> None:
     _state.ratelimit_requests = _state.meter.create_counter(
         name="redis_fastapi.ratelimit.requests",
         description="Rate-limit checks by result",
+        unit="1",
+    )
+    _state.session_operations = _state.meter.create_counter(
+        name="redis_fastapi.sessions.operations",
+        description="Session store operations by kind and outcome",
+        unit="1",
+    )
+    _state.session_latency = _state.meter.create_histogram(
+        name="redis_fastapi.sessions.latency",
+        description="Session store operation latency",
+        unit="s",
+    )
+    _state.session_events = _state.meter.create_counter(
+        name="redis_fastapi.sessions.events",
+        description="Session-end notifications delivered to handlers",
         unit="1",
     )
     _state.ratelimit_latency = _state.meter.create_histogram(
@@ -296,3 +316,97 @@ def timed_rate_limit(scope: str = "") -> Iterator[None]:
         yield
     finally:
         record_rate_limit_latency(duration=time.monotonic() - start, scope=scope)
+
+
+# ---------------------------------------------------------------------------
+# Session telemetry
+# ---------------------------------------------------------------------------
+#
+# One rule governs every helper below, and it is an acceptance criterion
+# rather than a preference: **no session ID and no subject may become a span
+# attribute or a metric label.**  Cardinality is the lesser reason.  The real
+# one is that traces and metrics reach dashboards and third-party vendors that
+# the session store's threat model never considered - a subject is usually a
+# user ID, and a session ID is a bearer credential.
+
+
+@contextlib.contextmanager
+def session_span(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    """Create a span for a session operation.  No-op when OTel is disabled."""
+    if not _state.enabled or _state.tracer is None:
+        yield None
+        return
+    with _state.tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+        yield span
+
+
+def record_session_operation(*, operation: str, result: str) -> None:
+    """Count a session operation.
+
+    The label sets below are exhaustive, and they are the emitted ones rather
+    than the intended ones: a dashboard filtering on a label the store never
+    sends shows a permanently empty series, which reads as "nothing is
+    happening" instead of "nothing is measured".
+
+    Args:
+        operation: ``load``, ``create``, ``save``, ``touch``, ``rotate``,
+            ``revoke``, ``revoke_id``, ``revoke_all``, ``list`` or ``count``.
+            ``create`` and ``save`` are separate because a create is a new
+            session - the sign-in rate - while a save updates an existing one.
+            ``delete`` and ``index`` are deliberately absent: both are always
+            part of one of the above and counting them would double-count it.
+        result: ``hit``, ``miss``, ``expired``, ``malformed`` or ``error``.
+            ``miss`` means there was nothing to do - no such session, an empty
+            index, an identifier that is not this subject's.  ``expired`` and
+            ``malformed`` are emitted by ``load`` alone.  ``malformed`` is a
+            cookie that fails the identifier check: every identifier the store
+            issues passes it, so this is the one certain sign of an injected
+            value - or of another application on the domain using the same
+            cookie name.
+    """
+    if not _state.enabled or _state.session_operations is None:
+        return
+    try:
+        _state.session_operations.add(1, {"operation": operation, "result": result})
+    except Exception:
+        logger.debug("Error recording session operation metric", exc_info=True)
+
+
+def record_session_latency(*, duration: float, operation: str) -> None:
+    """Record session operation latency in seconds."""
+    if not _state.enabled or _state.session_latency is None:
+        return
+    try:
+        _state.session_latency.record(duration, {"operation": operation})
+    except Exception:
+        logger.debug("Error recording session latency metric", exc_info=True)
+
+
+def record_session_event(*, cause: str, result: str) -> None:
+    """Count a session-end notification.
+
+    Args:
+        cause: ``idle`` or ``absolute``.  There is no third value: a
+            revocation is a ``DEL``, which the session-event subscriber does
+            not observe, so no handler is ever called with one.
+        result: delivered or dropped.
+    """
+    if not _state.enabled or _state.session_events is None:
+        return
+    try:
+        _state.session_events.add(1, {"cause": cause, "result": result})
+    except Exception:
+        logger.debug("Error recording session event metric", exc_info=True)
+
+
+@contextlib.contextmanager
+def timed_session(operation: str) -> Iterator[None]:
+    """Context manager that records latency for a session operation."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        record_session_latency(duration=time.monotonic() - start, operation=operation)

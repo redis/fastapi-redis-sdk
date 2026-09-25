@@ -10,6 +10,7 @@ app = FastAPI()
 FastAPIRedis(app).lifespan()                    # connection pools only
 FastAPIRedis(app).lifespan().caching()          # + DI caching support
 FastAPIRedis(app).lifespan().rate_limiting()    # + DI rate limiting support
+FastAPIRedis(app).lifespan().sessions()         # + server-side sessions
 ```
 
 Or compose the lifespan directly:
@@ -121,7 +122,9 @@ On a **cache hit** the endpoint is skipped (response served from Redis). On a **
 | `eviction_group` | `str` | `""` | Namespace segment in the cache key |
 | `cache_prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
 | `key_builder` | `KeyBuilder \| None` | `default_key_builder` | Custom key builder |
-| `private` | `bool` | `False` | Emit `Cache-Control: private` |
+| `private` | `bool` | `False` | Emit `Cache-Control: private`. Added automatically when `valid_session()` gated the request |
+| `vary_on_session` | `bool \| None` | `None` | `True`: one entry per user, `private`. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
+| `no_store` | `bool` | `False` | Emit `Cache-Control: no-store` on the miss and every hit; the entry is still kept in Redis. Added automatically under `valid_session(issued_within=...)` |
 
 ### `cache_evict()`
 
@@ -331,3 +334,233 @@ Returned by `hit()` / `peek()`, and stashed on `request.state` so the middleware
 `RateLimitExceeded(Exception)` - control-flow exception raised by `rate_limit()` when a request is over the limit; carries the prebuilt 429 `Response`. It is turned into that response automatically once `add_redis_rate_limiting` (or `.rate_limiting()`) has registered its handler.
 
 `RateLimitMiddleware` - ASGI middleware that injects `X-RateLimit-*` headers on allowed responses and, when a global limit is configured, enforces it before routing. Registered for you by `add_redis_rate_limiting`; you rarely construct it directly.
+
+
+---
+
+## Session dependencies
+
+### `SessionDep`
+
+```python
+from redis_fastapi import SessionDep
+
+@app.post("/login")
+async def login(session: SessionDep):
+    session["user_id"] = 42          # writing the identity rotates the ID
+```
+
+`Annotated[Session, Depends(get_session)]` - the session payload as a `dict`
+subclass. Loaded before the application runs, so this performs no I/O.
+`request.session` returns the same object.
+
+### `SessionStateDep`
+
+```python
+from redis_fastapi import SessionStateDep, SessionStoreDep
+
+@app.post("/logout")
+async def logout(state: SessionStateDep, store: SessionStoreDep):
+    await store.revoke(state)
+```
+
+`Annotated[SessionState, Depends(get_session_state)]` - everything about the
+session that is not its data: `session_id`, `subject`, `created`,
+`absolute_remaining`, and the `revoked` / `rotated` flags. Operations that act
+on the session rather than its contents take this rather than the payload.
+
+### `SessionStoreDep` / `SyncSessionStoreDep`
+
+```python
+async def handler(store: SessionStoreDep): ...   # async endpoints
+def handler(store: SyncSessionStoreDep): ...     # def endpoints
+```
+
+`Annotated[SessionStore, Depends(get_session_store)]`. Typed as the abstract
+base, not the Redis implementation, so a substituted backend type-checks.
+`SyncSessionStore` bridges each call via `anyio.from_thread.run` and is usable
+only from FastAPI worker threads.
+
+### `get_session()` / `get_session_state()` / `get_session_store()` / `get_sync_session_store()`
+
+```python
+async def get_session_store(request: Request) -> SessionStore
+```
+
+`get_session_store` resolves in three steps: an entry in
+`app.dependency_overrides`, then a `store` or `store_factory` given to
+`add_redis_sessions`, then a `RedisSessionStore` built from the remaining
+options. It consults the override map itself, so one override covers both the
+middleware and your handlers.
+
+---
+
+## `valid_session()`
+
+```python
+from fastapi import Depends
+from redis_fastapi import valid_session
+
+@app.post("/checkout", dependencies=[Depends(valid_session())])
+async def checkout(): ...
+
+@app.post("/account/email", dependencies=[
+    Depends(current_user),
+    Depends(valid_session(issued_within=600, on_reject=my_rejection)),
+])
+async def change_email(): ...
+```
+
+A dependency that rejects a request without a valid session: the cookie must
+name a record that was live in Redis when the request arrived, and nothing
+earlier in the request may have ended it. It does not ask who the session
+belongs to.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `issued_within` | `int \| timedelta \| None` | `None` | Also require the session ID to have been issued at most this long ago. Adds the reason `"stale"` and makes the response `Cache-Control: no-store`. Not an authentication check |
+| `on_reject` | `OnReject[SessionRejection]`, or `OnReject[RecencyRejection]` with `issued_within` | `None` | Receives the request and the reason, returns the response (sync or async). Default: `401` |
+
+| Reason | Meaning |
+|---|---|
+| `"missing"` | No usable session: no cookie, a malformed one, or one an earlier dependency revoked or emptied |
+| `"expired"` | A well-formed cookie naming no live session |
+| `"unavailable"` | The read failed and the request continued without a session |
+| `"stale"` | Only with `issued_within`: the session ID was issued longer ago than that |
+
+The default rejection is `HTTPException(401, "No valid session")`, with a
+`WWW-Authenticate` header only when the `challenge` setting is configured. For
+`"stale"` it is a `401` with the body
+`{"detail": ..., "error": "stale_session", "issued_within": N}`.
+
+The gate marks the session as read. When it passes, a following
+`cache(vary_on_session=False)` adds `private`. Listed **after** such a
+`cache()`, it raises `SessionConfigurationError` on the first request. It also
+raises that error on a route excluded by `skip`, and raises `TypeError` when
+`on_reject` returns something other than a `Response`.
+
+| Type | Values |
+|---|---|
+| `SessionRejection` | `Literal["missing", "expired", "unavailable"]` |
+| `RecencyRejection` | `SessionRejection` plus `"stale"` |
+| `OnReject[R]` | `Callable[[Request, R], Response \| Awaitable[Response]]` |
+| `Challenge` | `str \| SecurityBase \| Callable[[Request, str], str \| None]` |
+| `SessionRejected` | The exception that carries a rejection response out of the dependency. Control flow, not a `SessionError` |
+
+---
+
+## Session setup
+
+### `add_redis_sessions()` / `FastAPIRedis.sessions()`
+
+```python
+FastAPIRedis(app).lifespan().sessions(
+    principal_keys=["user_id", "role"],
+    subject_of=lambda s: s.get("tenant_id"),
+    descriptor_of=lambda req, s: {"ip": req.client.host},
+    cookie_builder=my_builder,
+    skip=lambda req: req.url.path.startswith("/health"),
+    challenge=None,
+    store=None, store_factory=None,
+    coder=JsonCoder, encryptor=None, id_factory=None, key_prefix=None,
+    idle_ttl=None, absolute_ttl=None, gc_ttl=None,
+)
+```
+
+| Argument | Purpose |
+|---|---|
+| `principal_of` / `principal_keys` | What a change to triggers a rotation. Must be pure and return a verified identity. |
+| `subject_of` | What the reverse index is keyed on. `None` leaves the session out of it. |
+| `descriptor_of` | What a device listing shows. Stored beside the session, never inside it. |
+| `cookie_builder` | Renders `Set-Cookie`, for setting **and** clearing. |
+| `skip` | Requests needing no session, at zero Redis cost. |
+| `challenge` | The `WWW-Authenticate` header on a `valid_session()` rejection: a FastAPI security scheme, a string, or a callable of the request and the reason. Omitted by default; `Basic` is refused. |
+| `store` / `store_factory` | Supply a whole store. Mutually exclusive. |
+| `coder`, `encryptor`, `id_factory`, `key_prefix`, `idle_ttl`, `absolute_ttl`, `gc_ttl` | Passed to the store constructor. TTLs accept `int` seconds or `timedelta`. |
+
+---
+
+## `SessionStore`
+
+Abstract base owning the lifecycle. `RedisSessionStore` is the shipped
+implementation; `SessionStoreProtocol` is the structural type for substituting
+one without inheritance.
+
+| Method | Purpose |
+|---|---|
+| `load(session_id, *, refresh=True)` | Read a session and restart its idle clock. `None` for every way it can be absent. |
+| `load_with_status(session_id, *, refresh=True)` | `load()`, plus whether the read itself failed. |
+| `session_age(state)` | Seconds since the session ID was issued, from the key's TTL. `None` without a stored session, or for one created under a longer `session_absolute_ttl`. |
+| `create(session_id, record)` | Write a session that does not exist yet. The only method that writes the absolute deadline. |
+| `save(session_id, record)` | Update the payload, and only the payload. |
+| `touch(session_id)` | Restart the idle clock alone. |
+| `delete(session_id)` | Remove the session. |
+| `rotate(state, *, subject=None, descriptor=None)` | New identifier, old key deleted first. Returns the new ID. |
+| `reauthenticate(state)` | Ask the middleware to rotate on the way out. |
+| `revoke(state, *, subject=None)` | End this session and drop its index entry. |
+| `revoke_id(session_id, *, subject)` | End one session, refusing an ID not indexed under that subject. |
+| `revoke_all(subject)` | End every session of a subject. Returns keys removed. |
+| `list_for_subject(subject)` | Live sessions, verified before being reported. |
+| `count_for_subject(subject, *, limit=None)` | Upper-bound count; exact only at or above `limit`. Raises rather than failing open. |
+| `index(subject, session_id, record, *, absolute_remaining, extra=None)` | Record a session under its subject. |
+| `new_id()` / `is_valid_id(value)` | Generate and validate identifiers. |
+| `new_record(data, *, created=None)` | Build an envelope, carrying `created` forward. |
+| `session_id(state)` | The current identifier, or `None`. |
+
+---
+
+## Session data types
+
+| Type | Contents |
+|---|---|
+| `Session` | `dict` subclass with `accessed` / `modified` flags and `raw()`. Nothing else. |
+| `SessionState` | `data`, `session_id`, `subject`, `created`, `absolute_remaining`, `revoked`, `rotated`. |
+| `SessionRecord` | `data` plus `SessionMetadata`. |
+| `SessionMetadata` | `created`, `last_access`, `lifetime`. |
+| `SessionInfo` | One listing row: `session_id`, `created`, `last_access`, `descriptor`. |
+| `LoadedSession` | `record` plus `absolute_remaining`, returned by `load()`. |
+| `CookieSpec` | Cookie attributes; `cleared()` returns the deletion form. |
+| `Outcome` | What a response owes the session. Eight members. |
+| `Deadline` | `ABSENT` / `UNBOUNDED` — a deadline that is not a number. |
+
+---
+
+## Session errors
+
+```
+SessionError
+├── SessionConfigurationError    a missing or invalid setting
+└── SessionStoreError            the store failed; wraps the driver error
+```
+
+`SessionRejected` is not a `SessionError`: it carries a `valid_session()`
+rejection out of the dependency, and the handler that `.sessions()` registers
+returns its response.
+
+A failed **read** yields an empty session unless `session_fail_closed` is set.
+A failed **write** always raises. `count_for_subject` always raises, because
+there the store is the authorization answer.
+
+---
+
+## `SessionEvents`
+
+```python
+events = SessionEvents(redis, key_prefix="redis:fastapi", db=0)
+
+@events.on_session_end
+async def _(session_id: str, cause: Cause) -> None: ...
+```
+
+| Type | Values |
+|---|---|
+| `Cause` | `"idle"`, `"absolute"`. No third member — a revocation is a `DEL`, whose event an idle expiry also sends, so it is not observed. |
+| `Tier` | `"key"`, `"none"`. |
+| `Handler` | `Callable[[str, Cause], Awaitable[None]]`, for annotating what you register. |
+
+Started and stopped by the lifespan when `session_events_enabled` is set.
+`events.tier` is `"key"` when the server can deliver events and `"none"`
+otherwise — in which case handlers never fire. Requires
+`notify-keyspace-events` including `Ehx` — `E` for the `__keyevent@`
+channels, `h` for hash events and `x` for expiry events. `A` covers `h` and
+`x`. An idle timeout arrives as `hexpired`, an absolute timeout as `expired`.
