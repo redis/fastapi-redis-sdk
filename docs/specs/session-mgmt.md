@@ -358,8 +358,9 @@ records that the maintainers declined it. The parameter is absent on purpose.
 - The construction of the cookie flags (`httponly; samesite=…; secure`), the
   `add_vary_header("Cookie")` call, and the method to clear a cookie (the value
   `null`, with an `expires` date in 1970).
-- `itsdangerous.TimestampSigner`. We still sign, but we sign the ID and not the
-  payload.
+- Not `itsdangerous.TimestampSigner`. The cookie carries an unsigned 256-bit
+  identifier: a forged value names no record in Redis, so a signature would add
+  nothing to the rejection.
 - `MutableHeaders`, `HTTPConnection`, and `Secret`.
 
 **Starlette permits this. It is a connection point, not a workaround.** The `session`
@@ -1037,7 +1038,7 @@ our help?
 #### Core, P0. The release means nothing without these.
 
 - `SessionStore` (ABC) and `RedisSessionStore`
-- our `SessionMiddleware`, with a signed opaque ID in the cookie
+- our `SessionMiddleware`, with an unsigned opaque ID in the cookie
 - our own `Session` class, which tracks `popitem()` and `|=`
 - a load that happens with no call from the user, and only when the request carries a
   session cookie. **An earlier draft said "only when code touches the session". No

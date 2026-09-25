@@ -226,6 +226,15 @@ async def my_profile(user: User = Depends(get_current_user)):
     return user.profile
 ```
 
+!!! info "Session cookies and cached responses"
+    A response that only reads the session carries no `Set-Cookie` header, so a
+    cache that stores it cannot hand one user's session cookie to another. The
+    session cookie's `Max-Age` therefore follows the absolute lifetime, not the
+    idle timeout, so reads never need to resend the cookie to keep it valid
+    ([Two clocks](sessions.md#two-clocks-both-enforced-by-redis)). Redis still
+    enforces the idle timeout, so a cookie that outlives an idle session grants
+    nothing.
+
 ### Testing
 
 The DI factories integrate with FastAPI's `dependency_overrides`, so

@@ -535,22 +535,27 @@ class TestEncryptionSeam:
 
 
 class TestCookieMaxAgeInEveryBranch:
-    """§11 requires ``min(idle, HTTL(a))`` asserted in every branch.
+    """§11 requires the cookie's ``max-age`` asserted in every branch.
 
     Only ``idle < absolute`` was covered, so replacing the whole computation
     with ``settings.session_idle_ttl`` kept the suite green.
+
+    The value is the absolute remainder, never the idle clock.  The idle clock
+    slides on every request, but read-only responses send no cookie, so a
+    cookie sized by it expired while the record was alive (research §6 of
+    ``session-di-factory-research.md``).
     """
 
     @pytest.mark.parametrize(
         ("idle", "absolute", "expected"),
         [
-            (60, 600, "60"),  # idle is nearer
-            (1800, 60, "60"),  # the absolute remainder truncates it
+            (60, 600, "600"),  # the idle clock is ignored, even when nearer
+            (1800, 60, "60"),  # the absolute remainder
             (0, 600, "600"),  # no idle clock
             (0, 0, ""),  # cookie-only: the browser decides
         ],
     )
-    def test_max_age_takes_the_nearer_deadline(
+    def test_max_age_follows_the_absolute_deadline(
         self, fake_async_redis, monkeypatch, idle, absolute, expected
     ) -> None:
         get_settings.cache_clear()

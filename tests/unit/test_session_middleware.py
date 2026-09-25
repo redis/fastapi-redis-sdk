@@ -149,8 +149,9 @@ class TestWriteAndRoundTrip:
         assert morsel["httponly"] is True
         assert morsel["samesite"] == "Lax"
         assert morsel["path"] == "/"
-        # min(idle, absolute remaining) - the idle clock is the shorter one.
-        assert int(morsel["max-age"]) == 60
+        # The absolute remainder, not the shorter idle clock: a read-only
+        # response sends no cookie, so an idle-sized one would expire early.
+        assert int(morsel["max-age"]) == 600
 
 
 class TestAutomaticRotation:

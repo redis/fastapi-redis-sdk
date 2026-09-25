@@ -102,9 +102,11 @@ browser drops when it closes.
 
 The cookie's
 [`Max-Age`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#max-agenumber)
-is `min(idle, absolute remaining)`, and both numbers come from Redis rather than
-from your process - so a container with a skewed clock cannot produce a cookie
-that outlives its record and signs a user out with no explanation.
+is the time left on the absolute clock, and the number comes from Redis rather
+than from your process. It does not follow the idle clock: a read-only request
+sends no cookie, so an idle-sized cookie would expire while the user is still
+active. After an idle timeout the browser keeps a cookie that no longer names a
+session, and the next request with it gets an empty session.
 
 ---
 

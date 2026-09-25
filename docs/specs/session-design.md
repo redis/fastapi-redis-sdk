@@ -24,7 +24,7 @@ item is excluded. Each row carries an ID so a commit, a test or a review comment
 | F-6  | Expiry         | Cookie `max-age` derives from the same server-side numbers as the record. Redis can eventually reclaim what a closed browser abandoned.                                                                                                                    |
 | F-7  | Reverse lookup | A session may be bound to a subject, which need not be a user. List and count a subject's live sessions, each with a descriptor, which keeps all the needed data, without having to consult the straight-record.                                           |
 | F-8  | Reverse lookup | A listing never reports a session that has already died. Reads to the session remove dead entries; writes re-assert lost ones.                                                                                                                             |
-| F-9  | Transport      | The cookie carries a signed opaque identifier and no session data. An invalid value is rejected and yields a new session.                                                                                                                                  |
+| F-9  | Transport      | The cookie carries an unsigned opaque identifier and no session data. An invalid value is rejected and yields a new session.                                                                                                                               |
 | F-10 | Transport      | Cookie name, `Domain`, `Path`, `SameSite`, `Secure` and `HttpOnly` are configurable. `Vary: Cookie` is emitted whenever the response **may vary by cookie** — the session was accessed and the application has not declared the response independent of it. Merged into any existing `Vary`, never appended as a second header. |
 | F-11 | API            | One call enables the feature. A dict-like dependency needs no load or save, and `request.session` behaves as before, so existing code and Authlib run unchanged.                                                                                           |
 | F-12 | API            | The store exposes rotate, revoke, revoke-by-ID, revoke-all, list and count. Both dependencies resolve through `Depends`, so `dependency_overrides` works.                                                                                                  |
@@ -599,8 +599,8 @@ middleware is the last place in the chain that can still perform an `await`.
 The application never sees the difference. An expired session, a revoked one and an absent
 one are the same thing to a caller.
 
-The cookie `max-age` for the response is `min(idle, remaining a)`, and both numbers came
-from Redis rather than from our own clock.
+The cookie `max-age` for the response is the remaining `a`, which came from Redis rather
+than from our own clock. Section 6 explains why the idle clock is left out.
 
 ### 4.2 After the application, at `http.response.start`
 
@@ -925,21 +925,31 @@ strictly linearizable, and the store's abstract primitives leave room to add it.
 Section 3.2 puts each clock on its own hash field, so **Redis enforces both and the store
 computes neither**. What remains here is the cookie, which Redis cannot enforce.
 
-The cookie `max-age` must agree with whichever clock will fire first:
+The cookie `max-age` follows the absolute clock only:
 
 ```
-max_age = min(idle_ttl, HTTL(key, "a"))
+max_age = HTTL(key, "a")
 ```
 
-Both numbers come from Redis — the configured idle window, and the absolute remainder
-that the server itself is counting down. Nothing is derived from the application's own
-clock, so a container with a skewed clock cannot produce a cookie that disagrees with the
-record.
+The number comes from Redis, which is counting it down. Nothing is derived from the
+application's own clock, so a container with a skewed clock cannot produce a cookie that
+disagrees with the record.
 
-**If the cookie and the record ever disagree, the browser deletes a cookie whose session
-is still alive, and the user is signed out with no cause and no log line.** Section 8.3.2
-of `session-mgmt.md` records that failure. Deriving both from the same two server-side
-numbers is what prevents it.
+**The cookie must never expire before its session.** If it does, the browser deletes a
+cookie whose session is still alive, and the user is signed out with no cause and no log
+line. Section 8.3.2 of `session-mgmt.md` records that failure.
+
+**Why not `min(idle, HTTL(key, "a"))`.** An earlier version used it, and it caused exactly
+that failure. The idle clock slides on every request, but a read-only response sends no
+cookie (Section 4.2). So a cookie sized by the idle clock expired `idle` seconds after the
+last *write*, while the record was still alive, and a user who only read was signed out
+while active. The absolute clock never slides, so a cookie sent on any write stays correct
+until the record's last possible moment, and no read has to resend it. Research §6 of
+`session-di-factory-research.md` has the evidence and the options that were weighed.
+
+The price: after an idle timeout the browser keeps a dead cookie until the absolute
+deadline. Redis still enforces the idle clock, so the dead ID grants nothing; each request
+that carries it costs one round trip, and the first one deletes the half-dead key.
 
 In cookie-only mode the cookie carries no `max-age` at all and the browser decides.
 
@@ -1542,7 +1552,9 @@ not support them either, so they could not have been covered here in any case.
   keeps the absolute deadline absolute, so assert it directly rather than inferring it.
 - Both clocks, independently: idle expiry while the absolute clock still has time, and
   absolute expiry despite continuous activity.
-- Cookie `max-age` equal to `min(idle, HTTL(a))`, in every branch.
+- Cookie `max-age` equal to `HTTL(a)`, in every branch, never the idle clock.
+- Read-only requests inside the idle window, for longer than the idle window in total,
+  keep the user signed in (`tests/integration/test_session_cookie_expiry.py`).
 - Session-only mode: no `max-age`, and `gc_ttl` on **both** fields.
 - `refresh_on_load=False` restoring the second round trip and refreshing only on access.
   **Assert that the idle clock actually advances under this setting** — an earlier draft
