@@ -1,16 +1,16 @@
 """Redis-backed session store.
 
-Two keys, both hashes with a time-to-live on each field::
+Two keys, both hashes::
 
-    redis:fastapi:session:<sid>          field "a" = "1"        TTL = absolute
+    redis:fastapi:session:<sid>          key TTL = absolute
                                          field "d" = <envelope> TTL = idle
     redis:fastapi:sessions-of:<subject>  field <sid> = <descriptor>
                                                                 TTL = absolute
 
-Splitting the two clocks across two fields is what makes "a session outlives
-its absolute deadline" unreachable rather than merely unlikely: Redis enforces
-both deadlines and this module computes neither.  Writing the payload touches
-field ``d`` alone, so no number of writes can extend field ``a``.
+Each clock has its own TTL, and Redis enforces both: this module computes
+neither.  At the absolute deadline Redis deletes the whole key, so no reader
+can serve a session past it, whatever it asks for.  Writing the payload
+touches field ``d`` alone, so no number of writes can extend the key's TTL.
 
 See ``docs/specs/session-design.md`` Sections 3 and 4.
 """
@@ -66,14 +66,10 @@ STORE_ERRORS: tuple[type[BaseException], ...] = (
 # down.  ``_observe`` counts both as one failed operation.
 OBSERVED_ERRORS: tuple[type[BaseException], ...] = (SessionStoreError, *STORE_ERRORS)
 
-# Hash field names.  Two characters, and identical in every session key.
-# Section 13.2: a uniform schema is what a future compact-hash encoding would
-# reward, and a short name is fewer bytes on the wire meanwhile.
-FIELD_ABSOLUTE = "a"
+# The payload's hash field name.  One character, and identical in every
+# session key.  Section 13.2: a uniform schema is what a future compact-hash
+# encoding would reward, and a short name is fewer bytes on the wire meanwhile.
 FIELD_DATA = "d"
-
-# The value of field ``a`` is never read - the field exists for its TTL alone.
-_ABSOLUTE_MARKER = "1"
 
 
 class Deadline(Enum):
@@ -84,23 +80,25 @@ class Deadline(Enum):
     the base class branches on both, so neither may be smuggled through as a
     negative integer.
 
-    An earlier version passed Redis's own ``HTTL`` sentinels - ``-2`` and
+    An earlier version passed Redis's own ``TTL`` sentinels - ``-2`` and
     ``-1`` - straight through, which quietly made "reproduce this Redis
     encoding" part of the contract every other backend had to satisfy, without
     the ``_read`` docstring ever saying so.
     """
 
     ABSENT = auto()
-    """No deadline field, or no key at all.  The session does not exist."""
+    """No key at all.  The session does not exist."""
 
     UNBOUNDED = auto()
-    """The field exists with no expiry.  Unreachable by construction - this
-    store always gives it one - so it means something else wrote the key."""
+    """The key exists with no expiry.  A create always sets one, so this is a
+    key recreated by a write that landed after the session ended - a save
+    racing the deadline or a revocation - or one written by something else.
+    Either way the session is over."""
 
 
-# Redis's own answers, mapped to the above by ``_ttl``.
-_HTTL_NO_FIELD = -2
-_HTTL_NO_EXPIRY = -1
+# Redis's own ``TTL`` answers, mapped to the above by ``_ttl``.
+_TTL_NO_KEY = -2
+_TTL_NO_EXPIRY = -1
 
 # Characters a session ID may contain: the alphabet of ``secrets.token_urlsafe``.
 _ID_ALPHABET = frozenset(
@@ -259,7 +257,7 @@ class SessionState:
 class LoadedSession:
     """A live session, plus the deadline Redis is counting down for it.
 
-    ``absolute_remaining`` comes from ``HTTL`` on field ``a`` - the server's
+    ``absolute_remaining`` comes from ``TTL`` on the session key - the server's
     own number, never one this process computed.  Section 6 needs it to size
     the cookie's ``max-age``, so the cookie cannot expire before the record.
     """
@@ -408,16 +406,16 @@ class SessionStore(ABC):
         """TTL for field ``d``.
 
         ``session_idle_ttl=0`` disables the idle clock, and the field then
-        falls back to ``gc_ttl`` rather than being left unexpiring.  Section
-        3.2: a field with no TTL breaks the meaning of ``HTTL``'s ``-2``.
+        falls back to ``gc_ttl`` rather than being left unexpiring, so Redis
+        can always collect an abandoned key.
         """
         return self._idle_ttl or self._gc_ttl
 
     @property
     def absolute_seconds(self) -> int:
-        """TTL for field ``a``, set once at creation and never refreshed.
+        """TTL for the session key, set once at creation and never refreshed.
 
-        ``session_absolute_ttl=0`` disables the absolute clock, and the field
+        ``session_absolute_ttl=0`` disables the absolute clock, and the key
         then falls back to ``gc_ttl`` for the same reason as above.
         """
         return self._absolute_ttl or self._gc_ttl
@@ -581,10 +579,9 @@ class SessionStore(ABC):
         ``session_refresh_on_load=False``.  The idle clock then advances only
         when the response writes.
 
-        The two answers are read **as a pair**.  Neither one is a sentinel on
-        its own: ``HTTL`` returns ``-2`` both for "this field expired" and for
-        "there is no such key", so reading it alone marks every session in a
-        deployment with no absolute limit as already dead.
+        The session is alive only when **both** answers say so: the payload is
+        present and the key has time left.  Anything else that finds a key
+        deletes it, so the index entry can follow.
 
         Raises:
             SessionStoreError: If the record exists but cannot be decoded, or
@@ -602,26 +599,14 @@ class SessionStore(ABC):
                 self._read_failed(exc)
                 return None
 
-        if absolute_ttl is Deadline.UNBOUNDED:
-            # Unreachable by construction: every write gives field "a" a TTL.
-            # Reaching it means something wrote the key outside this store, so
-            # say so loudly and treat the session as absent rather than guess.
-            logger.error(
-                "Session key has a field 'a' with no expiry, which this store "
-                "never writes. Treating the session as absent. Key was "
-                "written by something else, or by an older version."
-            )
-            await self._safe_delete(session_id)
-            return None
-
         alive_until = absolute_ttl if isinstance(absolute_ttl, int) else 0
         if raw is None or alive_until <= 0:
-            # Rows two and four of the state table: a half-dead key, alive on
-            # one clock and dead on the other. Delete it so the index entry can
+            # A key that exists but is not a live session: a payload with no
+            # deadline, which a save recreated after the session ended, or a
+            # deadline with no payload. Delete it so the index entry can
             # follow, rather than leaving a candidate that every later
-            # verification has to reject. Row three - dead on both - is simply
-            # absent, and there is nothing to remove.
-            half_dead = raw is not None or alive_until > 0
+            # verification has to reject. No key at all is simply absent.
+            half_dead = raw is not None or absolute_ttl is not Deadline.ABSENT
             if half_dead:
                 await self._safe_delete(session_id)
             record_session_operation(
@@ -635,7 +620,7 @@ class SessionStore(ABC):
     async def create(self, session_id: str, record: SessionRecord) -> None:
         """Write a session that does not exist yet, starting both clocks.
 
-        The only method that ever writes field ``a``.  Use it for a first
+        The only method that ever sets the key's TTL.  Use it for a first
         write and for the new half of a rotation; use :meth:`save` for every
         subsequent write.
 
@@ -648,18 +633,13 @@ class SessionStore(ABC):
         """Update an existing session's payload, and only its payload.
 
         **This is N-6, and the method split is what makes it structural.**
-        There is no argument to this method that could write field ``a``, so
+        There is no argument to this method that could set the key's TTL, so
         an update cannot extend the absolute deadline and - the case that
         matters - cannot bring it back after it has expired.
 
-        An earlier version wrote ``a`` conditionally on every save, reasoning
-        that ``FNX`` protects an existing field.  It does, but an *expired*
-        field is an absent field, so a request whose load saw ``a`` alive and
-        whose write landed after it lapsed recreated the deadline with a full
-        fresh lifetime.  The window is one request long and it recurs every
-        cycle, so an actively-used session never died.  Now such a write
-        leaves a key holding ``d`` with no ``a``, which the next load reads as
-        row two of the state table and deletes.  The session ends, which is
+        A write that lands after the key expired, or after it was revoked,
+        recreates the key with ``d`` and no TTL.  The next load reads that as
+        :attr:`Deadline.UNBOUNDED` and deletes it.  The session ends, which is
         the correct outcome: its deadline passed.
 
         Raises:
@@ -675,8 +655,8 @@ class SessionStore(ABC):
         """Shared body of :meth:`create` and :meth:`save`.
 
         **This is N-6, and the flag is what makes it structural.**  An update
-        writes field ``d`` and nothing else, so it cannot extend field ``a``
-        and - the case that matters - it cannot bring ``a`` back after it has
+        writes field ``d`` and nothing else, so it cannot extend the key's TTL
+        and - the case that matters - it cannot bring it back after it has
         expired.
 
         *absolute* is the deadline TTL on a create, and ``None`` on an update.
@@ -1164,9 +1144,9 @@ class SessionStore(ABC):
     ) -> None:
         """Write the payload with an idle TTL.
 
-        *absolute* is ``None`` on an update, and the deadline field must then
-        be left completely alone - neither refreshed nor recreated.  When it
-        is an int this is a create, and the deadline field takes that TTL.
+        *absolute* is ``None`` on an update, and the deadline must then be
+        left completely alone - neither refreshed nor recreated.  When it is
+        an int this is a create, and the session takes that deadline.
         """
 
     @abstractmethod
@@ -1302,7 +1282,7 @@ class RedisSessionStore(SessionStore):
             pipe.execute_command("HGET", key, FIELD_DATA)
             pipe.execute_command("HEXPIRE", key, refresh_idle, "FIELDS", 1, FIELD_DATA)
             reads = 2
-        pipe.execute_command("HTTL", key, "FIELDS", 1, FIELD_ABSOLUTE)
+        pipe.execute_command("TTL", key)
         replies = await pipe.execute()
         return _first(replies[0]), _ttl(replies[reads])
 
@@ -1312,27 +1292,6 @@ class RedisSessionStore(SessionStore):
         key = self.session_key(session_id)
         modern = await self._has_hsetex()
         pipe = self._redis.pipeline(transaction=False)
-        if absolute is not None:
-            # A create. FNX still guards against two concurrent creations of
-            # the same ID racing; it is not what keeps the deadline absolute.
-            # The caller not passing an absolute on an update is what does.
-            if modern:
-                pipe.execute_command(
-                    "HSETEX",
-                    key,
-                    "FNX",
-                    "EX",
-                    absolute,
-                    "FIELDS",
-                    1,
-                    FIELD_ABSOLUTE,
-                    _ABSOLUTE_MARKER,
-                )
-            else:
-                pipe.execute_command("HSETNX", key, FIELD_ABSOLUTE, _ABSOLUTE_MARKER)
-                pipe.execute_command(
-                    "HEXPIRE", key, absolute, "NX", "FIELDS", 1, FIELD_ABSOLUTE
-                )
         if modern:
             pipe.execute_command(
                 "HSETEX", key, "EX", idle, "FIELDS", 1, FIELD_DATA, payload
@@ -1341,6 +1300,12 @@ class RedisSessionStore(SessionStore):
             # HSET clears a field's TTL, so the idle clock is reapplied here.
             pipe.execute_command("HSET", key, FIELD_DATA, payload)
             pipe.execute_command("HEXPIRE", key, idle, "FIELDS", 1, FIELD_DATA)
+        if absolute is not None:
+            # A create. EXPIRE on a missing key does nothing, so the deadline
+            # follows the write that creates the key. A pipeline cut between
+            # the two leaves a key with no TTL, which the load treats as over;
+            # the write raised, so no cookie names it anyway.
+            pipe.execute_command("EXPIRE", key, absolute)
         await pipe.execute()
 
     async def _expire(self, session_id: str, idle: int) -> None:
@@ -1402,40 +1367,28 @@ class RedisSessionStore(SessionStore):
         return int(await self._redis.hlen(self.index_key(subject)))
 
     async def _alive(self, session_ids: list[str]) -> set[str]:
-        """One pipelined ``HTTL`` per candidate, sent as a single batch.
+        """One pipelined ``HTTL`` and ``TTL`` per candidate, in a single batch.
 
-        **Both clocks are checked, not one.**  A session is alive only while
-        field ``d`` and field ``a`` both have time left, and the two die for
-        different reasons: ``d`` when the user goes idle, ``a`` when the
-        absolute deadline passes however active they were.
-
-        Asking about ``d`` alone would report a session past its absolute
-        deadline as live, because ``d`` may have been refreshed minutes ago and
-        still hold most of the idle window.  It is tempting to argue that the
-        case cannot arise - the index entry carries the same absolute deadline
-        as field ``a``, so it should expire at the same moment and never become
-        a candidate.  That is true today and it is not a guarantee: it holds
-        only while every write re-asserts the entry with the *remaining*
-        absolute time, which is one refactor away from being wrong.  Asking
-        about both fields costs nothing and does not depend on the argument.
+        A session is alive only while field ``d`` and the key both have time
+        left - the same rule as the load.  Redis deletes the key at the
+        absolute deadline, so ``d`` alone is usually enough; the key's TTL
+        also catches a key a late save recreated with no deadline, which the
+        load treats as over.  One more command in the same round trip.
         """
         if not session_ids:
             return set()
         pipe = self._redis.pipeline(transaction=False)
         for session_id in session_ids:
-            pipe.execute_command(
-                "HTTL",
-                self.session_key(session_id),
-                "FIELDS",
-                2,
-                FIELD_DATA,
-                FIELD_ABSOLUTE,
-            )
+            key = self.session_key(session_id)
+            pipe.execute_command("HTTL", key, "FIELDS", 1, FIELD_DATA)
+            pipe.execute_command("TTL", key)
         replies = await pipe.execute()
         return {
             session_id
-            for session_id, reply in zip(session_ids, replies, strict=True)
-            if _all_ttls_positive(reply)
+            for session_id, idle, deadline in zip(
+                session_ids, replies[0::2], replies[1::2], strict=True
+            )
+            if _has_time_left(idle) and _has_time_left(deadline)
         }
 
 
@@ -1454,31 +1407,32 @@ def _first(reply: Any) -> bytes | str | None:
     return str(first)
 
 
-def _all_ttls_positive(reply: Any) -> bool:
-    """Whether every TTL in a multi-field ``HTTL`` reply has time left.
+def _has_time_left(reply: Any) -> bool:
+    """Whether a ``TTL`` reply, or a one-field ``HTTL`` reply, is positive.
 
     An empty or malformed reply reads as "not alive": the safe answer for a
     liveness check is to omit the session rather than to report one that may
     already be gone.
     """
-    if not isinstance(reply, (list, tuple)) or not reply:
+    value = reply[0] if isinstance(reply, (list, tuple)) and reply else reply
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
         return False
-    return all(value is not None and int(value) > 0 for value in reply)
 
 
 def _ttl(reply: Any) -> int | Deadline:
-    """Map ``HTTL``'s one-element array reply onto the deadline contract.
+    """Map the session key's ``TTL`` reply onto the deadline contract.
 
     This is the only place that knows what ``-1`` and ``-2`` mean, which is
     the point: the encoding stays inside the Redis backend.
     """
-    value = reply[0] if isinstance(reply, (list, tuple)) and reply else reply
-    if value is None:
+    if reply is None:
         return Deadline.ABSENT
-    seconds = int(value)
-    if seconds == _HTTL_NO_EXPIRY:
+    seconds = int(reply)
+    if seconds == _TTL_NO_EXPIRY:
         return Deadline.UNBOUNDED
-    if seconds == _HTTL_NO_FIELD:
+    if seconds == _TTL_NO_KEY:
         return Deadline.ABSENT
     return seconds
 

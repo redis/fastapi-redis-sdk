@@ -24,7 +24,6 @@ from redis_fastapi.deps import (
 )
 from redis_fastapi.exceptions import SessionStoreError
 from redis_fastapi.session_backend import (
-    FIELD_ABSOLUTE,
     RedisSessionStore,
     SessionStoreProtocol,
 )
@@ -92,12 +91,13 @@ def _plain_http(monkeypatch):
 
 
 class TestTheAbsoluteDeadlineCannotBeResurrected:
-    """N-6, the case ``FNX`` does not cover.
+    """N-6: a save that lands after the deadline must not restore it.
 
-    An expired field is an *absent* field, so a conditional write recreated
-    the deadline with a full fresh lifetime whenever a request straddled it.
-    The window is one request long and recurs every cycle, so an actively
-    used session never died.
+    A request can load a live session and write it back after the key
+    expired.  If that write set a deadline, it would set a full fresh
+    lifetime; the window is one request long and recurs every cycle, so an
+    actively used session would never die.  An expired key is an absent key,
+    so the case is reproduced with ``DEL``.
     """
 
     async def test_a_save_after_the_deadline_lapsed_does_not_restore_it(
@@ -107,24 +107,23 @@ class TestTheAbsoluteDeadlineCannotBeResurrected:
         key = store.session_key(sid)
         await store.create(sid, store.new_record({"user_id": 42}))
 
-        await fake_async_redis.execute_command("HDEL", key, FIELD_ABSOLUTE)
+        await fake_async_redis.delete(key)
         await store.save(sid, store.new_record({"user_id": 42}))
 
-        reply = await fake_async_redis.execute_command(
-            "HTTL", key, "FIELDS", 1, FIELD_ABSOLUTE
+        assert await fake_async_redis.ttl(key) == -1, (
+            "the absolute deadline was recreated"
         )
-        assert int(reply[0]) == -2, "the absolute deadline was recreated"
 
     async def test_such_a_session_is_dead_on_the_next_load(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = store.new_id()
+        key = store.session_key(sid)
         await store.create(sid, store.new_record({"user_id": 42}))
-        await fake_async_redis.execute_command(
-            "HDEL", store.session_key(sid), FIELD_ABSOLUTE
-        )
+        await fake_async_redis.delete(key)
         await store.save(sid, store.new_record({"user_id": 42}))
         assert await store.load(sid) is None
+        assert await fake_async_redis.exists(key) == 0
 
     async def test_save_has_no_argument_that_could_write_the_deadline(self) -> None:
         """The guarantee is structural, not a runtime check."""
@@ -542,8 +541,8 @@ class TestCookieMaxAgeInEveryBranch:
 
     The value is the absolute remainder, never the idle clock.  The idle clock
     slides on every request, but read-only responses send no cookie, so a
-    cookie sized by it expired while the record was alive (research §6 of
-    ``session-di-factory-research.md``).
+    cookie sized by it expired while the record was alive (§6 of
+    ``session-design.md``).
     """
 
     @pytest.mark.parametrize(

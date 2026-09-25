@@ -11,7 +11,6 @@ import pytest
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.session_backend import (
-    FIELD_ABSOLUTE,
     FIELD_DATA,
     RedisSessionStore,
 )
@@ -83,15 +82,18 @@ class TestTheIndexIsAnUpperBound:
         listed = {info.session_id for info in await store.list_for_subject("42")}
         assert listed == {live}
 
-    async def test_a_session_past_its_absolute_deadline_is_not_reported(
+    async def test_a_key_with_no_deadline_is_not_reported(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
-        """Why liveness checks both clocks, not just the idle one."""
+        """Why liveness checks the key's TTL, not just the idle field.
+
+        A save that lands after the session ended recreates the key with a
+        fresh ``d`` and no deadline.  The load treats that as over, so the
+        listing must too.
+        """
         live = await _make(store, "42")
-        absolute_dead = await _make(store, "42")
-        await fake_async_redis.execute_command(
-            "HDEL", store.session_key(absolute_dead), FIELD_ABSOLUTE
-        )
+        no_deadline = await _make(store, "42")
+        await fake_async_redis.persist(store.session_key(no_deadline))
 
         listed = {info.session_id for info in await store.list_for_subject("42")}
         assert listed == {live}

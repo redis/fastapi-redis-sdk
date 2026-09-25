@@ -609,33 +609,21 @@ class SessionMiddleware:
             # not in the record ``rotate`` wrote, so catch it here.
             if session.modified:
                 await self._write(store, state, settings, create=False)
-            return self._with_cookie(
-                headers,
-                settings,
-                value=store_state.session_id or "",
-                absolute=store.absolute_seconds,
-            )
+            return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.ROTATE:
-            new_id = await store.rotate(
+            await store.rotate(
                 store_state,
                 subject=self._subject_of_quietly(session) or None,
                 descriptor=self._descriptor(state),
             )
-            return self._with_cookie(
-                headers, settings, value=new_id, absolute=store.absolute_seconds
-            )
+            return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.WRITE:
             await self._write(
                 store, state, settings, create=store_state.session_id is None
             )
-            return self._with_cookie(
-                headers,
-                settings,
-                value=store_state.session_id or "",
-                absolute=store_state.absolute_remaining,
-            )
+            return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.TOUCH:
             await store.touch(cast(str, state.loaded_id))
@@ -677,12 +665,16 @@ class SessionMiddleware:
         self,
         headers: list[tuple[bytes, bytes]],
         settings: Any,
+        store_state: SessionState | None = None,
         *,
-        value: str = "",
-        absolute: int | None = None,
         clear: bool = False,
     ) -> list[tuple[bytes, bytes]]:
         """Append one ``Set-Cookie``, always through the configured builder.
+
+        The value and ``max-age`` both come from *store_state*: its identifier,
+        and what the server says is left of its absolute clock.  A create, a
+        rotation and a load each leave that number there, so one source serves
+        every live cookie.
 
         Deletion goes through the same seam as creation.  A browser removes a
         cookie only when the clearing header repeats every scoping attribute,
@@ -690,7 +682,12 @@ class SessionMiddleware:
         prefix - the seam's whole purpose - has to be consulted here too.  It
         was not, and the result was a sign-out that left the cookie in place.
         """
-        spec = self._spec(settings, value, absolute)
+        if store_state is None:
+            spec = self._spec(settings, "", None)
+        else:
+            spec = self._spec(
+                settings, store_state.session_id or "", store_state.absolute_remaining
+            )
         if clear:
             spec = spec.cleared()
         headers.append((b"set-cookie", self._cookie_builder(spec).encode()))
@@ -758,18 +755,14 @@ class SessionMiddleware:
         slides, so a cookie sent on any write stays correct until the record's
         last possible moment.  Redis still enforces the idle clock.
         """
-        idle = settings.session_idle_ttl
-        max_age: int | None
-        if not idle and not settings.session_absolute_ttl:
-            max_age = None  # cookie-only mode: the browser decides
-        elif absolute is None:
-            max_age = idle or None
-        else:
-            max_age = absolute
+        cookie_only = (
+            not settings.session_idle_ttl and not settings.session_absolute_ttl
+        )
         return CookieSpec(
             name=settings.session_cookie_name,
             value=value,
-            max_age=max_age,
+            # Cookie-only mode sends no max-age: the browser decides.
+            max_age=None if cookie_only else absolute,
             path=settings.session_cookie_path,
             domain=settings.session_cookie_domain,
             secure=settings.session_cookie_https_only,

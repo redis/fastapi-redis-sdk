@@ -386,8 +386,8 @@ def record_session_event(*, cause: str, result: str) -> None:
 
     Args:
         cause: ``idle`` or ``absolute``.  There is no third value: a
-            revocation is a ``DEL``, which publishes no subkey notification,
-            so no handler is ever called with one.
+            revocation is a ``DEL``, which the session-event subscriber does
+            not observe, so no handler is ever called with one.
         result: delivered or dropped.
     """
     if not _state.enabled or _state.session_events is None:

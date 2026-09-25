@@ -81,11 +81,13 @@ request and the two results are compared by value - and it must return a
 | `session_idle_ttl` | 30 min | Time since the last request carrying the cookie |
 | `session_absolute_ttl` | 8 h | Time since the session was created, however active the user |
 
-They live on two separate hash fields with their own
-[expirations](https://redis.io/docs/latest/commands/hexpire/), so **Redis
-enforces both and this library computes neither**. Writing the payload touches
-one field and never the other, so no number of writes can extend the absolute
-deadline.
+The idle clock is the [expiration](https://redis.io/docs/latest/commands/hexpire/)
+of the hash field that holds the payload, and the absolute clock is the
+[expiration](https://redis.io/docs/latest/commands/expire/) of the session key
+itself. So **Redis enforces both and this library computes neither**. At the
+absolute deadline Redis deletes the whole key, however recently the payload
+was refreshed. Writing the payload never touches the key's expiration, so no
+number of writes can extend the absolute deadline.
 
 The absolute clock is the one that matters against a stolen session. An
 [idle timeout](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#idle-timeout)
@@ -202,7 +204,7 @@ request that touched the session.
 
 ---
 
-## Real-time session events (optional, Redis 8.8+)
+## Real-time session events (optional)
 
 Close a WebSocket the moment a session ends, instead of finding out on the next
 HTTP request:
@@ -220,34 +222,31 @@ await events.start()
 ```
 
 `Cause` has exactly those two members, so an exhaustive `match` over it stays
-exhaustive. A revocation is not among them: it is a `DEL`, and `DEL` publishes
-no subkey notification. Sign a user out through `revoke()` and you already
-know it happened - the event stream is for the deaths nobody asked for.
-`Handler` is exported too, for annotating the callable you register.
+exhaustive. A revocation is not among them: it is a `DEL`, and Redis publishes
+the same `del` event when an idle expiry empties the key, so the two cannot be
+told apart. Sign a user out through `revoke()` and you already know it
+happened - the event stream is for the deaths nobody asked for. `Handler` is
+exported too, for annotating the callable you register.
 
-This needs Redis 8.8 for hash subkey
+This uses
 [keyspace notifications](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/),
-and it needs the server configured for them with
+which work on every supported Redis version, and it needs the server
+configured for them with
 [`CONFIG SET`](https://redis.io/docs/latest/commands/config-set/):
 
 ```
-CONFIG SET notify-keyspace-events Th
+CONFIG SET notify-keyspace-events Ehx
 ```
 
-Both characters matter. `h` is the hash class, and **`T`** is the
-`__subkeyevent@` channel - the one this library subscribes to. Redis 8.8 adds
-four subkey channels, `S`, `T`, `I` and `V`, and the other three deliver
-elsewhere: on a server set to `Sh` the subscription succeeds and no event ever
-arrives, so `events.tier` reports `"none"` and says why.
-
-All four are **independent of `K` and `E`** - setting
-[`KEA`](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#configuration)
-enables every standard keyspace event and still delivers none of these.
+`E` enables the `__keyevent@` channels, `h` the hash events and `x` the
+expiry events. An idle timeout arrives as `hexpired` - the payload field
+expired - and an absolute timeout as `expired` - the key expired. `A` covers
+both `h` and `x`, so a server already set to `KEA` needs nothing more.
 This library will never set the option for you: it is server-wide and affects
 every other application on the instance.
 
 !!! danger "The callback is best-effort, and silence is a possible outcome"
-    On a server below 8.8, one without the flags, or one where
+    On a server without the flags, or one where
     [`CONFIG GET`](https://redis.io/docs/latest/commands/config-get/) is
     unavailable - which is common on managed Redis - `events.tier` is `"none"`,
     one warning is logged at startup, and **your handlers never run**. Startup
@@ -258,7 +257,8 @@ every other application on the instance.
     well. [Redis Pub/Sub](https://redis.io/docs/latest/develop/pubsub/) is
     fire-and-forget: events sent while no subscriber is connected are lost, and
     an [expiry event](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#timing-of-expired-events)
-    fires when Redis removes the field rather than when the deadline passed.
+    fires when Redis removes the field or the key rather than when the
+    deadline passed.
 
     Nothing else depends on this. Expiry, revocation and the index all work
     identically with events switched off.
@@ -710,5 +710,6 @@ The standards and specifications this design follows:
   - why `maxmemory-policy` decides whether sessions survive
 - [Redis keyspace notifications](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/)
   - the delivery guarantees behind `SessionEvents`
-- [Redis hash field expiration](https://redis.io/docs/latest/commands/hexpire/)
-  - the mechanism the two clocks are built on
+- [Redis key expiration](https://redis.io/docs/latest/commands/expire/) and
+  [hash field expiration](https://redis.io/docs/latest/commands/hexpire/)
+  - the mechanisms the two clocks are built on

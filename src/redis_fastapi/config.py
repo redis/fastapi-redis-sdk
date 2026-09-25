@@ -240,9 +240,9 @@ class RedisSettings(BaseSettings):
         ge=0,
         description=(
             "Absolute clock, in seconds.  The session dies this long after "
-            "creation however active the user is.  Stored as the TTL of hash "
-            "field 'a', which is written once and never refreshed.  0 disables "
-            "it, and the field then takes session_gc_ttl."
+            "creation however active the user is.  Stored as the TTL of the "
+            "session key, which is set once and never refreshed.  0 disables "
+            "it, and the key then takes session_gc_ttl."
         ),
     )
     session_gc_ttl: int = Field(

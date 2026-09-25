@@ -490,12 +490,13 @@ async def _(session_id: str, cause: Cause) -> None: ...
 
 | Type | Values |
 |---|---|
-| `Cause` | `"idle"`, `"absolute"`. No third member — a revocation is a `DEL`, which publishes no subkey notification. |
-| `Tier` | `"field"`, `"none"`. |
+| `Cause` | `"idle"`, `"absolute"`. No third member — a revocation is a `DEL`, whose event an idle expiry also sends, so it is not observed. |
+| `Tier` | `"key"`, `"none"`. |
 | `Handler` | `Callable[[str, Cause], Awaitable[None]]`, for annotating what you register. |
 
 Started and stopped by the lifespan when `session_events_enabled` is set.
-`events.tier` is `"field"` when the server can deliver events and `"none"`
-otherwise — in which case handlers never fire. Requires Redis 8.8 and
-`notify-keyspace-events` including `Th` — `T` for the `__subkeyevent@`
-channel, `h` for hash events.
+`events.tier` is `"key"` when the server can deliver events and `"none"`
+otherwise — in which case handlers never fire. Requires
+`notify-keyspace-events` including `Ehx` — `E` for the `__keyevent@`
+channels, `h` for hash events and `x` for expiry events. `A` covers `h` and
+`x`. An idle timeout arrives as `hexpired`, an absolute timeout as `expired`.

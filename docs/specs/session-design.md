@@ -944,8 +944,9 @@ that failure. The idle clock slides on every request, but a read-only response s
 cookie (Section 4.2). So a cookie sized by the idle clock expired `idle` seconds after the
 last *write*, while the record was still alive, and a user who only read was signed out
 while active. The absolute clock never slides, so a cookie sent on any write stays correct
-until the record's last possible moment, and no read has to resend it. Research §6 of
-`session-di-factory-research.md` has the evidence and the options that were weighed.
+until the record's last possible moment, and no read has to resend it.
+`tests/integration/test_session_cookie_expiry.py` reproduces the failure against a real
+server and guards the fix.
 
 The price: after an idle timeout the browser keeps a dead cookie until the absolute
 deadline. Redis still enforces the idle clock, so the dead ID grants nothing; each request

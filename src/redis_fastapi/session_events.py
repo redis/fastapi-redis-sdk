@@ -10,11 +10,10 @@ that pays for it.
 
 *Nothing depends on it.*  Pub/Sub is fire-and-forget, events sent while no
 subscriber is connected are lost, and an expiry event fires when Redis removes
-the field rather than when the deadline passed.  So the index still prunes
-itself through field expiry and the load-time state table is still the
-authority on whether a session is alive.  Every guarantee in the store holds
-with this module switched off, which is why it is off by default and why it is
-the last thing to build.
+the field or the key rather than when the deadline passed.  So the index still
+prunes itself through field expiry and the load is still the authority on
+whether a session is alive.  Every guarantee in the store holds with this
+module switched off, which is why it is off by default.
 
 *It degrades to silence.*  On a server that cannot supply the events, handlers
 are registered and never called.  That is a deliberate choice with a sharp
@@ -37,16 +36,12 @@ from typing import Any, Literal
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 
-from redis_fastapi.session_backend import (
-    FIELD_ABSOLUTE,
-    FIELD_DATA,
-    STORE_ERRORS,
-)
+from redis_fastapi.session_backend import STORE_ERRORS
 from redis_fastapi.telemetry import record_session_event
 
 logger = logging.getLogger(__name__)
 
-Tier = Literal["none", "field"]
+Tier = Literal["none", "key"]
 
 # Two members, and there is no third.  ``Cause`` is a ``Literal`` in a public
 # callback signature, so it is a promise about which values a handler can be
@@ -54,51 +49,48 @@ Tier = Literal["none", "field"]
 # rewards must not be left with an arm that can never run and that mypy will
 # not let them delete.
 #
-# **Revocation is deliberately absent, and it is not a version problem.**
-# ``revoke`` is a ``DEL`` of the whole key, and ``DEL`` emits no subkey
-# notification at any Redis version - it is not among the commands that do,
-# and the mechanism forbids it structurally, because a subkey event is
-# published only when at least one subkey is present and a deleted key has
-# none left to name.  Observing a revocation needs a second subscription to
-# the key-level ``__keyevent@<db>__:del`` under different flags, which Section
-# 13.4 declined to build.  If that tier is ever added, widening this union is
-# the ordinary cost of widening any union - smaller than shipping a member
-# nothing can produce.
+# **Revocation is deliberately absent.**  ``revoke`` is a ``DEL`` of the whole
+# key, which publishes a ``del`` event - the same event Redis publishes when an
+# idle expiry empties the hash.  So a ``del`` cannot say whether the session
+# was revoked or went idle, and this module does not subscribe to it.  If a
+# revocation event is ever needed, widening this union is the ordinary cost of
+# widening any union - smaller than shipping a member nothing can produce.
 Cause = Literal["idle", "absolute"]
 
 # Exported, so a caller under mypy --strict can name the type of the callable
 # ``on_session_end`` requires them to pass.
 Handler = Callable[[str, Cause], Awaitable[None]]
 
-# Subkey notifications arrived in Redis 8.8.  There is no key-level tier here
-# on purpose: our session key has no key-level TTL - it dies as a side effect
-# of its last field expiring - so a key-level event carries no field name and
-# cannot separate an idle death from an absolute one.  That is most of what a
-# subscriber wants to know, so the ladder has two rungs, not three.
-_MIN_VERSION = (8, 8)
+# Hash-field expiry, and with it the ``hexpired`` event, arrived in Redis 7.4,
+# which is also this package's floor.
+_MIN_VERSION = (7, 4)
 
-# The channel that names both the key and the field.
-_CHANNEL = "__subkeyevent@{db}__:hexpired"
-
-# Flags that must be present in ``notify-keyspace-events``.
+# Two key-level channels, one for each clock.  The payload of both is the key
+# name, and nothing else.
 #
-# Redis 8.8 adds four subkey channels with a flag each - S for
-# ``__subkeyspace@``, T for ``__subkeyevent@``, I for ``__subkeyspaceitem@``
-# and V for ``__subkeyspaceevent@`` - and all four are **independent of K and
-# E**: enabling standard keyspace notifications does not enable these, and the
-# reverse holds too.  That is the commonest configuration mistake.
+# * ``hexpired``: a hash field expired.  Field ``d`` is the only field of a
+#   session key that has a TTL, so on a session key this is the idle clock.
+# * ``expired``: a key expired.  The absolute deadline is the session key's
+#   TTL, so on a session key this is the absolute clock.
 #
-# **Only T counts here, not any of the four.**  This module subscribes to
-# ``__subkeyevent@<db>__:hexpired`` and nothing else, so a server with S, I or
-# V but no T publishes to channels nobody is listening on.  Accepting any of
-# the four made ``tier`` report ``"field"`` on such a server while no event
-# could ever arrive - which defeats the one check the guide offers against
-# exactly that ("if prompt closure matters, check ``events.tier``").  Redis
-# accepts a subscription to any channel name, so nothing else notices.
-_SUBKEY_FLAG = "T"
-_HASH_FLAG = "h"
+# Neither fires for the other clock.  Checked against Redis 8.7: an idle
+# expiry publishes ``hexpired`` and then ``del`` - the hash is empty - and no
+# ``expired``; an absolute expiry publishes ``expired`` and no ``hexpired``.
+_IDLE_CHANNEL = "__keyevent@{db}__:hexpired"
+_ABSOLUTE_CHANNEL = "__keyevent@{db}__:expired"
 
-REQUIRED_CONFIG = "Th"
+# Flags that must be present in ``notify-keyspace-events``: ``E`` for the
+# ``__keyevent@`` channels, ``h`` for hash events, which include ``hexpired``,
+# and ``x`` for ``expired``.
+#
+# ``A`` is Redis's alias for every event class, ``h`` and ``x`` included, and
+# ``CONFIG GET`` reports it in place of the classes it covers: a server set to
+# ``KEA`` answers ``AKE``, with no literal ``h`` or ``x`` in it.
+_KEYEVENT_FLAG = "E"
+_EVENT_CLASSES = "hx"
+_ALL_CLASSES_ALIAS = "A"
+
+REQUIRED_CONFIG = "Ehx"
 
 
 class SessionEvents:
@@ -118,7 +110,7 @@ class SessionEvents:
         await events.stop()
 
     Attributes:
-        tier: ``"field"`` when the server can deliver events, ``"none"`` when
+        tier: ``"key"`` when the server can deliver events, ``"none"`` when
             it cannot.  Read it to decide whether a handler will ever run.
     """
 
@@ -141,9 +133,8 @@ class SessionEvents:
 
         The handler receives the session ID and the cause: ``"idle"`` when the
         user went quiet, ``"absolute"`` when the deadline passed however
-        active they were.  Distinguishing the two is the whole reason this
-        needs Redis 8.8, and they are the only two values - a revocation is a
-        ``DEL``, which publishes no subkey event.  See :data:`Cause`.
+        active they were.  They are the only two values - a revocation is a
+        ``DEL``, which this module does not observe.  See :data:`Cause`.
 
         Returns:
             *handler*, so this works as a decorator.
@@ -169,7 +160,7 @@ class SessionEvents:
         try:
             if not await self._version_ok():
                 return "none"
-            return "field" if await self._config_ok() else "none"
+            return "key" if await self._config_ok() else "none"
         except STORE_ERRORS as exc:
             logger.info("Could not probe session-event support: %s", exc)
             return "none"
@@ -185,8 +176,8 @@ class SessionEvents:
             parts.append(0)
         if tuple(parts) < _MIN_VERSION:
             logger.warning(
-                "Session events need Redis %d.%d or later for hash subkey "
-                "notifications; this server reports %s. Handlers will not "
+                "Session events need Redis %d.%d or later for hash-field "
+                "expiry events; this server reports %s. Handlers will not "
                 "fire. Everything else works unchanged.",
                 _MIN_VERSION[0],
                 _MIN_VERSION[1],
@@ -198,16 +189,16 @@ class SessionEvents:
     async def _config_ok(self) -> bool:
         config = await self._redis.config_get("notify-keyspace-events")
         flags = str(config.get("notify-keyspace-events", ""))
-        if _SUBKEY_FLAG not in flags or _HASH_FLAG not in flags:
+        classes_ok = _ALL_CLASSES_ALIAS in flags or all(
+            flag in flags for flag in _EVENT_CLASSES
+        )
+        if _KEYEVENT_FLAG not in flags or not classes_ok:
             logger.warning(
                 "Session events need notify-keyspace-events to include '%s' "
-                "(the __subkeyevent@ channel plus hash events); this server "
-                "has %r. Handlers will not fire. Note that 'T' specifically: "
-                "S, I and V enable the other three subkey channels, which "
-                "this module does not subscribe to, and all four are "
-                "independent of K and E. This library will not set the option "
-                "for you: it is server-wide and affects every other "
-                "application on the instance.",
+                "(the __keyevent@ channels, plus hash and expired events); "
+                "this server has %r. Handlers will not fire. This library "
+                "will not set the option for you: it is server-wide and "
+                "affects every other application on the instance.",
                 REQUIRED_CONFIG,
                 flags,
             )
@@ -246,14 +237,19 @@ class SessionEvents:
         subscriber per node - which the caller composes, because only the
         caller knows the topology.
         """
-        channel = _CHANNEL.format(db=self._db)
+        channels: dict[str, Cause] = {
+            _IDLE_CHANNEL.format(db=self._db): "idle",
+            _ABSOLUTE_CHANNEL.format(db=self._db): "absolute",
+        }
         try:
             pubsub = self._redis.pubsub()
-            await pubsub.subscribe(channel)
+            await pubsub.subscribe(*channels)
             async for message in pubsub.listen():
                 if message.get("type") != "message":
                     continue
-                await self._dispatch(message.get("data"))
+                cause = channels.get(_text(message.get("channel")))
+                if cause is not None:
+                    await self._dispatch(message.get("data"), cause)
         except asyncio.CancelledError:
             raise
         except STORE_ERRORS as exc:
@@ -261,11 +257,10 @@ class SessionEvents:
             # and stop; nothing downstream depends on this stream.
             logger.warning("Session event subscription ended: %s", exc)
 
-    async def _dispatch(self, data: Any) -> None:
-        parsed = self._parse(data)
-        if parsed is None:
+    async def _dispatch(self, data: Any, cause: Cause) -> None:
+        session_id = self._session_id(data)
+        if session_id is None:
             return
-        session_id, cause = parsed
         for handler in self._handlers:
             try:
                 await handler(session_id, cause)
@@ -277,42 +272,20 @@ class SessionEvents:
             else:
                 record_session_event(cause=cause, result="delivered")
 
-    def _parse(self, data: Any) -> tuple[str, Cause] | None:
-        """Pull the session ID and the cause out of one notification.
+    def _session_id(self, data: Any) -> str | None:
+        """The session ID in one notification, or ``None`` if it names none.
 
-        The payload is ``<key_len>:<key>|<len>:<subkey>[,...]`` - length
-        prefixed so a key or field containing the delimiters stays parseable.
-        Anything that does not match this store's key prefix is another
-        application's hash and is ignored.
+        The payload is the key name.  Anything that does not start with this
+        store's session prefix is another application's key - or this store's
+        index, whose entries expire constantly and are not session deaths - and
+        is ignored.
         """
-        text = data.decode() if isinstance(data, bytes) else str(data)
-        key_part, _, field_part = text.partition("|")
-        key = _strip_length(key_part)
-        if key is None or not key.startswith(self._session_prefix):
+        key = _text(data)
+        if not key.startswith(self._session_prefix):
             return None
-        session_id = key[len(self._session_prefix) :]
-
-        fields = {
-            stripped
-            for chunk in field_part.split(",")
-            if (stripped := _strip_length(chunk)) is not None
-        }
-        # Both fields expiring at once is the absolute deadline arriving: the
-        # idle clock is the shorter one, so it only ever expires alone.
-        if FIELD_ABSOLUTE in fields:
-            return session_id, "absolute"
-        if FIELD_DATA in fields:
-            return session_id, "idle"
-        return None
+        return key[len(self._session_prefix) :] or None
 
 
-def _strip_length(chunk: str) -> str | None:
-    """Turn ``"7:field1"`` into ``"field1"``.
-
-    Returns ``None`` for a chunk that carries no length prefix, which means
-    the payload is not the shape this version of Redis documents.
-    """
-    length, sep, value = chunk.partition(":")
-    if not sep or not length.isdigit():
-        return None
-    return value
+def _text(value: Any) -> str:
+    """A Pub/Sub frame field as text, whether the client decodes or not."""
+    return value.decode() if isinstance(value, bytes) else str(value)

@@ -193,23 +193,22 @@ class TestTidyUpNeverFailsARequest:
         assert await broken._verify(["a" * 30]) is None
 
 
-class TestUnreachableStates:
-    async def test_a_field_with_no_expiry_is_treated_as_absent(
-        self, fake_async_redis, caplog
+class TestUnexpectedStates:
+    async def test_a_key_with_no_expiry_is_treated_as_absent(
+        self, fake_async_redis
     ) -> None:
-        """The ``-1`` row of the state table, which must be unreachable.
+        """A session key with no TTL has no deadline, so it is not a session.
 
-        Reaching it means something outside this store wrote the key, so the
-        store says so loudly and refuses the session rather than guessing.
+        A save that lands after the session ended leaves one; so does a key
+        written by something outside this store.  The store refuses the
+        session rather than guessing, and deletes the key.
         """
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
         sid = store.new_id()
         key = store.session_key(sid)
-        await fake_async_redis.hset(key, mapping={"a": "1", "d": "{}"})
+        await fake_async_redis.hset(key, mapping={"d": "{}"})
 
-        with caplog.at_level("ERROR"):
-            assert await store.load(sid) is None
-        assert "no expiry" in caplog.text
+        assert await store.load(sid) is None
         assert await fake_async_redis.exists(key) == 0
 
     async def test_a_corrupt_record_raises_rather_than_signing_the_user_out(
