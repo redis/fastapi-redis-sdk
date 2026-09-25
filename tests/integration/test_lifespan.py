@@ -329,7 +329,7 @@ class TestManualLifespanComposition:
 
     def test_manual_lifespan_with_caching(self) -> None:
         """redis_lifespan composed manually + FastAPIRedis(app).caching() works end-to-end."""
-        from collections.abc import AsyncIterator
+        from collections.abc import AsyncGenerator
         from contextlib import asynccontextmanager
 
         from fastapi import Depends
@@ -340,13 +340,13 @@ class TestManualLifespanComposition:
         startup_order: list[str] = []
 
         @asynccontextmanager
-        async def other_lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def other_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             startup_order.append("other:start")
             yield
             startup_order.append("other:stop")
 
         @asynccontextmanager
-        async def composed_lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def composed_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with redis_lifespan(app):
                 startup_order.append("redis:start")
                 async with other_lifespan(app):
@@ -382,13 +382,13 @@ class TestManualLifespanComposition:
 
     def test_manual_lifespan_pools_managed(self) -> None:
         """Pools are created and destroyed when redis_lifespan is composed manually."""
-        from collections.abc import AsyncIterator
+        from collections.abc import AsyncGenerator
         from contextlib import asynccontextmanager
 
         from redis_fastapi import redis_lifespan
 
         @asynccontextmanager
-        async def my_lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def my_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with redis_lifespan(app):
                 yield
 
