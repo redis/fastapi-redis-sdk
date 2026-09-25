@@ -229,6 +229,7 @@ password = settings.password.get_secret_value()  # → "actual_password"
 | `REDIS_CLUSTER` | `bool` | `false` | - | Enable OSS Cluster mode |
 | `REDIS_PREFIX` | `str` | `redis:fastapi` | - | Integration-wide key prefix |
 | `REDIS_DEFAULT_TTL` | `int` | `0` | >= 0 | Default cache TTL in seconds (0 = no expiry) |
+| `REDIS_WARN_UNBOUNDED_CACHE` | `bool` | `true` | - | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `REDIS_OTEL_ENABLED` | `bool` | `false` | - | Enable OTel cache spans/metrics |
 | `REDIS_OTEL_REDIS_ENABLED` | `bool` | `false` | - | Enable redis-py native OTel |
 

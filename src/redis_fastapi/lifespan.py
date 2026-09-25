@@ -92,6 +92,80 @@ async def _probe_rate_limit_capabilities(ps: _PoolState) -> None:
         )
 
 
+# Only the ``allkeys-*`` policies can reclaim a key that carries no TTL.
+# ``noeviction`` (the Redis OSS default) and the ``volatile-*`` family (the
+# default on ElastiCache, Azure Cache for Redis, and Memorystore) leave such
+# keys untouchable - Redis rejects writes with OOM rather than evicting.
+_EVICTS_UNEXPIRING_KEYS = "allkeys-"
+
+
+async def _check_cache_eviction_safety(ps: _PoolState) -> None:
+    """Warn once at startup when no-expiry caching meets a server that cannot evict.
+
+    Caching without a TTL is the library default and is a legitimate choice -
+    but only if Redis can reclaim the entries under memory pressure.  This
+    check fires solely on the combination that cannot: a cache dependency
+    falling back to ``default_ttl`` of ``0`` against a server with no memory
+    limit, or with a policy that only evicts keys that have an expiry.
+
+    Best-effort by design, like :func:`_probe_rate_limit_capabilities`.  A
+    Redis that is unreachable or that blocks ``INFO`` must not stop the app
+    from starting, so every failure is swallowed.  ``INFO`` is used rather
+    than ``CONFIG GET`` because managed platforms commonly restrict the
+    latter.
+
+    Runs only when caching is wired (:func:`add_redis_caching` marks the app),
+    so rate-limit-only deployments pay no startup round trip.
+    """
+    settings = get_settings()
+    if not settings.warn_unbounded_cache or settings.default_ttl > 0:
+        return
+
+    # Imported here to keep lifespan importable without pulling in cache().
+    from redis_fastapi.cache import relies_on_default_ttl
+
+    if not relies_on_default_ttl():
+        return
+
+    try:
+        info = await ps.get_async_client().info("memory")
+    except Exception:
+        logger.debug("Cache eviction-safety check skipped", exc_info=True)
+        return
+
+    # Cluster clients answer per node; any primary's view will do.
+    if isinstance(info, dict) and "maxmemory" not in info:
+        info = next((v for v in info.values() if isinstance(v, dict)), {})
+
+    maxmemory = info.get("maxmemory")
+    policy = info.get("maxmemory_policy")
+    if not isinstance(maxmemory, int) or not isinstance(policy, str):
+        logger.debug("Cache eviction-safety check inconclusive: %r", info)
+        return
+
+    remedy = (
+        "Set REDIS_DEFAULT_TTL, or switch maxmemory-policy to an allkeys-* "
+        "policy.  Set REDIS_WARN_UNBOUNDED_CACHE=false to silence this."
+    )
+    if maxmemory == 0:
+        logger.warning(
+            "Caching without a TTL on a Redis with no memory limit "
+            "(maxmemory 0, policy %s).  Cache entries are never reclaimed and "
+            "memory grows until the host runs out.  %s",
+            policy,
+            remedy,
+        )
+    elif not policy.startswith(_EVICTS_UNEXPIRING_KEYS):
+        logger.warning(
+            "Caching without a TTL under maxmemory-policy '%s', which only "
+            "evicts keys that have one.  Once the %d byte limit is reached "
+            "Redis will reject writes with OOM instead of evicting.  %s",
+            policy,
+            maxmemory,
+            remedy,
+        )
+
+
 @asynccontextmanager
 async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage Redis connection pools across the application lifecycle.
@@ -133,6 +207,9 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if getattr(app.state, "_redis_rate_limiting", False):
         await _probe_rate_limit_capabilities(ps)
+
+    if getattr(app.state, "_redis_caching", False):
+        await _check_cache_eviction_safety(ps)
 
     try:
         yield
