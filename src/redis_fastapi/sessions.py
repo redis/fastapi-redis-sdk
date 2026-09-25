@@ -748,13 +748,15 @@ class SessionMiddleware:
             )
 
     def _spec(self, settings: Any, value: str, absolute: int | None) -> CookieSpec:
-        """Build the cookie spec, sizing ``max-age`` from the server's clocks.
+        """Build the cookie spec, sizing ``max-age`` from the absolute clock.
 
-        ``min(idle, absolute remaining)`` - whichever deadline fires first, and
-        both numbers come from Redis rather than from this process.  A cookie
-        that outlives its record gets the user signed out with no cause and no
-        log line; deriving both from the same two server-side numbers is what
-        prevents that.
+        The absolute remainder, from Redis rather than from this process.  Not
+        ``min(idle, absolute remaining)``: the idle clock slides on every
+        request, but a read-only response sends no cookie, so a cookie sized by
+        the idle clock expires while the record is alive and signs a reading
+        user out with no cause and no log line.  The absolute clock never
+        slides, so a cookie sent on any write stays correct until the record's
+        last possible moment.  Redis still enforces the idle clock.
         """
         idle = settings.session_idle_ttl
         max_age: int | None
@@ -762,10 +764,8 @@ class SessionMiddleware:
             max_age = None  # cookie-only mode: the browser decides
         elif absolute is None:
             max_age = idle or None
-        elif not idle:
-            max_age = absolute
         else:
-            max_age = min(idle, absolute)
+            max_age = absolute
         return CookieSpec(
             name=settings.session_cookie_name,
             value=value,

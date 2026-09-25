@@ -261,8 +261,7 @@ class LoadedSession:
 
     ``absolute_remaining`` comes from ``HTTL`` on field ``a`` - the server's
     own number, never one this process computed.  Section 6 needs it to size
-    the cookie's ``max-age`` as ``min(idle, absolute_remaining)`` so the cookie
-    and the record cannot disagree.
+    the cookie's ``max-age``, so the cookie cannot expire before the record.
     """
 
     record: SessionRecord
