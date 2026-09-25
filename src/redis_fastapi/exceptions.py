@@ -9,6 +9,11 @@ layering boundary rather than a mutual-friend arrangement.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from starlette.responses import Response
+
 
 class SessionError(Exception):
     """Base for every error this feature raises.
@@ -34,3 +39,18 @@ class SessionStoreError(SessionError):
     store *is* the authorization answer, and a permissive default would wave
     logins past a concurrent-session cap exactly when Redis is unhealthy.
     """
+
+
+class SessionRejected(Exception):
+    """Carries the rejection response out of ``valid_session()``.
+
+    Intentional control flow, not an error, so it subclasses ``Exception`` and
+    not :class:`SessionError`: a handler that catches ``SessionError`` to
+    report store failures must not catch a rejected request.  The handler
+    ``add_redis_sessions`` registers returns the carried response.
+    """
+
+    def __init__(self, response: Response) -> None:
+        super().__init__()
+        self.response = response
+        self.__suppress_context__ = True

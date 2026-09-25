@@ -83,6 +83,8 @@ Depends(cache(
     prefix="custom:prefix",     # override the default key prefix
     key_builder=my_key_builder, # custom key function (sync or async)
     private=True,               # emit Cache-Control: private (see below)
+    vary_on_session=True,       # the body depends on the session (see the sessions guide)
+    no_store=True,              # emit Cache-Control: no-store; Redis still keeps the entry
 ))
 ```
 
@@ -217,7 +219,12 @@ client are respected:
 `Cache-Control: private, max-age=…`.  This tells CDNs and shared proxies
 **not** to store the response - only the end-user's browser may cache it. See
 [MDN: Cache-Control: private](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#private) and
-[MDN: Private caches](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches)
+[MDN: Private caches](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches).
+`private` is added for you when
+[`valid_session()`](sessions.md#requiring-a-valid-session) gates the route.
+Use `no_store=True` to send `Cache-Control: no-store` instead, so that no
+cache keeps the response, the browser's included; the entry is still kept in
+Redis.
 
 ```python
 # User-specific data - must not be cached by a CDN

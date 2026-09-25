@@ -570,10 +570,27 @@ class SessionStore(ABC):
     ) -> LoadedSession | None:
         """Read a session, and restart its idle clock in the same round trip.
 
-        Returns ``None`` for every way a session can fail to exist: never
-        created, idle-expired, past its absolute deadline, or revoked.  The
-        caller cannot tell those apart, and must not: to an application they
-        are all "no session".
+        See :meth:`load_with_status` for the contract; this is the same call
+        without the second answer.
+        """
+        loaded, _ = await self.load_with_status(session_id, refresh=refresh)
+        return loaded
+
+    async def load_with_status(
+        self, session_id: str, *, refresh: bool = True
+    ) -> tuple[LoadedSession | None, bool]:
+        """:meth:`load`, plus whether the read itself failed.
+
+        The second value is ``True`` only when Redis could not be read and
+        ``session_fail_closed`` let the request continue.  Without it, an
+        outage looks exactly like an unknown identifier, and
+        ``valid_session()`` would send users to sign in when it should say
+        "try again".
+
+        The first value is ``None`` for every way a session can fail to
+        exist: never created, idle-expired, past its absolute deadline, or
+        revoked.  The caller cannot tell those apart, and must not: to an
+        application they are all "no session".
 
         *refresh* false makes this a plain read, for
         ``session_refresh_on_load=False``.  The idle clock then advances only
@@ -588,7 +605,7 @@ class SessionStore(ABC):
                 if the read failed and ``session_fail_closed`` is set.
         """
         if not self.is_valid_id(session_id):
-            return None
+            return None, False
         with session_span("session.load"), timed_session("load"):
             try:
                 raw, absolute_ttl = await self._read(
@@ -597,7 +614,7 @@ class SessionStore(ABC):
             except STORE_ERRORS as exc:
                 record_session_operation(operation="load", result="error")
                 self._read_failed(exc)
-                return None
+                return None, True
 
         alive_until = absolute_ttl if isinstance(absolute_ttl, int) else 0
         if raw is None or alive_until <= 0:
@@ -612,10 +629,11 @@ class SessionStore(ABC):
             record_session_operation(
                 operation="load", result="expired" if half_dead else "miss"
             )
-            return None
+            return None, False
 
         record_session_operation(operation="load", result="hit")
-        return LoadedSession(record=self.decode(raw), absolute_remaining=alive_until)
+        loaded = LoadedSession(record=self.decode(raw), absolute_remaining=alive_until)
+        return loaded, False
 
     async def create(self, session_id: str, record: SessionRecord) -> None:
         """Write a session that does not exist yet, starting both clocks.
@@ -710,6 +728,22 @@ class SessionStore(ABC):
             raise SessionStoreError(f"Could not delete session: {exc}") from exc
 
     # -- rotation and revocation ---------------------------------------------
+
+    def session_age(self, state: SessionState) -> int | None:
+        """Seconds since this session's ID was issued, or ``None``.
+
+        A new ID is a new key, and a new key starts its TTL - the absolute
+        clock - at full length, so the age is that length minus what is left.
+        Both numbers come from Redis, so a skewed container clock cannot make
+        an old session look recent.
+
+        ``None`` when the request has no stored session, or when the key has
+        more time left than the configured length allows - a session created
+        before ``session_absolute_ttl`` was lowered.  A caller must treat
+        ``None`` as "not recent": that is what keeps a configuration change
+        from passing old sessions off as new.
+        """
+        return issued_ago(self.absolute_seconds, state)
 
     def session_id(self, state: SessionState) -> str | None:
         """The identifier this session is stored under, if it has one yet.
@@ -1390,6 +1424,19 @@ class RedisSessionStore(SessionStore):
             )
             if _has_time_left(idle) and _has_time_left(deadline)
         }
+
+
+def issued_ago(absolute_seconds: int, state: SessionState) -> int | None:
+    """:meth:`SessionStore.session_age`, for any store with an absolute clock.
+
+    A module function so the session gate can measure a store that implements
+    only :class:`SessionStoreProtocol`, which has ``absolute_seconds`` but no
+    ``session_age``.
+    """
+    if state.session_id is None or state.absolute_remaining is None:
+        return None
+    age = absolute_seconds - state.absolute_remaining
+    return age if age >= 0 else None
 
 
 def _first(reply: Any) -> bytes | str | None:

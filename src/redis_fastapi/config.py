@@ -34,6 +34,12 @@ CACHE_ROUTE_SCOPE_KEY: str = "redis_cache_route"
 """Set by ``cache()``: this route owns its ``Cache-Control``."""
 CACHE_SUPPRESS_VARY_SCOPE_KEY: str = "redis_cache_no_vary"
 """Set by ``cache(vary_on_session=False)``: the body does not vary by cookie."""
+SESSION_GATED_SCOPE_KEY: str = "redis_session_gated"
+"""Set by ``valid_session()`` when it passes: only callers with a valid
+session reach this response, so a shared cache must not store it."""
+SESSION_NO_STORE_SCOPE_KEY: str = "redis_session_no_store"
+"""Set by ``valid_session(issued_within=...)``: the route is sensitive, and
+the response must say ``no-store``."""
 
 # Cookie attributes are interpolated into a response header, so each is
 # constrained to characters that cannot terminate or split one.

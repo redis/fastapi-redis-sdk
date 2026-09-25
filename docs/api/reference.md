@@ -122,7 +122,9 @@ On a **cache hit** the endpoint is skipped (response served from Redis). On a **
 | `eviction_group` | `str` | `""` | Namespace segment in the cache key |
 | `cache_prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
 | `key_builder` | `KeyBuilder \| None` | `default_key_builder` | Custom key builder |
-| `private` | `bool` | `False` | Emit `Cache-Control: private` |
+| `private` | `bool` | `False` | Emit `Cache-Control: private`. Added automatically when `valid_session()` gated the request |
+| `vary_on_session` | `bool \| None` | `None` | `True`: one entry per user, `private`. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
+| `no_store` | `bool` | `False` | Emit `Cache-Control: no-store` on the miss and every hit; the entry is still kept in Redis. Added automatically under `valid_session(issued_within=...)` |
 
 ### `cache_evict()`
 
@@ -393,6 +395,60 @@ middleware and your handlers.
 
 ---
 
+## `valid_session()`
+
+```python
+from fastapi import Depends
+from redis_fastapi import valid_session
+
+@app.post("/checkout", dependencies=[Depends(valid_session())])
+async def checkout(): ...
+
+@app.post("/account/email", dependencies=[
+    Depends(current_user),
+    Depends(valid_session(issued_within=600, on_reject=my_rejection)),
+])
+async def change_email(): ...
+```
+
+A dependency that rejects a request without a valid session: the cookie must
+name a record that was live in Redis when the request arrived, and nothing
+earlier in the request may have ended it. It does not ask who the session
+belongs to.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `issued_within` | `int \| timedelta \| None` | `None` | Also require the session ID to have been issued at most this long ago. Adds the reason `"stale"` and makes the response `Cache-Control: no-store`. Not an authentication check |
+| `on_reject` | `OnReject[SessionRejection]`, or `OnReject[RecencyRejection]` with `issued_within` | `None` | Receives the request and the reason, returns the response (sync or async). Default: `401` |
+
+| Reason | Meaning |
+|---|---|
+| `"missing"` | No usable session: no cookie, a malformed one, or one an earlier dependency revoked or emptied |
+| `"expired"` | A well-formed cookie naming no live session |
+| `"unavailable"` | The read failed and the request continued without a session |
+| `"stale"` | Only with `issued_within`: the session ID was issued longer ago than that |
+
+The default rejection is `HTTPException(401, "No valid session")`, with a
+`WWW-Authenticate` header only when the `challenge` setting is configured. For
+`"stale"` it is a `401` with the body
+`{"detail": ..., "error": "stale_session", "issued_within": N}`.
+
+The gate marks the session as read. When it passes, a following
+`cache(vary_on_session=False)` adds `private`. Listed **after** such a
+`cache()`, it raises `SessionConfigurationError` on the first request. It also
+raises that error on a route excluded by `skip`, and raises `TypeError` when
+`on_reject` returns something other than a `Response`.
+
+| Type | Values |
+|---|---|
+| `SessionRejection` | `Literal["missing", "expired", "unavailable"]` |
+| `RecencyRejection` | `SessionRejection` plus `"stale"` |
+| `OnReject[R]` | `Callable[[Request, R], Response \| Awaitable[Response]]` |
+| `Challenge` | `str \| SecurityBase \| Callable[[Request, str], str \| None]` |
+| `SessionRejected` | The exception that carries a rejection response out of the dependency. Control flow, not a `SessionError` |
+
+---
+
 ## Session setup
 
 ### `add_redis_sessions()` / `FastAPIRedis.sessions()`
@@ -404,6 +460,7 @@ FastAPIRedis(app).lifespan().sessions(
     descriptor_of=lambda req, s: {"ip": req.client.host},
     cookie_builder=my_builder,
     skip=lambda req: req.url.path.startswith("/health"),
+    challenge=None,
     store=None, store_factory=None,
     coder=JsonCoder, encryptor=None, id_factory=None, key_prefix=None,
     idle_ttl=None, absolute_ttl=None, gc_ttl=None,
@@ -417,6 +474,7 @@ FastAPIRedis(app).lifespan().sessions(
 | `descriptor_of` | What a device listing shows. Stored beside the session, never inside it. |
 | `cookie_builder` | Renders `Set-Cookie`, for setting **and** clearing. |
 | `skip` | Requests needing no session, at zero Redis cost. |
+| `challenge` | The `WWW-Authenticate` header on a `valid_session()` rejection: a FastAPI security scheme, a string, or a callable of the request and the reason. Omitted by default; `Basic` is refused. |
 | `store` / `store_factory` | Supply a whole store. Mutually exclusive. |
 | `coder`, `encryptor`, `id_factory`, `key_prefix`, `idle_ttl`, `absolute_ttl`, `gc_ttl` | Passed to the store constructor. TTLs accept `int` seconds or `timedelta`. |
 
@@ -431,6 +489,8 @@ one without inheritance.
 | Method | Purpose |
 |---|---|
 | `load(session_id, *, refresh=True)` | Read a session and restart its idle clock. `None` for every way it can be absent. |
+| `load_with_status(session_id, *, refresh=True)` | `load()`, plus whether the read itself failed. |
+| `session_age(state)` | Seconds since the session ID was issued, from the key's TTL. `None` without a stored session, or for one created under a longer `session_absolute_ttl`. |
 | `create(session_id, record)` | Write a session that does not exist yet. The only method that writes the absolute deadline. |
 | `save(session_id, record)` | Update the payload, and only the payload. |
 | `touch(session_id)` | Restart the idle clock alone. |
@@ -472,6 +532,10 @@ SessionError
 ├── SessionConfigurationError    a missing or invalid setting
 └── SessionStoreError            the store failed; wraps the driver error
 ```
+
+`SessionRejected` is not a `SessionError`: it carries a `valid_session()`
+rejection out of the dependency, and the handler that `.sessions()` registers
+returns its response.
 
 A failed **read** yields an empty session unless `session_fail_closed` is set.
 A failed **write** always raises. `count_for_subject` always raises, because

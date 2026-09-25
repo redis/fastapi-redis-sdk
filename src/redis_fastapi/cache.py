@@ -37,6 +37,8 @@ from redis_fastapi.config import (
     CACHE_ROUTE_SCOPE_KEY,
     CACHE_STATUS_HEADER,
     CACHE_SUPPRESS_VARY_SCOPE_KEY,
+    SESSION_GATED_SCOPE_KEY,
+    SESSION_NO_STORE_SCOPE_KEY,
     get_settings,
 )
 from redis_fastapi.deps import AsyncClient, _get_pool_state, get_async_redis
@@ -167,7 +169,7 @@ def _is_stale_for_client(
     return age >= max_age
 
 
-def _cache_control_value(max_age: int, private: bool) -> str:
+def _cache_control_value(max_age: int, private: bool, no_store: bool = False) -> str:
     """Build a ``Cache-Control`` response header value.
 
     When *max_age* is ``0`` (no TTL), no ``max-age`` directive is emitted;
@@ -176,10 +178,15 @@ def _cache_control_value(max_age: int, private: bool) -> str:
     Args:
         max_age: The ``max-age`` value in seconds.  ``0`` means no expiry.
         private: Whether to include the ``private`` directive.
+        no_store: Send ``no-store`` alone.  No cache may keep the response,
+            the browser's included, so ``private`` and ``max-age`` would say
+            nothing.
 
     Returns:
         The formatted header value string.
     """
+    if no_store:
+        return "no-store"
     if max_age <= 0:
         base = "no-cache"
     else:
@@ -286,6 +293,7 @@ class CachePending:
     key: str
     ttl: int
     private: bool = False
+    no_store: bool = False
     redis: Any = field(default=None)
     write_through: bool = False
     vary_on_session: bool | None = None
@@ -338,6 +346,7 @@ def _build_hit_response(
     remaining_ttl: int,
     request: Request,
     private: bool,
+    no_store: bool = False,
 ) -> Response:
     """Deserialize a cache entry and return a ready-to-send ``Response``.
 
@@ -353,7 +362,7 @@ def _build_hit_response(
         entry["body"].encode() if isinstance(entry["body"], str) else entry["body"]
     )
     etag: str = entry["etag"]
-    cc_value = _cache_control_value(remaining_ttl, private)
+    cc_value = _cache_control_value(remaining_ttl, private, no_store)
 
     if request.headers.get("if-none-match") == etag:
         return Response(
@@ -384,6 +393,7 @@ def cache(
     key_builder: KeyBuilder | None = None,
     private: bool = False,
     vary_on_session: bool | None = None,
+    no_store: bool = False,
 ) -> Any:
     """Return a ``Depends()``-compatible dependency for response caching.
 
@@ -403,7 +413,13 @@ def cache(
             ``settings.pattern_prefix("cache")``.
         key_builder: Custom key builder (sync or async).  Defaults to
             :func:`default_key_builder`.
-        private: Emit ``Cache-Control: private, max-age=N``.
+        private: Emit ``Cache-Control: private, max-age=N``.  Added
+            automatically when ``valid_session()`` gated the request, because
+            only callers with a valid session reach the response.
+        no_store: Emit ``Cache-Control: no-store`` on the miss and on every
+            hit.  The entry is still kept in Redis; no cache outside the
+            application may keep the response.  Added automatically when
+            ``valid_session(issued_within=...)`` gated the request.
         vary_on_session: Whether this response depends on the session.
 
             * ``True`` - key the entry per user, and emit ``private``.  Use it
@@ -486,7 +502,14 @@ def cache(
                     force_refresh="no-cache" in cc,
                 )
 
-            # 4. HIT: short-circuit via exception — endpoint never runs
+            # 4. HIT: short-circuit via exception — endpoint never runs.
+            #    A gate that ran first decides the directives too: a gated
+            #    body is private, and a route that asked for a recent session
+            #    is sensitive (valid_session(), S-1.6 and S-2).
+            private_here = _private or bool(request.scope.get(SESSION_GATED_SCOPE_KEY))
+            no_store_here = no_store or bool(
+                request.scope.get(SESSION_NO_STORE_SCOPE_KEY)
+            )
             if cached_data:
                 record_cache_request(result="hit", eviction_group=eviction_group)
                 if span is not None:
@@ -494,7 +517,11 @@ def cache(
                 try:
                     raise CacheHitException(
                         _build_hit_response(
-                            cached_data, remaining_ttl, request, _private
+                            cached_data,
+                            remaining_ttl,
+                            request,
+                            private_here,
+                            no_store_here,
                         )
                     )
                 except (json.JSONDecodeError, KeyError) as exc:
@@ -508,7 +535,8 @@ def cache(
         request.state.redis_cache_pending = CachePending(
             key=cache_key,
             ttl=_ttl,
-            private=_private,
+            private=private_here,
+            no_store=no_store_here,
             redis=redis,
             vary_on_session=vary_on_session,
             route=f"{request.method} {request.url.path}",
@@ -766,7 +794,7 @@ async def _store_cache_entry(
         outgoing response (``X-Redis-Cache``, ``ETag``, ``Cache-Control``).
     """
     etag = f'W/"{hashlib.blake2b(body_bytes, digest_size=16).hexdigest()}"'
-    cc_value = _cache_control_value(pending.ttl, pending.private)
+    cc_value = _cache_control_value(pending.ttl, pending.private, pending.no_store)
     extra_headers: list[tuple[bytes, bytes]] = [
         (CACHE_STATUS_HEADER.lower().encode(), b"MISS"),
         (b"etag", etag.encode()),

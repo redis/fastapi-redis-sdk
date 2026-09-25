@@ -59,7 +59,7 @@ item is excluded. Each row carries an ID so a commit, a test or a review comment
 | N-15 | Maintainability | Nothing ships gated on an unmerged upstream change.                                                                                                                                         |
 | N-16 | Maintainability | File split, dependency injection, settings and telemetry follow the existing cache and rate-limit code. An abstract base owns the lifecycle; a protocol bounds what callers touch.          |
 | N-17 | Correctness     | No correctness claim rests on a notification. Every guarantee holds with events switched off, because Pub/Sub delivery can be dropped and an expiry event can lag the deadline it reports. |
-| N-18 | Correctness     | The cache directives a response carries are never more permissive than the caching this library itself performs for that response. Keyed per user ⇒ `private`; refused entirely ⇒ `no-store`; one shared entry ⇒ a shared directive is equally permissive and nothing more is required. |
+| N-18 | Correctness     | The cache directives a response carries are never more permissive than the caching this library itself performs for that response. Keyed per user ⇒ `private`; refused entirely ⇒ `no-store`; one shared entry served to anyone ⇒ a shared directive is equally permissive and nothing more is required; one shared entry served only after `valid_session()` passes ⇒ `private`, because a shared cache would serve it to callers the gate refuses (`session-di-factory-research.md`, S-1.6). |
 
 ### 0.3 Out of scope
 
@@ -77,7 +77,7 @@ item is excluded. Each row carries an ID so a commit, a test or a review comment
 | X-10 | Deferred              | Re-rotating a live session on a schedule (OWASP's renewal timeout).                                                                                                        | No timer in v1. Rotation on authentication and privilege change is automatic (Section 5.1); only the time-based variety is absent. A genuine gap rather than a boundary.                                                                                                        |
 | X-11 | Recipe, not code      | A shipped AES-GCM encryptor.                                                                                                                                               | Ship the seam and document the ten lines, rather than owning cryptographic code and its vulnerabilities.                                                                                                                                                                        |
 | X-12 | Recipe, not code      | Hijack detection by IP and User-Agent; `Clear-Site-Data`, `Partitioned` and `__Host-` cookies; a Stream-backed audit log; per-tenant key namespaces and Cluster hash tags. | Each is reachable through a seam that already exists, so none needs code from us.                                                                                                                                                                                               |
-| X-13 | Deferred              | The `HIMPORT` family (Redis 8.10) for writing session keys.                                                                                                                | `HIMPORT SET` takes no expiration option and overwrites the key, so it would destroy field `a` and its absolute deadline on every write — the one thing N-6 forbids. What it saves is field names on the wire, and ours are `a` and `d`. Section 13.5 gives the full reckoning. |
+| X-13 | Deferred              | The `HIMPORT` family (Redis 8.10) for writing session keys.                                                                                                                | `HIMPORT SET` takes no expiration option and overwrites the key, so it would destroy the key's TTL - the absolute deadline - on every write, the one thing N-6 forbids. What it saves is field names on the wire, and ours is `d`. Section 13.5 gives the full reckoning. |
 
 ## 1. Three corrections to `session-mgmt.md`
 
@@ -134,7 +134,7 @@ Two new files, following the split that `cache.py` / `cache_backend.py` and
 |----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | `src/redis_fastapi/session_backend.py` | `SessionStore` (ABC, owns the lifecycle), `RedisSessionStore`, **`SyncSessionStore`**, `SessionStoreProtocol`, `SessionMetadata`, `SessionRecord` |
 | `src/redis_fastapi/session_events.py`  | `SessionEvents`, the tier probe, and the per-node subscriber task. Separate because it owns a background task and a Pub/Sub connection, which neither of the other two files does. Section 13.4 |
-| `src/redis_fastapi/sessions.py`        | `Session`, `SessionMiddleware`, the `session()` dependency factory, `add_redis_sessions()`, the cookie builder, the exceptions                    |
+| `src/redis_fastapi/sessions.py`        | `Session`, `SessionMiddleware`, the `valid_session()` dependency factory and its `issued_within` parameter (see `session-di-factory-research.md`), `add_redis_sessions()`, the cookie builder, the exceptions |
 
 Changes to some of the existing files include :
 
@@ -167,8 +167,7 @@ Two keys, and they answer two different questions.
 
 ```
 # "Given this session ID from the cookie, what is the session?"
-redis:fastapi:session:<sid>                    HASH
-    field "a"  =  "1"          TTL = absolute       the deadline marker
+redis:fastapi:session:<sid>                    HASH, key TTL = absolute
     field "d"  =  <record>     TTL = idle           the payload
 
 # "Given this user, which sessions do they have open?"   <-- the reverse direction
@@ -180,11 +179,13 @@ The first key is the one every request uses. The second exists **only** because 
 things in Section 3 of `session-mgmt.md` need to go the other way — from a user to their
 sessions — and the cookie cannot answer that. Section 3.3 explains it.
 
-Both are hashes with a TTL on each field, from
-`settings.pattern_prefix("session")` and `settings.pattern_prefix("sessions-of")`.
+Both are hashes, from `settings.pattern_prefix("session")` and
+`settings.pattern_prefix("sessions-of")`. The session key carries the absolute deadline
+as its own TTL, and its one field carries the idle clock. The index has a TTL on each
+field and none on the key.
 
-**Field `a` is always written, and always carries a TTL.** Section 3.2 explains why: a
-missing `a` must mean one thing only.
+**A session key always has a TTL.** Section 3.2 explains why: a key without one is not a
+live session.
 
 #### The two keys cannot collide, and not only by convention
 
@@ -211,54 +212,59 @@ shard. Section 5 explains how correctness survives without co-location.
 `docs/getting-started/installation.md:29`), and hash-field expiration arrived in 7.4. So
 every design below sits inside the support range we already promise.
 
-### 3.2 Two fields, two clocks, no arithmetic
+### 3.2 Two clocks, two TTLs, no arithmetic
 
 Section 3 of `session-mgmt.md` requires an idle timeout **and** an absolute timeout, and
-requires that *"expiration must be enforced server-side"*. Two fields with two TTLs do
-exactly that:
+requires that *"expiration must be enforced server-side"*. Two TTLs do exactly that:
 
-| Field | TTL | Refreshed? |
-|---|---|---|
-| `a` | the absolute lifetime, set once at creation | **never** |
-| `d` | the idle timeout | on every access |
+| Clock | Where | TTL | Refreshed? |
+|---|---|---|---|
+| absolute | the session key | the absolute lifetime, set once at creation | **never** |
+| idle | field `d` | the idle timeout | on every access |
 
-When `d` expires the session went idle. When `a` expires the absolute deadline passed,
-whatever the user was doing. **Redis enforces both, and we compute neither.**
+When `d` expires the session went idle, and the key - which then holds nothing - goes
+with it. When the key expires the absolute deadline passed, whatever the user was doing,
+and Redis deletes the payload with it. **Redis enforces both, and we compute neither.**
 
-#### Field `a` is always written, and always has a TTL
+#### Why the deadline is on the key
 
-Not an implementation detail — a correctness requirement, and getting it wrong disables
-the whole feature for one supported configuration.
+An earlier design kept the deadline in a second field, `a`, with its own TTL. Redis then
+deleted only `a` at the deadline; `d` stayed alive as long as requests refreshed it. The
+deadline held only because every reader asked about `a` too and rejected the session when
+it was gone - the load, and the index verification - and a new reader that forgot would
+have served sessions past their absolute limit. On the key, the deadline needs no reader:
+at the deadline nothing is left to read. Section 13 notes the second gain, in keyspace
+notifications.
 
-`HTTL` answers with `-2` when a field is absent **or** its key is absent, and with `-1`
-when the field exists with no expiry. An earlier draft read `-2` as "the absolute deadline
-passed" and did not write `a` at all when `absolute_ttl` was `0`. Section 3.2 permits that
-setting, and Section 9.4 of `session-mgmt.md` maps `starsessions`' `lifetime=0` onto it —
-so for those deployments `HTTL` answered `-2` on every load and **every session was read
-as expired the moment it was created.**
+#### A session key always has a TTL
 
-Two rules remove the ambiguity:
+Not an implementation detail - a correctness requirement.
 
-1. **Write `a` on every session creation, without exception.** This also keeps every
-   session key to one schema, which Section 13.2 depends on.
-2. **Give `a` a TTL even when no absolute limit is configured.** With `absolute_ttl = 0`
-   it gets `gc_ttl`. Never leave it unexpiring: if `d` later expires and `a` does not, the
-   key survives with nobody to collect it. So `-1` never occurs, and `-2` carries exactly
-   one meaning.
+1. **Every create sets the key's TTL, without exception.** `EXPIRE` on a missing key does
+   nothing, so the create writes `d` first and then sets the TTL. A pipeline cut between
+   the two leaves a key with no TTL - but the write raised, so no cookie names it.
+2. **The TTL is set even when no absolute limit is configured.** With `absolute_ttl = 0`
+   the key gets `gc_ttl`. An earlier design wrote no deadline at all in that case and read
+   the missing deadline as "passed", so **every session was read as expired the moment it
+   was created** - in exactly the configuration Section 9.4 of `session-mgmt.md` maps
+   `starsessions`' `lifetime=0` onto.
 
-Section 4.1 reads the resulting state as a two-by-two, not as a single sentinel.
+So a key with no TTL is never a live session. A save that lands after the key expired or
+was revoked recreates the key with `d` and no TTL; the load reads that as over and deletes
+it (Section 4.1). A save must never set the TTL itself: if it did, a save landing just
+after the deadline would restore the session with a full fresh lifetime, and an actively
+used session would never die (N-6).
 
-This matters more than the round trip it saves. If we instead kept one key and set its
-TTL to `min(absolute_remaining, idle)`, then the absolute deadline would be a number our
-code recalculates on every write, and one arithmetic bug would let a session outlive its
-absolute limit without any test noticing. With two fields that outcome is not a bug we
-must avoid — it is unreachable. For a security control, the difference is the whole
-point.
+This matters more than the round trip it saves. If we instead kept one TTL and set it to
+`min(absolute_remaining, idle)`, then the absolute deadline would be a number our code
+recalculates on every write, and one arithmetic bug would let a session outlive its
+absolute limit without any test noticing. With two TTLs that outcome is not a bug we must
+avoid - it is unreachable. For a security control, the difference is the whole point.
 
 Both settings are an `int` number of seconds. The store constructor and `.sessions()`
 also accept a `timedelta`; Section 9 gives the convention and why a settings field cannot
 sensibly take one. With both at zero the session is cookie-only: no `max-age` on the cookie, so the
-browser drops it when it closes, and **both** fields get `gc_ttl` so Redis eventually
+browser drops it when it closes, and **both** clocks get `gc_ttl` so Redis eventually
 collects what the browser abandoned.
 
 ### 3.3 The subject index: from a user back to their sessions
@@ -339,9 +345,11 @@ destroy the single-round-trip read in Section 4.2.
 which are.** `list_for_subject` and `revoke_all` both:
 
 1. `HGETALL` the index — one round trip, giving candidates and their descriptors.
-2. Pipeline one `HTTL <session key> FIELDS 1 d` for each candidate — a second round trip,
-   whatever the number of candidates.
-3. Drop the candidates whose `d` is gone, and `HDEL` them from the index.
+2. Pipeline `HTTL <session key> FIELDS 1 d` and `TTL <session key>` for each candidate —
+   a second round trip, whatever the number of candidates.
+3. Drop the candidates where either answer has no time left, and `HDEL` them from the
+   index. The key's `TTL` catches a key a late save recreated with no deadline, which the
+   load also treats as over.
 
 That is two round trips instead of one, on two operations that a user triggers by hand —
 opening a screen, or changing a password. The request path is untouched. In exchange the
@@ -361,7 +369,7 @@ Three properties survive, and neither a set nor a sorted set gives all three:
 2. **The key bounds itself.** When the last field expires, Redis deletes the hash. A user
    who never returns leaves nothing behind, and there is no TTL to maintain on the key.
 3. **The value carries a descriptor**, so the listing needs no read of the session records
-   themselves — only the cheap `HTTL` liveness check. Put the creation time, the client
+   themselves — only the cheap `HTTL` and `TTL` liveness check. Put the creation time, the client
    address and a device label in it, and the "your active sessions" screen that Section 3
    of `session-mgmt.md` asks for costs two round trips regardless of session count.
 
@@ -375,8 +383,8 @@ an entry at 98 seconds of a 100-second lifetime went back to 100 on re-assert. A
 used session would therefore hold an index entry that never expires and outlives the
 session it describes — reintroducing the phantom this section exists to prevent.
 
-Use the remaining absolute time. Section 4.1 already reads it, as `HTTL` on field `a`, so
-it costs no extra command. `EXAT` against the stored deadline is equivalent; what must not
+Use the remaining absolute time. Section 4.1 already reads it, as `TTL` on the session
+key, so it costs no extra command. `EXAT` against the stored deadline is equivalent; what must not
 happen is a fresh full lifetime.
 
 #### Why not the query engine instead?
@@ -565,32 +573,35 @@ middleware is the last place in the chain that can still perform an `await`.
 
    ```
    HGETEX <key> EX <idle> FIELDS 1 d      -> the payload, and the idle clock restarts
-   HTTL   <key> FIELDS 1 a                -> what remains of the absolute deadline
+   TTL    <key>                           -> what remains of the absolute deadline
    ```
 
    `HGETEX` reads a field **and** sets its expiration in one command, so the load *is*
    the idle refresh. There is no second command at response time and nothing to
    optimise away.
 
-5. **Read the two answers as a pair, never one as a sentinel.** Section 3.2 guarantees
-   that `a` is always written and always carries a TTL, which is what makes this table
-   total:
+5. **The session is alive only when both answers say so.** Section 3.2 guarantees that
+   every create gives the key a TTL, which is what makes this table total:
 
-   | `d`     | `HTTL a` | Meaning                                                                                                  | Action                                      |
-   |---------|----------|----------------------------------------------------------------------------------------------------------|---------------------------------------------|
-   | present | `> 0`    | alive                                                                                                    | serve it; absolute remaining is that number |
-   | present | `-2`     | the absolute deadline passed                                                                             | empty `Session`; `DEL` the key              |
-   | absent  | `-2`     | no such session — never existed, expired outright, or revoked                                            | empty `Session`                             |
-   | absent  | `> 0`    | the idle clock ran out, absolute has time left                                                           | empty `Session`; `DEL` the key              |
-   | any     | `-1`     | **cannot happen** — Section 3.2 forbids an unexpiring `a`. Treat as a bug: log and handle as no session. |                                             |
+   | `d`     | `TTL`  | Meaning                                                                                   | Action                                      |
+   |---------|--------|-------------------------------------------------------------------------------------------|---------------------------------------------|
+   | present | `> 0`  | alive                                                                                     | serve it; absolute remaining is that number |
+   | absent  | `-2`   | no such session — never existed, idle, past its deadline, or revoked                      | empty `Session`                             |
+   | present | `-1`   | a key with no deadline: a save that landed after the key expired or was revoked recreated it | empty `Session`; `DEL` the key              |
+   | absent  | `> 0`  | the key holds something other than `d`; cannot happen while `d` is its only field         | empty `Session`; `DEL` the key              |
 
-   An earlier draft collapsed this into "`HTTL` returning `-2` means the absolute deadline
-   passed". `-2` is also what Redis answers for a field that was never written and for a
-   key that does not exist, so that reading broke every deployment with no absolute limit.
-   The pair disambiguates; a single value cannot.
+   Redis deletes the whole key at the deadline, and deletes it too when `d` expires and
+   leaves it empty. So both clocks usually end in row two, with nothing to clean up.
 
-   Deleting the key on rows two and four matters: it lets the index entry follow, rather
-   than leaving a candidate that every later verification has to reject.
+   The third row is reachable, and no longer a bug to log. A request can load a live
+   session and write it back just after the key expired; the write recreates the key with
+   `d` and no TTL. Deleting it lets the index entry follow, rather than leaving a
+   candidate that every later verification has to reject.
+
+   An earlier design kept the deadline in a field and read `HTTL` on it. `-2` then meant
+   both "the deadline passed" and "the field was never written", and reading it alone
+   broke every deployment with no absolute limit. The key's `TTL` has the same two
+   sentinels, but Section 3.2 makes every create set it, so `-2` means one thing: no key.
 
 6. **Take the principal snapshot.** Evaluate `principal_of(session)` and keep the result
    for the response. Section 5.1 explains what it is for; here it costs one call of a pure
@@ -599,8 +610,8 @@ middleware is the last place in the chain that can still perform an `await`.
 The application never sees the difference. An expired session, a revoked one and an absent
 one are the same thing to a caller.
 
-The cookie `max-age` for the response is the remaining `a`, which came from Redis rather
-than from our own clock. Section 6 explains why the idle clock is left out.
+The cookie `max-age` for the response is the key's remaining TTL, which came from Redis
+rather than from our own clock. Section 6 explains why the idle clock is left out.
 
 ### 4.2 After the application, at `http.response.start`
 
@@ -631,7 +642,7 @@ so it costs nothing, and it repairs an index entry that a partial failure lost. 
 constraints on it, both from Section 3.3: the session key is written **before** the index
 entry, and the entry takes the **remaining** absolute time — never a fresh full lifetime,
 which would let the entry outlive the session. Section 4.1 has already read that remainder
-from `HTTL a`.
+from the key's `TTL`.
 
 Add `Vary: Cookie` whenever `accessed` is true, so a cache never serves one user's page to
 another.
@@ -642,7 +653,7 @@ there is no extra command to suppress. An earlier draft carried that setting and
 it to `0.1`, which traded up to ten per cent of idle-timeout precision for a saving that
 `HGETEX` gives for free. The setting is gone.
 
-Writing field `d` never disturbs field `a`, so an active session keeps counting down to
+Writing field `d` never touches the key's TTL, so an active session keeps counting down to
 its absolute deadline no matter how often it is written.
 
 **One semantic to state plainly.** Because the refresh happens at load, the idle clock
@@ -744,7 +755,7 @@ Client          SessionMiddleware       principal_of     SessionStore        Red
   │  Cookie: sess=OLD   │                    │                │               │
   │                     ├─ validate charset  │                │               │
   │                     ├────────────────────┼────────────────┼──────────────▶│
-  │                     │   pipeline:  HGETEX sess:OLD … d   /  HTTL … a      │
+  │                     │   pipeline:  HGETEX sess:OLD … d   /  TTL sess:OLD  │
   │                     │◀───────────────────┼────────────────┼───────────────┤
   │                     ├─ build Session(d)  │                │               │
   │                     ├───────────────────▶│                │               │
@@ -807,20 +818,21 @@ We already hold the payload in memory, so no read is needed. The order is:
 ```
 1. DEL     redis:fastapi:session:<old_sid>
 2. HDEL    redis:fastapi:sessions-of:<subject>  <old_sid>
-3. HSETEX  redis:fastapi:session:<new_sid>  EX <absolute>  FIELDS 1 a 1
-4. HSETEX  redis:fastapi:session:<new_sid>  EX <idle>      FIELDS 1 d <record>
+3. HSETEX  redis:fastapi:session:<new_sid>  EX <idle>  FIELDS 1 d <record>
+4. EXPIRE  redis:fastapi:session:<new_sid>  <absolute>
 5. HSETEX  redis:fastapi:sessions-of:<subject>  EX <absolute>  FIELDS 1 <new_sid> <descriptor>
 6. Set-Cookie with <new_sid>
 ```
 
-Step 3 restarts the absolute clock, which is correct: rotation follows authentication or
-a change of privilege, so a new session begins. Step 5 is therefore the one place where
-the index entry legitimately takes the **full** absolute lifetime rather than a remainder
-— the session it describes was created in step 3, one command earlier. Every other write
+Step 4 restarts the absolute clock, which is correct: rotation follows authentication or
+a change of privilege, so a new session begins. It comes after step 3 because `EXPIRE` on
+a missing key does nothing. Step 5 is therefore the one place where the index entry
+legitimately takes the **full** absolute lifetime rather than a remainder — the session it
+describes was created in steps 3 and 4, a command earlier. Every other write
 of that entry uses the remainder, for the reason in Section 3.3.
 
-When `absolute_ttl` is `0`, step 3 still runs and `a` takes `gc_ttl`, per Section 3.2.
-There is no branch in which `a` goes unwritten.
+When `absolute_ttl` is `0`, step 4 still runs and the key takes `gc_ttl`, per Section
+3.2. There is no branch in which the key is left without a TTL.
 
 **Delete before write, and the order is the security control.** A crash between steps 1
 and 3 signs the user out, and they sign in again. A crash in the other order would leave
@@ -886,7 +898,7 @@ persisting for hours.
 **Re-assert with the remaining absolute time, not a fresh lifetime.** Section 3.3 shows
 what a relative `EX <absolute>` does here: it restarts the entry's clock on every write,
 so a session in constant use holds an entry that never expires. Section 4.1 has already
-read the remainder from `HTTL a`, so the correct value is in hand at no cost. This is the
+read the remainder from the key's `TTL`, so the correct value is in hand at no cost. This is the
 easiest of the three measures to get subtly wrong, because the wrong version looks
 identical and fails only on long-lived sessions.
 
@@ -922,13 +934,13 @@ strictly linearizable, and the store's abstract primitives leave room to add it.
 
 ## 6. The two clocks
 
-Section 3.2 puts each clock on its own hash field, so **Redis enforces both and the store
-computes neither**. What remains here is the cookie, which Redis cannot enforce.
+Section 3.2 gives each clock its own TTL - the idle clock on field `d`, the absolute clock
+on the key - so **Redis enforces both and the store computes neither**. What remains here is the cookie, which Redis cannot enforce.
 
 The cookie `max-age` follows the absolute clock only:
 
 ```
-max_age = HTTL(key, "a")
+max_age = TTL(key)
 ```
 
 The number comes from Redis, which is counting it down. Nothing is derived from the
@@ -939,7 +951,7 @@ disagrees with the record.
 cookie whose session is still alive, and the user is signed out with no cause and no log
 line. Section 8.3.2 of `session-mgmt.md` records that failure.
 
-**Why not `min(idle, HTTL(key, "a"))`.** An earlier version used it, and it caused exactly
+**Why not `min(idle, TTL(key))`.** An earlier version used it, and it caused exactly
 that failure. The idle clock slides on every request, but a read-only response sends no
 cookie (Section 4.2). So a cookie sized by the idle clock expired `idle` seconds after the
 last *write*, while the record was still alive, and a user who only read was signed out
@@ -949,8 +961,9 @@ until the record's last possible moment, and no read has to resend it.
 server and guards the fix.
 
 The price: after an idle timeout the browser keeps a dead cookie until the absolute
-deadline. Redis still enforces the idle clock, so the dead ID grants nothing; each request
-that carries it costs one round trip, and the first one deletes the half-dead key.
+deadline. Redis still enforces the idle clock - the key went when `d` expired - so the
+dead ID grants nothing; each request that carries it costs one round trip and finds no
+session.
 
 In cookie-only mode the cookie carries no `max-age` at all and the browser decides.
 
@@ -958,7 +971,7 @@ In cookie-only mode the cookie carries no `max-age` at all and the browser decid
 
 Their `rolling=True` extends the cookie and the record by the full lifetime on every
 response: that is our idle clock, field `d`. Their `rolling=False` keeps the original
-expiry: that is our absolute clock, field `a`. We can express both, and we can run the
+expiry: that is our absolute clock, the key's TTL. We can express both, and we can run the
 two together, which their single clock cannot.
 
 ---
@@ -1416,20 +1429,20 @@ Fields on `RedisSettings`, beside the existing `rate_limit_*` ones and following
 | `session_cookie_same_site`  | `"lax" \| "strict" \| "none"` | `"lax"`             | `SameSite` attribute. `"none"` requires `session_cookie_https_only=True`; the two are checked together and a contradiction raises `SessionConfigurationError`.                                                                                                                                                                                                  |
 | `session_cookie_https_only` | `bool`                        | `True`              | Adds `Secure`, so the browser sends the cookie over HTTPS only. **On by default**; turn it off for local development over plain HTTP and nowhere else.                                                                                                                                                                                                          |
 | `session_idle_ttl`          | `int` (seconds)               | `1800` (30 min)     | The idle clock. The session dies this long after the last request that carried its cookie. Stored as the TTL of field `d`. `0` disables the idle clock.                                                                                                                                                                                                         |
-| `session_absolute_ttl`      | `int` (seconds)               | `28800` (8 h)       | The absolute clock. The session dies this long after creation however active the user is. Stored as the TTL of field `a`. `0` disables it, in which case `a` takes `session_gc_ttl` — see Section 3.2, which explains why `a` is never left unexpiring.                                                                                                         |
+| `session_absolute_ttl`      | `int` (seconds)               | `28800` (8 h)       | The absolute clock. The session dies this long after creation however active the user is. Stored as the TTL of the session key. `0` disables it, in which case the key takes `session_gc_ttl` — see Section 3.2, which explains why the key is never left unexpiring.                                                                                                       |
 | `session_gc_ttl`            | `int` (seconds)               | `2592000` (30 days) | Backstop TTL for a key whose real deadline is unknown: cookie-only mode, or `session_absolute_ttl=0`. Never reached in normal operation; it exists so Redis can always collect an abandoned key.                                                                                                                                                                |
 | `session_refresh_on_load`   | `bool`                        | `True`              | `True`: the load uses `HGETEX`, so any request carrying the cookie restarts the idle clock in the same round trip. `False`: the load uses `HGET` and only a request that touched `request.session` refreshes it, at the cost of a second round trip. Section 4.2 gives both branches.                                                                           |
 | `session_fail_closed`       | `bool`                        | `False`             | Behaviour when Redis is unreachable **on read**. `False` yields an empty session, so the caller looks anonymous and the application's own authorization rejects them. `True` raises `SessionStoreError` instead, for a deployment that prefers a 503 to an anonymous page. **Writes always raise, whatever this is set to** — Section 7 explains the asymmetry. |
 | `session_always_save`       | `bool`                        | `False`             | Write the payload on every request that touched the session, even when no mutation was detected. The escape route for the one fault no `dict` subclass can see: a change inside a nested value, `session["a"]["b"] = 1` (Section 8). Costs a write on every request that **read** the session - `accessed` is set by reading - so prefer reassigning the top-level key. **An empty session is exempt**: `WRITE` requires `not empty`, because without it every anonymous visitor to a session-touching route would be minted an identifier, a key and a cookie. Nothing is lost, since a nested mutation implies a top-level key already holding the value. |
 | `session_principal_keys` | `list[str]` | `["user_id"]` | Session keys the rotation trigger watches. A change to any of them on a successful response rotates the ID. Add `"role"` or `"scopes"` for OWASP's privilege-change rotation. **Comma-separated from the environment** — `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`; a JSON array is also accepted. Section 5.1; use `principal_of` when a list of keys cannot express it. |
-| `session_events_enabled`    | `bool`                        | `False`             | Subscribe to Redis notifications and call registered handlers when a session ends (Section 13.4, F-21). **Best-effort.** On a server below 8.8, or one where `notify-keyspace-events` lacks `Th`, or where `CONFIG GET` is unavailable, the store logs one warning at startup and the handlers never fire. Never enable the server setting on the operator's behalf.                                              |
+| `session_events_enabled`    | `bool`                        | `False`             | Subscribe to Redis notifications and call registered handlers when a session ends (Section 13.4, F-21). **Best-effort.** On a server where `notify-keyspace-events` lacks `Ehx` (`A` counts as `hx`), or where `CONFIG GET` is unavailable, the store logs one warning at startup and the handlers never fire. Never enable the server setting on the operator's behalf.                                              |
 | `session_key_prefix`        | `str \| None`                 | `None`              | Overrides the key namespace. `None` uses `settings.pattern_prefix()`, giving `redis:fastapi:session:` and `redis:fastapi:sessions-of:`. A callable prefix is a constructor argument rather than a setting, since an environment variable cannot carry one (Section 9, extension points).                                                                        |
 
 #### Three things the §5 list in `session-mgmt.md` names that are deliberately not settings
 
 - **Cookie-only mode** is not a flag. It is what you get with `session_idle_ttl=0` **and**
   `session_absolute_ttl=0`: no `max-age` on the cookie, so the browser drops it when it
-  closes, and `session_gc_ttl` on both fields so Redis can still collect the key
+  closes, and `session_gc_ttl` on both clocks so Redis can still collect the key
   (Section 3.2). A separate flag would be a second way to say the same thing, and the two
   could disagree.
 - **Encryption** is configured by passing an `Encryptor`, not by an environment variable.
@@ -1537,9 +1550,12 @@ Unit tests in `tests/unit/`, against the existing `fake_async_redis` fixture at
 `noxfile.py:102` already runs the unit suite with no Redis server.
 
 **`fakeredis 2.36.2` supports every command this design uses** — `HSETEX`, `HGETEX`,
-`HEXPIRE`, `HTTL`, `HGETDEL` and `GETEX` all behave correctly against it, including field
-expiry and the empty-key deletion in Section 3.3. That was verified before the design was
-settled. Section 13.5 refuses `IFEQ` and `DELEX` on a stronger ground than tooling — they
+`HEXPIRE`, `HTTL`, `EXPIRE`, `TTL`, `HGETDEL` and `GETEX` all behave correctly against it,
+including field expiry and the empty-key deletion in Section 3.3. That was verified before
+the design was settled. **One divergence matters:** when a hash is deleted because its
+last field expired and the key is then written again, `fakeredis` keeps the old key TTL,
+while Redis starts the new key with none. The late-save case in Section 4.1 is therefore
+tested against a real server. Section 13.5 refuses `IFEQ` and `DELEX` on a stronger ground than tooling — they
 are string commands and cannot address a hash field at all — but note that `fakeredis` does
 not support them either, so they could not have been covered here in any case.
 
@@ -1549,14 +1565,14 @@ not support them either, so they could not have been covered here in any case.
   flags, and a nested change surviving through `save()`.
 - The response rule in Section 4.2: no command when untouched, **no command when read**
   because the load already refreshed, `HSETEX` when modified.
-- **Writing field `d` leaves the TTL of field `a` alone.** This is the guarantee that
-  keeps the absolute deadline absolute, so assert it directly rather than inferring it.
+- **Writing field `d` leaves the key's TTL alone.** This is the guarantee that keeps the
+  absolute deadline absolute, so assert it directly rather than inferring it.
 - Both clocks, independently: idle expiry while the absolute clock still has time, and
   absolute expiry despite continuous activity.
-- Cookie `max-age` equal to `HTTL(a)`, in every branch, never the idle clock.
+- Cookie `max-age` equal to the key's `TTL`, in every branch, never the idle clock.
 - Read-only requests inside the idle window, for longer than the idle window in total,
   keep the user signed in (`tests/integration/test_session_cookie_expiry.py`).
-- Session-only mode: no `max-age`, and `gc_ttl` on **both** fields.
+- Session-only mode: no `max-age`, and `gc_ttl` on **both** clocks.
 - `refresh_on_load=False` restoring the second round trip and refreshing only on access.
   **Assert that the idle clock actually advances under this setting** — an earlier draft
   of Section 4.2 omitted the branch, which would have left the clock frozen and every
@@ -1567,10 +1583,16 @@ fails against the earlier design and passes against this one, so none may be dro
 redundant:
 
 - **`absolute_ttl = 0` produces a usable session.** Create one, load it, and assert the
-  application receives the data. Under the earlier design `HTTL a` answered `-2`, which was
-  read as "absolute deadline passed", so every such session was dead on arrival.
-- **All five rows of the Section 4.1 state table**, including the `-1` row, which must be
-  unreachable — assert that a session is never written with an unexpiring `a`.
+  application receives the data. Under the earlier design the missing deadline answered
+  `-2`, which was read as "absolute deadline passed", so every such session was dead on
+  arrival.
+- **Every row of the Section 4.1 state table**, including the `-1` row: a key with no TTL
+  is deleted and reads as no session. Assert too that a create never leaves the key
+  without a TTL, and - against a real server, since `fakeredis` keeps an expired key's old
+  TTL when the key is recreated - that a save after the key expired or was revoked leaves
+  `TTL = -1`, which the next load deletes.
+- **No reader can see a session past its absolute deadline.** Refresh `d` just before the
+  deadline, and assert a raw `HGET` of `d` finds nothing after it.
 - **The index does not report an idle-dead session.** Set idle far below absolute, let the
   idle clock lapse, then assert `list_for_subject` omits the session and that the entry has
   been removed from the index by the read.
@@ -1620,6 +1642,9 @@ redundant:
 - **The index prunes itself with no help from us**: add a session, let its absolute TTL
   pass, then confirm `HGETALL` omits it and `HLEN` has dropped — without any prune call.
   Then remove the last field and confirm Redis deleted the key.
+- **Session events on a real server**: with `notify-keyspace-events Ehx`, an idle expiry
+  reaches a handler as `idle` and an absolute expiry as `absolute` - and not as `idle`
+  too. This needs no Redis 8.8, so it runs on every leg of the matrix.
 - `list_for_subject` answers in one round trip and returns the descriptor for each
   session.
 - `revoke_all` ends every session for one subject and leaves another subject untouched.
@@ -1646,7 +1671,7 @@ Run `nox`: lint, mypy, bandit and coverage all gate.
 
 1. `Session`, and the tests for its four rows. It has no dependencies and it pins the
    contract everything else uses.
-2. `SessionStore` and `RedisSessionStore`: keys, the two fields, the envelope,
+2. `SessionStore` and `RedisSessionStore`: keys, the two clocks, the envelope,
    `load`/`save`/`touch`/`delete`.
 3. `SessionMiddleware`: the eager load, the response rule, the cookie.
 4. Settings, `deps.py`, `.sessions()` — the feature is usable at the end of this step.
@@ -1698,8 +1723,8 @@ all. Redis expires the fields itself, `HGETALL` returns exactly the live session
 
 The two clocks are the second case. An idle timeout and an absolute timeout are two
 independent deadlines on one piece of state, and Section 3.2 explains why holding them as
-two field TTLs makes "a session outlives its absolute deadline" unreachable rather than
-merely unlikely.
+two TTLs - the idle clock on field `d`, the absolute clock on the key - makes "a session
+outlives its absolute deadline" unreachable rather than merely unlikely.
 
 A note on version range. `HEXPIRE` is 7.4, which is our floor, but `HSETEX` and `HGETEX`
 are 8.0. Against a 7.4 to 7.x server, fall back to `HSET` + `HEXPIRE` and to `HGET` +
@@ -1711,7 +1736,7 @@ than the INCREX case: there is no correctness cliff to guard.
 ### 13.2 What a newer server adds, with no code from us
 
 The design targets 7.4, and everything above works there. But later releases improve it
-without a line of our code. One of them may also reward the two-field shape we chose for an
+without a line of our code. One of them may also reward the uniform shape we chose for an
 unrelated reason, and the paragraph below says plainly why we do not yet know. Say this in
 the guide: **the same application gets cheaper and faster by upgrading the server.**
 
@@ -1719,15 +1744,15 @@ the guide: **the same application gets cheaper and faster by upgrading the serve
 |---------|--------------------------------------------------------------------|--------------------------------------------------------------------|
 | 8.6     | hash memory footprint down up to 16.7%, hash latency down up to 7% | every session key and every index key, for free                    |
 | 8.8     | `HGETALL` up to 25% faster on hashes with 1K+ fields               | `list_for_subject` for a tenant with many live sessions            |
-| 8.8     | **hash subkey notifications**                                      | a new capability, not only a speed-up. See below.                  |
+| 8.8     | hash subkey notifications                                          | nothing new here: key-level events already name both clocks. See below. |
 | 8.10    | **compact hashes**                                                 | a large memory win **if** field expiry does not disqualify us. Open. See below. |
 | 8.10    | wide `HSET` on a fresh hash batched into one listpack append       | session creation                                                   |
 
 **Compact hashes (8.10) suit the shape of our record, and may still exclude it.** The
 encoding stores field names **once** across every key that shares a schema. A session store
-looks like the ideal case: a million session keys, each a hash with exactly the fields `a`
-and `d`, identical in every one, so the names are held once for the deployment instead of
-once per session. Section 3.2 chose two fields to make the absolute deadline structurally
+looks like the ideal case: a million session keys, each a hash with exactly one field, `d`,
+identical in every one, so the name is held once for the deployment instead of once per
+session. Section 3.2 put the absolute deadline on the key to make it structurally
 unbreakable, which is a security argument; the uniform schema is a by-product. If the
 encoding does reward it, say plainly in the guide that this was luck and not foresight.
 
@@ -1738,7 +1763,7 @@ has a problem for us.
 The first is automatic conversion, driven by `hash-min-template-entries`, and the
 documentation excludes us by name: *"A hash is not converted if it uses field expiration,
 even when its field count meets the minimum."* Every session key here uses field expiration
-on both fields. That is Section 3.2 and it is not negotiable, so on this path our keys are
+on `d`. That is Section 3.2 and it is not negotiable, so on this path our keys are
 ineligible whatever their schema.
 
 The second is `HIMPORT`, which hints Redis to store the new key as a compact hash at
@@ -1759,10 +1784,10 @@ field names short, and **keep them identical in every session**. Never write an 
 field into some sessions and not others. A divergent schema forfeits the template if we
 ever qualify for one, and a short name is fewer bytes on the wire meanwhile.
 
-**Hash subkey notifications (8.8) are a new capability, and the one row here that does
-need code from us.** Redis 7.4 gave fields a TTL, but key-level notifications carry no
-field name, so nothing could say *which* field expired. Redis 8.8 adds field-level events
-across four channel types. Section 13.4 designs the feature that consumes them.
+**Hash subkey notifications (8.8) name the field that expired.** An earlier design kept
+both clocks in fields and needed them to tell an idle death from an absolute one. With the
+absolute deadline on the key, key-level events already tell them apart on 7.4 (Section
+13.4), so this row gives the session store nothing it lacks.
 
 ### 13.3 Operational guidance that only a Redis vendor will write
 
@@ -1782,7 +1807,7 @@ sessions at all.**
 
 **Sessions are small, and Redis stores small hashes as a listpack.** Below
 `hash-max-listpack-entries` and `hash-max-listpack-value` a hash is a flat array, not a
-hash table, so a two-field session and a short index cost far less than the per-key
+hash table, so a one-field session and a short index cost far less than the per-key
 overhead suggests. Note the thresholds so an operator sizing a deployment finds which side
 of them a typical session falls.
 
@@ -1809,47 +1834,43 @@ is the case that pays for it.
 The feature is off by default, degrades to nothing on a server that cannot supply it, and
 carries no guarantee. The rest of this section says exactly what that means.
 
-#### The two-field design pushes this to 8.8
+#### Two key-level events name the two clocks
 
-Our session key has **no key-level TTL**. It dies as a side effect of its last field
-expiring, which is the whole of Section 3.2. That has a consequence for notifications that
-is easy to miss:
+Field `d` is the only field of a session key with a TTL, and the absolute deadline is the
+key's own TTL. So each clock has its own key-level event, and both exist from Redis 7.4:
 
-| Tier    | Needs                                    | Channel                                  | Names the clock that fired? |
-|---------|------------------------------------------|------------------------------------------|-----------------------------|
-| `none`  | —                                        | —                                        | —                           |
-| `key`   | 7.4, plus `Eghx` in `notify-keyspace-events` | `__keyevent@<db>__:del`               | **No**                      |
-| `field` | **8.8**, plus `h` and **`T`** | `__subkeyevent@<db>__:hexpired`, whose payload names the field | **Yes** — `d` is idle, `a` is absolute |
+| Event | Channel | On a session key it means |
+|---|---|---|
+| `hexpired` | `__keyevent@<db>__:hexpired` | field `d` expired: the **idle** clock |
+| `expired` | `__keyevent@<db>__:expired` | the key expired: the **absolute** clock |
 
-At the `key` tier a subscriber learns that a session key went away and nothing else. It
-cannot separate an idle death from an absolute one, and it cannot separate either from a
-revocation. That is most of what a caller wants to know, so **the useful ladder is two
-rungs, not three: `field` or `none`.** Implement the `key` tier only if a concrete recipe
-needs it; do not add it speculatively.
+The payload of both is the key name, so the session ID is the key minus the prefix.
+**Neither fires for the other clock**, checked against Redis 8.7: an idle expiry publishes
+`hexpired` and then `del`, because the hash is now empty, and no `expired`; an absolute
+expiry publishes `expired` and no `hexpired`. The subscriber ignores `del`, which a
+revocation also publishes.
 
-One detail to confirm against a real 8.8 server before the guide claims it: whether field
-expiry that empties a hash also emits a key-level `del`. The `field` tier does not depend
-on the answer, which is another reason to build that tier and not the other.
+An earlier design kept the absolute deadline in a second field. Both clocks were then
+field expiries, a key-level `hexpired` could not say which field expired, and telling them
+apart needed Redis 8.8's subkey notifications with the `T` flag. Moving the deadline to
+the key removed that requirement.
+
+The tiers are therefore two: `key` when the server delivers these events, `none` when it
+cannot.
 
 #### Probe, and never configure
 
 Two different questions, and the code must ask both:
 
-1. **Can the server do it?** Read `redis_version` from `INFO server`.
-2. **Is it switched on?** Read `notify-keyspace-events` with `CONFIG GET` and look for `h`
-   together with **`T`**, not one of `S`/`T`/`I`/`V`.
+1. **Can the server do it?** Read `redis_version` from `INFO server`. Hash-field expiry,
+   and with it `hexpired`, arrived in 7.4, which is also this package's floor.
+2. **Is it switched on?** Read `notify-keyspace-events` with `CONFIG GET` and look for `E`
+   - the `__keyevent@` channels - together with `h` and `x`, the hash and expiry classes.
 
-**`T` specifically, because 8.8 adds four subkey channels and this subscribes to one.**
-`S` is `__subkeyspace@`, `I` is `__subkeyspaceitem@`, `V` is `__subkeyspaceevent@`, and
-only `T` is `__subkeyevent@`. Redis accepts a subscription to any channel name, so on a
-server set to `Sh` the subscribe succeeds and no event ever arrives. Accepting any of the
-four therefore made `tier` report `"field"` where nothing could be delivered, which
-defeats the `events.tier` check this section tells callers to rely on. An earlier draft of
-this list said "one of", and the code followed it.
-
-**The four subkey flags are independent of `K` and `E`.** Enabling standard keyspace
-notifications does not enable subkey notifications, and the reverse holds too. This will
-be the commonest support question; say it in the guide in those words.
+**`A` counts as `h` and `x`.** `A` is Redis's alias for every event class, and `CONFIG GET`
+reports it in place of the classes it covers: a server set to `KEA` answers `AKE`, with no
+literal `h` or `x`. A probe that looked for the letters would refuse the commonest
+configuration there is.
 
 **Both probes can fail, and failure is an answer.** Managed Redis often restricts, renames
 or forbids `CONFIG`, and an ACL that omits `@admin` does the same. Treat any failure as
@@ -1886,8 +1907,8 @@ it.
   driven this way needs deduplication or a single designated subscriber.
 - **Pub/Sub is fire-and-forget.** Events sent while no subscriber is connected are lost, and
   the connection has to be re-established after a disconnect with no replay.
-- **`hexpired` fires when Redis removes the field, not when the TTL reaches zero.** With
-  many keys carrying a TTL, the lag can be significant.
+- **Expiry events fire when Redis removes the field or the key, not when the TTL reaches
+  zero.** With many keys carrying a TTL, the lag can be significant.
 
 #### The rule that does not move
 
@@ -1908,20 +1929,20 @@ events = store.events()                       # tier probed once, at startup
 async def _(sid: str, cause: Cause) -> None:        # Literal["idle", "absolute"]
     await close_sockets_for(sid)
 
-print(events.tier)        # "field" or "none"
+print(events.tier)        # "key" or "none"
 ```
 
-`cause` is what the `field` tier buys and the `key` tier cannot give. At tier `none` the
-handler is held and never called.
+The channel an event arrives on gives the `cause`. At tier `none` the handler is held and
+never called.
 
-**`Cause` has two members and must not have three.** A revocation is a `DEL`, and `DEL`
-emits no subkey notification at any version: it is not among the commands that do, and the
-mechanism forbids it, because a subkey event is published only when at least one subkey is
-present and a deleted key has none left to name. An earlier draft included `"revoked"`.
-A `Literal` in a public callback signature is a promise about the inhabited set, so a
-member nothing can produce leaves a caller's exhaustive `match` with an arm that never
-runs and that a type checker will not let them delete. If the `key` tier is ever built,
-widening the union then is the ordinary cost of widening any union.
+**`Cause` has two members and must not have three.** A revocation is a `DEL`, which
+publishes `del` - the same event an idle expiry publishes when it empties the key. A `del`
+cannot say which of the two happened, so the subscriber does not listen for it. An earlier
+draft included `"revoked"`. A `Literal` in a public callback signature is a promise about
+the inhabited set, so a member nothing can produce leaves a caller's exhaustive `match`
+with an arm that never runs and that a type checker will not let them delete. If a
+revocation event is ever needed, widening the union then is the ordinary cost of widening
+any union.
 
 `Cause`, `Tier` and `Handler` are all exported. `Handler` in particular, because a caller
 under `mypy --strict` has to be able to name the type of the callable `on_session_end`
@@ -1943,20 +1964,20 @@ compare-and-swap of any kind. The draft also called `IFDEQ` an `O(1)` digest com
 `DELEX` documentation gives `O(1)` for `IFEQ`/`IFNE` and **`O(N)` for `IFDEQ`/`IFDNE`**.
 `IFDEQ` saves bytes on the wire against `IFEQ`. It does not save server time.
 
-Reaching those commands would mean splitting the record: the payload into a string key, the
-two clocks into a hash. That is a second key, a `{sid}` hash tag to keep Cluster in one
+Reaching those commands would mean splitting the record: the payload into a string key,
+the idle clock into a hash beside it. That is a second key, a `{sid}` hash tag to keep Cluster in one
 slot, and a schema change — to buy a command that is no cheaper than the alternative below.
 
 **The mechanism that would work is Lua, and it works at the 7.4 floor.** A script reads
 field `d`, compares `redis.sha1hex` of the stored bytes against a digest the client computed
-from what it loaded, and writes only on a match. It touches field `d` and never field `a`,
-so N-6 survives untouched.
+from what it loaded, and writes only on a match. It touches field `d` and never the key's
+TTL, so N-6 survives untouched.
 
 The cost is the part worth recording, because it is the question that gets asked:
 
 | Path | Today                                        | With a Lua compare-and-set |
 |------|----------------------------------------------|----------------------------|
-| Load | 1 round trip, 2 commands (`HGETEX d`, `HTTL a`) | **unchanged** — the client hashes bytes it already received |
+| Load | 1 round trip, 2 commands (`HGETEX d`, `TTL`) | **unchanged** — the client hashes bytes it already received |
 | Save | 1 round trip, 2 commands (`HSETEX d`, index `HSETEX`) | 1 round trip, 2 commands — `EVALSHA` replaces the first |
 
 **Identical round trips and identical command counts.** The new cost is CPU: one SHA-1 over
@@ -1985,17 +2006,18 @@ that reason.
 
 **One objection ends it.** `HIMPORT SET key fieldset-name value [value ...]` takes no
 expiration option of any kind, and its documentation states that an existing key is
-overwritten. Field `a` and its absolute deadline would be destroyed on every save.
-Rebuilding them costs `HIMPORT SET`, then `HEXPIRE a`, then `HEXPIRE d` — three commands
+overwritten. The key's TTL - the absolute deadline - would be destroyed on every save.
+Rebuilding it costs `HIMPORT SET`, then `EXPIREAT` from a stored deadline, then
+`HEXPIRE d` — three commands
 where Section 4.2 issues one `HSETEX`, and between them a window where the session carries
 no expiry at all. N-6 asks that outliving the absolute deadline be unreachable by
 construction. This design makes it reachable by a crash.
 
 Four more, each sufficient on its own:
 
-- **There is nothing to save.** What HIMPORT saves is the field names, and ours are `a` and
-  `d`. Redis measured 11% on a pipelined import of a million three-field records named
-  `_uid`, `score` and `tag`. Our write path is one two-field write per HTTP request.
+- **There is nothing to save.** What HIMPORT saves is the field names, and ours is `d`.
+  Redis measured 11% on a pipelined import of a million three-field records named `_uid`,
+  `score` and `tag`. Our write path is one one-field write per HTTP request.
 - **The index cannot use it at all.** `sessions-of:<subject>` carries session IDs as field
   names — unique per key, unknown until write time. A fieldset is fixed and shared by
   definition.
@@ -2020,10 +2042,10 @@ load path in Section 4.1 is `HGETEX`, which is a *write* command — it changes 
 redis-py refuses to cache writes. Verified against `redis.cache.DefaultCache.is_cachable`
 in redis-py 8.0.1:
 
-| Command                                 | Cacheable |
-|-----------------------------------------|-----------|
-| `GET`, `HGET`, `HGETALL`, `HLEN`        | yes       |
-| **`HGETEX`, `HSETEX`, `GETEX`, `HTTL`** | **no**    |
+| Command                                       | Cacheable |
+|-----------------------------------------------|-----------|
+| `GET`, `HGET`, `HGETALL`, `HLEN`              | yes       |
+| **`HGETEX`, `HSETEX`, `GETEX`, `HTTL`, `TTL`** | **no**    |
 
 So the authentication path is never served from a client cache, whatever the
 configuration. The refresh-on-read that Section 4.2 buys with `HGETEX` costs us the
@@ -2060,7 +2082,7 @@ let the feature settle before this package leans on it.
 requirement to log the session lifecycle, using a salted hash of the session ID. `XADD`
 with `MAXLEN` gives a bounded, ordered, replica-safe log that any instance can read, and
 8.6's idempotent production (`XADD ... IDMP`) means a producer that retries after a crash
-cannot double-write an audit entry. Pair it with the subkey notifications in Section 13.2:
+cannot double-write an audit entry. Pair it with the session events in Section 13.4:
 the notification is the trigger, the stream is the record. This belongs in the recipe list
 in Section 9.6 of `session-mgmt.md` rather than in the store.
 
@@ -2115,7 +2137,7 @@ a vulnerability (Section 5.1). A change on a 4xx persists nothing (Section 4.3).
 | Starlette | <pre>max_age=1209600        # cookie only; the server enforces nothing</pre> |
 | `starsessions` | <pre>lifetime=3600, rolling=True    # one clock, refreshed or not</pre> |
 | `fastapi-users` | <pre>lifetime_seconds=3600  # absolute only; None means it never expires</pre> |
-| **This SDK** | <pre>REDIS_SESSION_IDLE_TTL=1800        # field d, refreshed on access<br>REDIS_SESSION_ABSOLUTE_TTL=28800   # field a, never refreshed</pre> |
+| **This SDK** | <pre>REDIS_SESSION_IDLE_TTL=1800        # field d, refreshed on access<br>REDIS_SESSION_ABSOLUTE_TTL=28800   # key TTL, never refreshed</pre> |
 
 Two clocks, both enforced by Redis, neither computed by us (Section 3.2). Set them equal to
 keep the single-clock behaviour of the row above. Section 9.4 of `session-mgmt.md` maps

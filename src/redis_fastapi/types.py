@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    runtime_checkable,
+)
 
+from fastapi.security.base import SecurityBase
 from pydantic import BaseModel
+from starlette.requests import Request
+from starlette.responses import Response
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -81,3 +91,45 @@ class Encryptor(Protocol):
 
 # A key builder receives (request, eviction_group, prefix) and returns a cache key.
 KeyBuilder: TypeAlias = Callable[..., str | Awaitable[str]]
+
+
+# ---------------------------------------------------------------------------
+# valid_session() - the session gate
+# ---------------------------------------------------------------------------
+
+R = TypeVar("R", bound=str)
+
+OnReject: TypeAlias = Callable[[Request, R], Response | Awaitable[Response]]
+"""Builds the response for a rejected request, from the request and the reason.
+
+Generic over the reason, so ``valid_session()`` and
+``valid_session(issued_within=...)`` share one alias while each promises the
+exact set of reasons it can produce.  It returns the response rather than
+raising it: a callback that forgets to raise must not let the request through.
+"""
+
+SessionRejection: TypeAlias = Literal["missing", "expired", "unavailable"]
+"""Why ``valid_session()`` refused a request.
+
+* ``"missing"`` - no usable session: no cookie, a malformed one, or a session
+  an earlier dependency revoked or emptied.
+* ``"expired"`` - a well-formed cookie naming no live record: expired, revoked
+  elsewhere, evicted, or forged.  Nothing can tell those apart.
+* ``"unavailable"`` - the read failed and the request continued without a
+  session.  Return 503, not a sign-in page.
+"""
+
+RecencyRejection: TypeAlias = Literal["missing", "expired", "unavailable", "stale"]
+"""Why ``valid_session(issued_within=...)`` refused a request.
+
+The three reasons of :data:`SessionRejection`, plus ``"stale"``: the session
+is valid, but its ID was issued longer ago than ``issued_within``.
+"""
+
+Challenge: TypeAlias = str | SecurityBase | Callable[[Request, str], str | None]
+"""What the default rejection sends as ``WWW-Authenticate``.
+
+A FastAPI security scheme, whose own challenge is used; a fixed string; or a
+callable that receives the request and the reason and returns a value, or
+``None`` for no header.
+"""

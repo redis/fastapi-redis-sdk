@@ -358,10 +358,14 @@ def record_session_operation(*, operation: str, result: str) -> None:
             session - the sign-in rate - while a save updates an existing one.
             ``delete`` and ``index`` are deliberately absent: both are always
             part of one of the above and counting them would double-count it.
-        result: ``hit``, ``miss``, ``expired`` or ``error``.  ``miss`` means
-            there was nothing to do - no such session, an empty index, an
-            identifier that is not this subject's.  ``expired`` is emitted by
-            ``load`` alone.
+        result: ``hit``, ``miss``, ``expired``, ``malformed`` or ``error``.
+            ``miss`` means there was nothing to do - no such session, an empty
+            index, an identifier that is not this subject's.  ``expired`` and
+            ``malformed`` are emitted by ``load`` alone.  ``malformed`` is a
+            cookie that fails the identifier check: every identifier the store
+            issues passes it, so this is the one certain sign of an injected
+            value - or of another application on the domain using the same
+            cookie name.
     """
     if not _state.enabled or _state.session_operations is None:
         return

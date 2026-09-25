@@ -33,6 +33,7 @@ from redis_fastapi.deps import (
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
     SessionError,
+    SessionRejected,
     SessionStoreError,
 )
 from redis_fastapi.lifespan import redis_lifespan
@@ -70,14 +71,19 @@ from redis_fastapi.sessions import (
     SessionMiddleware,
     add_redis_sessions,
     build_cookie,
+    valid_session,
 )
 from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
+    Challenge,
     Coder,
     Encryptor,
     JsonCoder,
     KeyBuilder,
+    OnReject,
+    RecencyRejection,
+    SessionRejection,
     pydantic_model_coder,
 )
 
@@ -88,6 +94,7 @@ __all__ = [
     "CacheHitException",
     "CannotIdentifyClient",
     "Cause",
+    "Challenge",
     "Coder",
     "CookieSpec",
     "Encryptor",
@@ -97,6 +104,7 @@ __all__ = [
     "JsonCoder",
     "KeyBuilder",
     "LoadedSession",
+    "OnReject",
     "Outcome",
     "Rate",
     "RateLimitBackend",
@@ -104,6 +112,7 @@ __all__ = [
     "RateLimitExceeded",
     "RateLimitMiddleware",
     "RateLimitResult",
+    "RecencyRejection",
     "RedisSessionStore",
     "RedisSettings",
     "Session",
@@ -115,6 +124,8 @@ __all__ = [
     "SessionMetadata",
     "SessionMiddleware",
     "SessionRecord",
+    "SessionRejected",
+    "SessionRejection",
     "SessionState",
     "SessionStore",
     "SessionStoreDep",
@@ -151,4 +162,5 @@ __all__ = [
     "pydantic_model_coder",
     "rate_limit",
     "redis_lifespan",
+    "valid_session",
 ]

@@ -162,6 +162,158 @@ are not signed in on and a sign-out button that does nothing.
 
 ---
 
+## Requiring a valid session
+
+```python
+from fastapi import Depends
+from redis_fastapi import valid_session
+
+@app.post("/checkout", dependencies=[Depends(valid_session())])
+async def checkout(session: SessionDep) -> dict: ...
+```
+
+`valid_session()` rejects a request that did not arrive with a session this
+application created in an earlier response. A value a client makes up finds no
+record in Redis, so it fails, whatever its shape.
+
+It checks nothing else. It does not ask who the session belongs to: an
+anonymous session that holds a basket passes. Identity and roles stay with your
+own authentication.
+
+The default rejection is a `401`. To build your own, pass `on_reject`. It
+receives the request and a reason, and returns the response:
+
+```python
+from fastapi import Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
+from redis_fastapi import SessionRejection
+
+def start_over(request: Request, reason: SessionRejection) -> Response:
+    if reason == "unavailable":
+        return JSONResponse({"detail": "Try again shortly"}, status_code=503)
+    return RedirectResponse("/?expired=1" if reason == "expired" else "/", status_code=303)
+
+@app.get("/basket", dependencies=[Depends(valid_session(on_reject=start_over))])
+async def basket(session: SessionDep) -> dict: ...
+```
+
+| Reason | What happened |
+|---|---|
+| `"missing"` | No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied |
+| `"expired"` | A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart. |
+| `"unavailable"` | Redis could not be read, and the request continued without a session. Answer `503`, not a sign-in page. |
+
+`on_reject` may be sync or async. It **returns** the response instead of
+raising it, so a callback that forgets to return fails with a `500` instead of
+letting the request through.
+
+The gate also:
+
+- **marks the session as read**, so the response carries `Vary: Cookie` and
+  `Cache-Control: private`;
+- **counts malformed cookies**, on every request, gated or not, as the session
+  operation metric with `result="malformed"`. Every identifier the store issues
+  passes the format check, so a malformed value was never ours. The middleware
+  neither logs it nor clears it: the cookie may belong to another application
+  on the same domain;
+- **refuses a route excluded by `skip`** with `SessionConfigurationError`,
+  because such a route can never pass.
+
+### The `WWW-Authenticate` header
+
+By default a rejection sends none, as most frameworks do for cookie sessions:
+the browser shows the body, and no password dialog. To send one, set
+`challenge` once for the application:
+
+```python
+from fastapi.security import APIKeyCookie
+
+# The security scheme your application already declares.
+FastAPIRedis(app).lifespan().sessions(challenge=APIKeyCookie(name="session"))
+
+# A fixed value.
+FastAPIRedis(app).lifespan().sessions(
+    challenge='Cookie realm="shop" form-action="/login" cookie-name=session',
+)
+
+# A value that depends on the request or the reason; None sends no header.
+FastAPIRedis(app).lifespan().sessions(
+    challenge=lambda request, reason: None if reason == "unavailable" else "APIKey",
+)
+```
+
+`Basic` is refused: every browser answers it with a password dialog, on every
+gated page. The header goes on the default rejection only; a response from
+`on_reject` is your own.
+
+### Requiring a recently issued session
+
+```python
+@app.post(
+    "/account/email",
+    dependencies=[
+        Depends(current_user),                      # your authentication
+        Depends(valid_session(issued_within=600)),  # the session ID is at most 10 minutes old
+    ],
+)
+async def change_email() -> dict: ...
+
+@app.post("/confirm-password")
+async def confirm(
+    form: PasswordForm, state: SessionStateDep, store: SessionStoreDep
+) -> dict:
+    if not await verify(form.password):
+        raise HTTPException(401)
+    await store.reauthenticate(state)   # issues a new session ID
+    return {"ok": True}
+```
+
+`issued_within` asks one more question: was this session's ID issued within the
+last N seconds? A session gets a new ID when it is created, when the principal
+changes - a sign-in, a role change - and when you call `store.rotate()` or
+`store.reauthenticate()`. Reads and writes keep the ID. The age comes from the
+session key's TTL in Redis, so a container with a wrong clock cannot make an old
+session look recent.
+
+This is the building block for a step-up before a sensitive action, as
+[OWASP ASVS V7.5](https://github.com/OWASP/ASVS) asks: your route checks the
+password and calls `reauthenticate()`, and for the next `issued_within` seconds
+the sensitive routes pass.
+
+!!! warning "`issued_within` is not an authentication check"
+    - **A new anonymous session is recent.** Pair it with your own
+      authentication dependency, as in the example.
+    - **Every new ID counts.** If your principal includes something a user can
+      change without a password - an active tenant, say - changing it makes the
+      session recent.
+    - **A handler that calls `store.rotate()` makes the session recent too.**
+
+A session that is too old gets the reason `"stale"`. The default response is:
+
+```json
+401
+{"detail": "A recently issued session is required",
+ "error": "stale_session",
+ "issued_within": 600}
+```
+
+Branch on `error` in the client: open a password prompt, then retry. Every
+response from such a route, passed or rejected, says `Cache-Control: no-store`,
+so no cache keeps it, the browser's included. For a "confirm your password to
+continue" banner, `store.session_age(state)` returns the age in seconds.
+
+Two side effects to know:
+
+- **A step-up changes the cookie**, because `reauthenticate()` rotates the
+  session. A form open in another tab, carrying a CSRF token from the old
+  session, fails after it.
+- **Lowering `session_absolute_ttl` makes older sessions stale** until they
+  expire. The age is the configured lifetime minus the time left, and a session
+  created under the longer lifetime has more time left than the new one allows.
+  It is reported as `"stale"`, never as recent.
+
+---
+
 ## When Redis is unreachable
 
 The default is asymmetric by design:
@@ -338,6 +490,34 @@ declaration exists to protect.
 **This is an assertion, and the library takes your word for it.** If the body
 does depend on the session, you have re-enabled the leak deliberately.
 
+With [`valid_session()`](#requiring-a-valid-session) as the gate, two things
+change:
+
+```python
+@app.get(
+    "/members/catalogue",
+    dependencies=[
+        Depends(valid_session()),                       # first
+        Depends(cache(ttl=300, vary_on_session=False)), # then the cache
+    ],
+)
+async def members_catalogue() -> list[dict]:
+    return await load_products()
+```
+
+- **The gate goes first.** FastAPI resolves `dependencies=[...]` in order, and
+  a cache hit ends the resolution, so in the other order a hit would be served
+  before the gate runs - to anyone. `valid_session()` detects that order and
+  raises `SessionConfigurationError` on the first request, before anything is
+  stored.
+- **The response says `private`.** Redis still keeps one shared entry, because
+  the gate runs before it on every request. A CDN cannot check a session, so it
+  would serve that entry to anyone; `private` keeps it out.
+
+A hand-written gate like `require_user` gets neither. List it before `cache()`
+yourself, and pass `cache(..., private=True)` when the route sits behind a CDN
+or another shared cache.
+
 ### Saying nothing
 
 If the endpoint never touches the session, say nothing - there is nothing to
@@ -369,12 +549,14 @@ depends on it.
 |---|---|---|---|
 | Body depends on the user | `vary_on_session=True` | one entry per user | `private, max-age=N` + `Vary: Cookie` |
 | Reads the session, body identical | `vary_on_session=False` | one shared entry | `max-age=N`, no `Vary` |
+| Gated by `valid_session()`, body identical | `vary_on_session=False` | one shared entry | `private, max-age=N`, no `Vary` |
+| Gated by `valid_session(issued_within=...)` | any | as declared | `no-store` |
 | Never touches the session | *(nothing)* | one shared entry | `max-age=N` |
 | Touches it, nothing declared | *(nothing)* | **not cached** | `private, no-store` + `Vary: Cookie` |
 
-The rule underneath all four rows: **what a response tells other caches they
-may do is never more permissive than what this library does itself.** If we key
-per user, we say
+The rule underneath every row: **what a response tells other caches they may do
+is never more permissive than what this library does itself.** If we key per
+user, or serve our entry only to callers who pass the gate, we say
 [`private`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches).
 If we refuse to store, we say
 [`no-store`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#no-store).
@@ -385,6 +567,21 @@ Reading the session on an uncached route emits `Cache-Control: private` and
 `Vary: Cookie` on its own, since nothing else will. Where `cache()` is present
 it owns the header outright - one writer, so you never see two contradictory
 `Cache-Control` values on one response.
+
+For a sensitive page - an order history, a bank statement - set
+`Cache-Control: no-store` in the handler. The middleware then adds nothing, so
+the browser does not keep the page and cannot show it again from history after
+a sign-out:
+
+```python
+@app.get("/orders")
+async def orders(session: SessionDep, response: Response) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return {"orders": await db.orders_for(session["user_id"])}
+```
+
+On a cached route, pass `cache(..., no_store=True)` instead: the entry is still
+kept in Redis, and every miss and hit says `no-store`.
 
 ---
 
