@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from redis_fastapi.rate import Rate
     from redis_fastapi.ratelimit import Identifier, OnLimitExceeded, SkipWhen
     from redis_fastapi.sessions import CookieSpec, Session
+    from redis_fastapi.types import Challenge
 
 
 class FastAPIRedis:
@@ -149,6 +150,7 @@ class FastAPIRedis:
         cookie_builder: Callable[[CookieSpec], str] | None = None,
         descriptor_of: Callable[[Request, Session], dict[str, Any]] | None = None,
         skip: Callable[[Request], bool] | None = None,
+        challenge: Challenge | None = None,
         **store_options: Any,
     ) -> FastAPIRedis:
         """Register the session middleware.
@@ -179,6 +181,9 @@ class FastAPIRedis:
                 ``store_factory``, ``coder``, ``encryptor``, ``id_factory``,
                 ``key_prefix``, ``idle_ttl``, ``absolute_ttl``, ``gc_ttl``.
             skip: Requests that need no session at all, at zero Redis cost.
+            challenge: The ``WWW-Authenticate`` header on a ``valid_session()``
+                rejection: a FastAPI security scheme, a string, or a callable.
+                Omitted by default.
         """
         from redis_fastapi.sessions import SessionMiddleware, add_redis_sessions
 
@@ -192,6 +197,7 @@ class FastAPIRedis:
             cookie_builder=cookie_builder,
             descriptor_of=descriptor_of,
             skip=skip,
+            challenge=challenge,
             **store_options,
         )
         return self

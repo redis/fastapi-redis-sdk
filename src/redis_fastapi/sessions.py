@@ -16,22 +16,42 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMappi
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum, auto
-from typing import Any, cast
+from inspect import isawaitable
+from typing import Any, cast, overload
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.security.base import SecurityBase
 from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.status import HTTP_401_UNAUTHORIZED
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from redis_fastapi.config import (
     CACHE_ROUTE_SCOPE_KEY,
     CACHE_SUPPRESS_VARY_SCOPE_KEY,
+    SESSION_GATED_SCOPE_KEY,
+    SESSION_NO_STORE_SCOPE_KEY,
     get_settings,
 )
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
+    SessionRejected,
 )
-from redis_fastapi.session_backend import SessionState, SessionStore
-from redis_fastapi.types import Coder, Encryptor
+from redis_fastapi.session_backend import (
+    SessionState,
+    SessionStore,
+    _seconds,
+    issued_ago,
+)
+from redis_fastapi.telemetry import record_session_operation
+from redis_fastapi.types import (
+    Challenge,
+    Coder,
+    Encryptor,
+    OnReject,
+    RecencyRejection,
+    SessionRejection,
+)
 
 # Sentinel for ``pop``/``setdefault`` so that ``None`` stays a usable default.
 _MISSING: Any = object()
@@ -276,6 +296,26 @@ def build_cookie(spec: CookieSpec) -> str:
 SCOPE_KEY = "session"
 STATE_SCOPE_KEY = "redis_session_state"
 _STATE_ATTR = "_redis_session"
+# How the load went, and the store it used - both for valid_session(), which
+# runs after the middleware and must judge the request by what it recorded.
+_LOAD_SCOPE_KEY = "redis_session_load"
+_STORE_SCOPE_KEY = "redis_session_store"
+
+
+class _Load(Enum):
+    """How the middleware's load went.  Private: ``valid_session()`` maps it
+    to a reason."""
+
+    LOADED = auto()
+    MISSING = auto()
+    """No cookie, or one that fails ``is_valid_id``."""
+    NOT_FOUND = auto()
+    """A well-formed cookie with no live record."""
+    FAILED = auto()
+    """The read raised, and ``session_fail_closed`` let the request continue."""
+    SKIPPED = auto()
+    """The ``skip`` predicate matched, so nothing was loaded."""
+
 
 # What ``principal_of`` returns when there is no identity to speak of.
 _NO_PRINCIPAL: Any = None
@@ -426,6 +466,7 @@ class _RequestState:
     principal_before: Any
     # Only for the ``descriptor_of`` seam, which is given the live request.
     request: Request | None = None
+    load: _Load = _Load.MISSING
 
 
 class SessionMiddleware:
@@ -473,12 +514,15 @@ class SessionMiddleware:
             empty = Session()
             scope[SCOPE_KEY] = empty
             scope[STATE_SCOPE_KEY] = SessionState(data=empty)
+            scope[_LOAD_SCOPE_KEY] = _Load.SKIPPED
             await self.app(scope, receive, send)
             return
 
         settings = get_settings()
         store = await self._store_factory(request)
+        scope[_STORE_SCOPE_KEY] = store
         state = await self._load(request, store, settings)
+        scope[_LOAD_SCOPE_KEY] = state.load
         scope[SCOPE_KEY] = state.session
         setattr(request.state, _STATE_ATTR, state)
         scope[STATE_SCOPE_KEY] = state.store_state
@@ -507,15 +551,22 @@ class SessionMiddleware:
         session = Session()
         store_state = SessionState(data=session)
         loaded_id: str | None = None
+        load = _Load.MISSING
 
         # Validate before use. This is not cosmetic: the value is written back
         # into a Set-Cookie header, so an unvalidated one is a header-injection
         # vector. Anything unexpected is treated as no session at all.
-        if raw_cookie and store.is_valid_id(raw_cookie):
-            loaded = await store.load(
-                raw_cookie, refresh=settings.session_refresh_on_load
+        if raw_cookie and not store.is_valid_id(raw_cookie):
+            # The one certain sign of injection: every identifier this store
+            # issues passes is_valid_id. Counted on every request, gated or
+            # not; never logged, so a scanner cannot flood the log.
+            record_session_operation(operation="load", result="malformed")
+        elif raw_cookie:
+            loaded, failed = await _load_with_status(
+                store, raw_cookie, refresh=settings.session_refresh_on_load
             )
             if loaded is not None:
+                load = _Load.LOADED
                 session = Session(loaded.record.data)
                 loaded_id = raw_cookie
                 store_state = SessionState(
@@ -525,6 +576,8 @@ class SessionMiddleware:
                     created=loaded.record.metadata.created,
                     absolute_remaining=loaded.absolute_remaining,
                 )
+            else:
+                load = _Load.FAILED if failed else _Load.NOT_FOUND
 
         return _RequestState(
             session=session,
@@ -532,6 +585,7 @@ class SessionMiddleware:
             loaded_id=loaded_id,
             principal_before=self._snapshot(session),
             request=request,
+            load=load,
         )
 
     def _snapshot(self, session: Session) -> Any:
@@ -655,10 +709,19 @@ class SessionMiddleware:
         the route.  Where one does, it sets the directive itself from the
         route's declaration, and a second writer here is what produced
         ``max-age=300, private, no-store`` in one response.
+
+        ``no-store`` wins over ``private``.  A route gated by
+        ``valid_session(issued_within=...)`` gets ``no-store`` instead, and a
+        response whose handler already said ``no-store`` gets nothing added:
+        ``no-store, private`` is valid, but the ``private`` says nothing.
         """
         if not scope.get(CACHE_SUPPRESS_VARY_SCOPE_KEY):
             _merge_header(headers, b"vary", b"Cookie")
-        if not scope.get(CACHE_ROUTE_SCOPE_KEY):
+        if scope.get(CACHE_ROUTE_SCOPE_KEY):
+            return
+        if scope.get(SESSION_NO_STORE_SCOPE_KEY):
+            _merge_header(headers, b"cache-control", b"no-store")
+        elif not _has_directive(headers, b"cache-control", b"no-store"):
             _merge_header(headers, b"cache-control", b"private")
 
     def _with_cookie(
@@ -810,6 +873,7 @@ def add_redis_sessions(
     cookie_builder: Callable[[CookieSpec], str] | None = None,
     descriptor_of: Callable[[Request, Session], dict[str, Any]] | None = None,
     skip: Callable[[Request], bool] | None = None,
+    challenge: Challenge | None = None,
     store: SessionStore | None = None,
     store_factory: Callable[[Request], Any] | None = None,
     coder: type[Coder] | None = None,
@@ -848,6 +912,12 @@ def add_redis_sessions(
             application's own ``request.session``.
         skip: Predicate for requests that need no session at all.  A request
             it returns true for costs zero Redis calls.
+        challenge: What the default rejection of ``valid_session()`` sends as
+            ``WWW-Authenticate``: a FastAPI security scheme, whose own
+            challenge is used; a fixed string; or a callable receiving the
+            request and the reason.  ``None``, the default, sends no header.
+            ``Basic`` is refused, because it makes every browser open its
+            password dialog on a gated page.
         store: A ready-made store, used for every request.  The escape hatch
             for a backend that is not Redis, and for a test double.
         store_factory: Called per request to build one, when a single instance
@@ -871,7 +941,7 @@ def add_redis_sessions(
 
     Raises:
         SessionConfigurationError: If the cookie settings contradict each
-            other.
+            other, or *challenge* names ``Basic``.
     """
     settings = get_settings()
     if settings.session_cookie_same_site == "none" and not (
@@ -915,6 +985,10 @@ def add_redis_sessions(
     }
     if store is not None and store_factory is not None:
         raise SessionConfigurationError("Pass either store or store_factory, not both.")
+    if isinstance(challenge, (str, SecurityBase)):
+        _refuse_basic(_scheme_challenge(challenge))
+    app.state._redis_session_challenge = challenge
+    app.add_exception_handler(SessionRejected, session_rejected_handler)
     app.state._redis_session_options = _SessionStoreOptions(
         store=store, store_factory=store_factory, kwargs=kwargs
     )
@@ -971,6 +1045,19 @@ def session_of(request: Request) -> Session:
     return session
 
 
+def _has_directive(
+    headers: list[tuple[bytes, bytes]], name: bytes, directive: bytes
+) -> bool:
+    """Whether a header of that name already lists *directive*."""
+    for existing_name, existing_value in headers:
+        if existing_name.lower() != name:
+            continue
+        parts = [p.strip().lower() for p in existing_value.split(b",")]
+        if directive in parts:
+            return True
+    return False
+
+
 def _merge_header(
     headers: list[tuple[bytes, bytes]], name: bytes, value: bytes
 ) -> None:
@@ -992,3 +1079,219 @@ def _merge_header(
 def scope_of(state: _RequestState) -> MutableMapping[str, Any]:
     """The ASGI scope behind a request state, for reading cross-feature flags."""
     return state.request.scope if state.request is not None else {}
+
+
+# ---------------------------------------------------------------------------
+# valid_session() - the session gate
+# ---------------------------------------------------------------------------
+
+_REASON: dict[_Load, SessionRejection] = {
+    _Load.MISSING: "missing",
+    _Load.NOT_FOUND: "expired",
+    _Load.FAILED: "unavailable",
+}
+
+
+@overload
+def valid_session(
+    *, on_reject: OnReject[SessionRejection] | None = None
+) -> Callable[[Request], Awaitable[None]]: ...
+
+
+@overload
+def valid_session(
+    *,
+    issued_within: int | timedelta,
+    on_reject: OnReject[RecencyRejection] | None = None,
+) -> Callable[[Request], Awaitable[None]]: ...
+
+
+def valid_session(
+    *,
+    issued_within: int | timedelta | None = None,
+    on_reject: OnReject[Any] | None = None,
+) -> Callable[[Request], Awaitable[None]]:
+    """Return a dependency that rejects a request without a valid session.
+
+    Valid means the cookie named a record that was live in Redis when the
+    request arrived, and nothing earlier in the request has ended it.  Says
+    nothing about who the session belongs to: an anonymous session passes.
+
+    Marks the session as read, so the response carries ``Vary: Cookie`` and
+    is treated as depending on the session - which it does.  On a route
+    cached with ``cache(vary_on_session=False)`` the response says
+    ``private``, so a shared cache cannot serve a gated page to a caller the
+    gate refuses.  List it **before** ``cache()``: in the other order it
+    raises on the first request, because a cache hit would skip it.
+
+    Args:
+        issued_within: Also require the session's ID to have been issued at
+            most this long ago - by a sign-in, a rotation or
+            ``store.reauthenticate()``.  Adds the reason ``"stale"``, and makes
+            the response ``Cache-Control: no-store``.  **Not an
+            authentication check:** a new anonymous session is recent, so pair
+            it with the application's own authentication.
+        on_reject: Build the rejection.  Receives the request and the reason,
+            and returns the response - sync or async.  Default: 401, with a
+            ``WWW-Authenticate`` header only if the ``challenge`` setting is
+            configured.
+
+    Raises:
+        SessionConfigurationError: At request time, if sessions are not set
+            up, the route is excluded by ``skip``, or ``cache()`` runs before
+            this gate.
+        TypeError: At request time, if *on_reject* returns something that is
+            not a ``Response``.
+    """
+    limit = None if issued_within is None else _seconds(issued_within)
+
+    async def _dependency(request: Request) -> None:
+        if request.scope.get(CACHE_SUPPRESS_VARY_SCOPE_KEY):
+            # cache() already ran, so on a later request its hit would be
+            # served before this gate. Refusing here keeps the first response
+            # from ever being stored, so no hit can exist.
+            raise SessionConfigurationError(
+                f"{request.url.path}: valid_session() must come before "
+                "cache(vary_on_session=False) in dependencies=[...]"
+            )
+        session = session_of(request)
+        state = session_state_of(request)
+        load = request.scope.get(_LOAD_SCOPE_KEY, _Load.MISSING)
+        if load is _Load.SKIPPED:
+            raise SessionConfigurationError(
+                f"{request.url.path} is excluded by skip and gated by "
+                "valid_session(); it can never pass."
+            )
+        session.mark_accessed()
+        if limit is not None:
+            request.scope[SESSION_NO_STORE_SCOPE_KEY] = True
+
+        reason: RecencyRejection
+        if load is _Load.LOADED:
+            # Emptied earlier in this request: the middleware will sign it
+            # out on the way out, so it is already ended. ``dict.__len__``
+            # does not mark the session.
+            cleared = session.modified and dict.__len__(session) == 0
+            if state.session_id is not None and not state.revoked and not cleared:
+                request.scope[SESSION_GATED_SCOPE_KEY] = True
+                if limit is None:
+                    return
+                age = _age_of(request, state)
+                if age is not None and age <= limit:
+                    return
+                reason = "stale"
+            else:
+                reason = "missing"
+        else:
+            reason = _REASON[load]
+
+        if on_reject is None:
+            raise _default_rejection(request, reason, limit)
+        response = on_reject(request, reason)
+        if isawaitable(response):
+            response = await response
+        if not isinstance(response, Response):
+            # Fail closed, and name the bug: a callback that returned nothing
+            # must not let the request through.
+            raise TypeError(
+                f"on_reject must return a Response, got {type(response).__name__}"
+            )
+        raise SessionRejected(response)
+
+    return _dependency
+
+
+async def session_rejected_handler(request: Request, exc: Exception) -> Response:
+    """Return the response carried by :class:`SessionRejected`."""
+    return cast(SessionRejected, exc).response
+
+
+def _age_of(request: Request, state: SessionState) -> int | None:
+    """Seconds since the session's ID was issued, measured with the store the
+    middleware loaded it with - the one whose ``absolute_seconds`` sized the
+    key's TTL."""
+    store = request.scope.get(_STORE_SCOPE_KEY)
+    if store is None:
+        return None
+    return issued_ago(store.absolute_seconds, state)
+
+
+def _default_rejection(
+    request: Request, reason: RecencyRejection, limit: int | None
+) -> Exception:
+    """The 401 ``valid_session()`` raises when no ``on_reject`` is given."""
+    headers = challenge_headers(request, reason)
+    if reason == "stale":
+        return SessionRejected(
+            JSONResponse(
+                {
+                    "detail": "A recently issued session is required",
+                    "error": "stale_session",
+                    "issued_within": limit,
+                },
+                status_code=HTTP_401_UNAUTHORIZED,
+                headers=headers or None,
+            )
+        )
+    return HTTPException(
+        HTTP_401_UNAUTHORIZED, "No valid session", headers=headers or None
+    )
+
+
+def challenge_headers(request: Request, reason: str) -> dict[str, str]:
+    """The ``WWW-Authenticate`` header for a default rejection, or none.
+
+    Read from the ``challenge`` setting at request time, so it does not matter
+    whether routes are declared before or after ``.sessions()``.
+    """
+    challenge = getattr(request.app.state, "_redis_session_challenge", None)
+    if challenge is None:
+        return {}
+    if isinstance(challenge, (str, SecurityBase)):
+        value = _scheme_challenge(challenge)
+    else:
+        value = challenge(request, reason)
+        if value is not None:
+            _refuse_basic(value)
+    return {"WWW-Authenticate": value} if value else {}
+
+
+def _scheme_challenge(challenge: str | SecurityBase) -> str | None:
+    """The challenge a string or a FastAPI security scheme stands for."""
+    if isinstance(challenge, str):
+        return challenge
+    # Every class in fastapi.security builds its own 401 with its challenge.
+    # An older FastAPI without the method sends no header.
+    make_error = getattr(challenge, "make_not_authenticated_error", None)
+    if make_error is None:
+        return None
+    headers = getattr(make_error(), "headers", None) or {}
+    return cast("str | None", headers.get("WWW-Authenticate"))
+
+
+def _refuse_basic(value: str | None) -> None:
+    """Refuse a ``Basic`` challenge: every browser answers it with a native
+    password dialog, on every gated page."""
+    if value and value.split(maxsplit=1)[0].lower() == "basic":
+        raise SessionConfigurationError(
+            "challenge must not be Basic: browsers answer it with a password "
+            "dialog on every gated page. Use the application's own scheme, "
+            "such as APIKeyCookie, or a string like 'Cookie realm=...'."
+        )
+
+
+async def _load_with_status(
+    store: SessionStore, session_id: str, *, refresh: bool
+) -> tuple[Any, bool]:
+    """``store.load_with_status``, or ``load`` for a store that lacks it.
+
+    A store implementing only ``SessionStoreProtocol`` cannot say that its
+    read failed, so a failure reads as an unknown identifier: the gate then
+    says "expired" during an outage - the wrong word, but still a rejection.
+    """
+    load_with_status = getattr(store, "load_with_status", None)
+    if load_with_status is not None:
+        return cast(
+            "tuple[Any, bool]", await load_with_status(session_id, refresh=refresh)
+        )
+    return await store.load(session_id, refresh=refresh), False

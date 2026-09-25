@@ -24,6 +24,7 @@ import redis as sync_redis
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from redis_fastapi import valid_session
 from redis_fastapi.cache import cache
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
@@ -86,6 +87,17 @@ def app(real_redis: sync_redis.Redis, test_prefix: str, monkeypatch):
     @application.get("/undeclared", dependencies=[Depends(cache(ttl=300))])
     async def undeclared(session: SessionDep) -> dict:
         return {"user_id": session.get("user_id")}
+
+    # Row 2 with the library's own gate: shared in Redis, private downstream.
+    @application.get(
+        "/members-catalogue",
+        dependencies=[
+            Depends(valid_session()),
+            Depends(cache(ttl=300, vary_on_session=False)),
+        ],
+    )
+    async def members_catalogue() -> dict:
+        return {"products": ["a", "b"]}
 
     # No cache() at all, but the session is read.
     @application.get("/profile")
@@ -229,6 +241,36 @@ class TestRow2SharedButSessionReading:
         """
         assert alice.get("/catalogue").json() == bob.get("/catalogue").json()
         assert "no-store" not in _directives(bob.get("/catalogue"))
+
+
+class TestRow2BehindValidSession:
+    """Row 2 again, gated by ``valid_session()`` rather than by hand (S-1.6).
+
+    Redis keeps the one shared entry - the gate runs before it on every
+    request. A shared cache downstream would serve it to anyone, gate or no
+    gate, so the response says ``private``: N-18's case of one shared entry
+    served only after ``valid_session()`` passes.
+    """
+
+    def test_one_shared_entry_serves_every_valid_session(self, alice, bob) -> None:
+        first = alice.get("/members-catalogue")
+        second = bob.get("/members-catalogue")
+        assert first.headers["x-redis-cache"] == "MISS"
+        assert second.headers["x-redis-cache"] == "HIT"
+        assert first.json() == second.json()
+
+    def test_the_miss_and_the_hit_are_private(self, alice, bob) -> None:
+        assert "private" in _directives(alice.get("/members-catalogue"))
+        assert "private" in _directives(bob.get("/members-catalogue"))
+
+    def test_a_caller_without_a_session_never_reaches_the_entry(
+        self, client: TestClient, alice
+    ) -> None:
+        alice.get("/members-catalogue")
+        client.cookies.clear()
+        anonymous = client.get("/members-catalogue")
+        assert anonymous.status_code == 401
+        assert "x-redis-cache" not in anonymous.headers
 
 
 class TestRow3NoSessionAtAll:
