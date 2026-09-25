@@ -11,7 +11,6 @@ import pytest
 import redis.asyncio as async_redis
 
 from redis_fastapi.session_backend import (
-    FIELD_ABSOLUTE,
     FIELD_DATA,
     RedisSessionStore,
     _StoreCapabilities,
@@ -69,9 +68,9 @@ async def test_both_command_tiers_write_the_same_fields(
     """Both tiers, against a real server, on the same assertions.
 
     The two paths are not the same commands. The 8.0 path sends
-    ``HSETEX key FNX EX n FIELDS 1 a 1``; the 7.4 path sends ``HSETNX`` then
-    ``HEXPIRE key n NX FIELDS 1 a``. Argument order, the ``FNX``/``NX``
-    semantics and the ``FIELDS numfields`` framing all differ, and
+    ``HSETEX key EX n FIELDS 1 d <payload>``; the 7.4 path sends ``HSET`` then
+    ``HEXPIRE key n FIELDS 1 d``. Both then set the key's TTL with ``EXPIRE``.
+    Argument order and the ``FIELDS numfields`` framing differ, and
     ``fakeredis``'s argument parser is order-insensitive - so it accepts an
     option order a real server rejects.
 
@@ -90,7 +89,7 @@ async def test_both_command_tiers_write_the_same_fields(
     key = store.session_key(sid := store.new_id())
 
     await store.create(sid, store.new_record({"user_id": 42}))
-    assert about(await _httl(real_async_redis, key, FIELD_ABSOLUTE), 600)
+    assert about(await real_async_redis.ttl(key), 600)
     assert about(await _httl(real_async_redis, key, FIELD_DATA), 60)
 
     loaded = await store.load(sid)
@@ -100,11 +99,9 @@ async def test_both_command_tiers_write_the_same_fields(
 
     # Age the absolute clock, then update: the deadline must not move, and
     # the idle clock must be reapplied. Both are properties of the tier.
-    await real_async_redis.execute_command(
-        "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
-    )
+    await real_async_redis.expire(key, 100)
     await store.save(sid, store.new_record({"user_id": 42, "n": 1}))
-    assert about(await _httl(real_async_redis, key, FIELD_ABSOLUTE), 100), (
+    assert about(await real_async_redis.ttl(key), 100), (
         "an update moved the absolute deadline"
     )
     assert about(await _httl(real_async_redis, key, FIELD_DATA), 60), (
@@ -112,7 +109,7 @@ async def test_both_command_tiers_write_the_same_fields(
     )
 
     await store.touch(sid)
-    assert about(await _httl(real_async_redis, key, FIELD_ABSOLUTE), 100)
+    assert about(await real_async_redis.ttl(key), 100)
     assert about(await _httl(real_async_redis, key, FIELD_DATA), 60)
 
 
@@ -181,7 +178,7 @@ async def test_redis_enforces_the_idle_clock(
 async def test_redis_enforces_the_absolute_clock_despite_activity(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
-    """The guarantee the two-field layout exists for.
+    """The guarantee the absolute clock exists for.
 
     The session is loaded continuously - each load refreshes the idle clock -
     and it must still die on schedule.
@@ -199,8 +196,60 @@ async def test_redis_enforces_the_absolute_clock_despite_activity(
     else:
         pytest.fail(
             "the session outlived its absolute deadline under continuous "
-            "activity - writing the payload extended field 'a'"
+            "activity - writing the payload extended the key's TTL"
         )
+
+
+async def test_no_reader_can_see_a_session_past_its_absolute_deadline(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """Redis deletes the whole key, so the rule lives in no reader.
+
+    The payload was refreshed a moment before the deadline, so its own TTL
+    still has most of a minute left. A raw ``HGET`` - which knows nothing
+    about deadlines - must still find nothing.
+    """
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=3)
+    sid = store.new_id()
+    key = store.session_key(sid)
+    await store.create(sid, store.new_record({"user_id": 42}))
+
+    await asyncio.sleep(1.0)
+    assert await store.load(sid) is not None  # refreshes d to 60 s
+
+    await asyncio.sleep(2.5)
+    assert await real_async_redis.hget(key, FIELD_DATA) is None
+    assert await real_async_redis.exists(key) == 0
+
+
+@pytest.mark.parametrize("ended_by", ["expiry", "revocation"])
+async def test_a_save_after_the_session_ended_does_not_revive_it(
+    real_async_redis: async_redis.Redis, test_prefix: str, ended_by: str
+) -> None:
+    """A request that loaded a live session and saved it after it ended.
+
+    The save recreates the key with ``d`` and no TTL. On a real server that
+    is what happens - ``fakeredis`` keeps the expired key's old TTL instead,
+    which is why this case is tested here. The next load must treat the key
+    as over, and delete it.
+    """
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1)
+    sid = store.new_id()
+    key = store.session_key(sid)
+    await store.create(sid, store.new_record({"user_id": 42}))
+    assert await store.load(sid) is not None
+
+    if ended_by == "expiry":
+        await asyncio.sleep(1.5)
+        assert await real_async_redis.exists(key) == 0
+    else:
+        await store.delete(sid)
+
+    await store.save(sid, store.new_record({"user_id": 42}))
+    assert await real_async_redis.ttl(key) == -1, "the save set a deadline"
+
+    assert await store.load(sid) is None
+    assert await real_async_redis.exists(key) == 0
 
 
 async def test_the_index_prunes_itself_with_no_help_from_us(
@@ -248,22 +297,16 @@ async def test_writing_the_payload_leaves_the_deadline_alone(
     key = store.session_key(sid)
     await store.create(sid, store.new_record({"n": 0}))
 
-    before = (
-        await real_async_redis.execute_command("HTTL", key, "FIELDS", 1, FIELD_ABSOLUTE)
-    )[0]
+    before = await real_async_redis.ttl(key)
     for n in range(5):
         await store.save(sid, store.new_record({"n": n}))
-    after = (
-        await real_async_redis.execute_command("HTTL", key, "FIELDS", 1, FIELD_ABSOLUTE)
-    )[0]
+    after = await real_async_redis.ttl(key)
 
-    # A band, not a ceiling: HTTL returns -2 for a deleted field and -1 for
-    # one with no expiry, and both satisfy ``after <= before``. Five real
-    # round trips can cross a second boundary, so allow a little slack below.
-    assert int(after) > 0, "the absolute deadline was deleted or unset"
-    assert int(before) - 5 <= int(after) <= int(before), (
-        "field 'a' moved on a payload write"
-    )
+    # A band, not a ceiling: TTL returns -2 for a deleted key and -1 for one
+    # with no expiry, and both satisfy ``after <= before``. Five real round
+    # trips can cross a second boundary, so allow a little slack below.
+    assert after > 0, "the absolute deadline was deleted or unset"
+    assert before - 5 <= after <= before, "the key's TTL moved on a payload write"
     idle = (
         await real_async_redis.execute_command("HTTL", key, "FIELDS", 1, FIELD_DATA)
     )[0]
@@ -287,41 +330,27 @@ async def test_revoke_all_ends_every_session(
         assert await store.load(sid) is None
 
 
-async def test_a_field_expiry_reaches_a_handler(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    """The one thing a scripted Pub/Sub cannot prove: the channel is real.
-
-    ``test_session_events.py`` drives ``_run`` deterministically against a
-    fake, which covers the subscribe, the frame filtering and the dispatch.
-    What it cannot check is that ``__subkeyevent@<db>__:hexpired`` is the name
-    a real server publishes on, or that the payload really arrives in the
-    documented length-prefixed shape.
-
-    **Needs Redis 8.8.** Subkey notifications arrived there, and earlier
-    servers reject the ``T`` flag outright - 8.7 answers ``CONFIG SET`` with
-    "Invalid event class character. Use 'Ag$lshzxeKEtmdnocr'". So this
-    configures the server itself and skips when that fails, rather than
-    requiring a CI service-container flag: passing ``--notify-keyspace-events
-    Th`` to the 7.4 leg of the matrix would stop that container booting at
-    all.
+async def _first_event(
+    redis: async_redis.Redis, prefix: str, *, idle_ttl: int, absolute_ttl: int
+) -> tuple[str, str, str]:
+    """Create one session with the given clocks and wait for its end event.
 
     ``notify-keyspace-events`` is server-wide, so the original value is
     restored afterwards. The library never sets it; a test on a throwaway
     server may.
     """
-    original = (await real_async_redis.config_get("notify-keyspace-events")).get(
+    original = (await redis.config_get("notify-keyspace-events")).get(
         "notify-keyspace-events", ""
     )
     try:
         try:
-            await real_async_redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
+            await redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
         except async_redis.RedisError as exc:
             pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
 
-        events = SessionEvents(real_async_redis, key_prefix=test_prefix)
+        events = SessionEvents(redis, key_prefix=prefix)
         if await events.probe() == "none":
-            pytest.skip("server cannot supply subkey notifications")
+            pytest.skip("server cannot supply keyspace notifications")
 
         delivered: asyncio.Queue = asyncio.Queue()
 
@@ -331,23 +360,49 @@ async def test_a_field_expiry_reaches_a_handler(
 
         await events.start()
         try:
-            # A one-second idle clock, so the idle field expires on its own.
-            store = _store(real_async_redis, test_prefix, idle_ttl=1, absolute_ttl=600)
+            store = _store(redis, prefix, idle_ttl=idle_ttl, absolute_ttl=absolute_ttl)
             sid = store.new_id()
             await store.create(sid, store.new_record({"user_id": 42}))
 
-            # Expiry notifications fire when Redis removes the field, which
-            # for a field nobody touches waits on the active-expiry cycle. A
-            # read after the deadline forces the lazy path, so this does not
-            # depend on that cycle's timing.
+            # Expiry notifications fire when Redis removes the field or the
+            # key, which for one nobody touches waits on the active-expiry
+            # cycle. A read after the deadline forces the lazy path, so this
+            # does not depend on that cycle's timing.
             await asyncio.sleep(1.5)
             assert await store.load(sid) is None
 
             session_id, cause = await asyncio.wait_for(delivered.get(), timeout=10)
         finally:
             await events.stop()
-
-        assert session_id == sid
-        assert cause == "idle"
+        return sid, session_id, cause
     finally:
-        await real_async_redis.config_set("notify-keyspace-events", original)
+        await redis.config_set("notify-keyspace-events", original)
+
+
+async def test_an_idle_expiry_reaches_a_handler_as_idle(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """The one thing a scripted Pub/Sub cannot prove: the channels are real.
+
+    ``test_session_events.py`` drives ``_run`` deterministically against a
+    fake. What it cannot check is that a real server publishes an idle expiry
+    on ``__keyevent@<db>__:hexpired`` with the key as the payload.
+    """
+    sid, session_id, cause = await _first_event(
+        real_async_redis, test_prefix, idle_ttl=1, absolute_ttl=600
+    )
+    assert (session_id, cause) == (sid, "idle")
+
+
+async def test_an_absolute_expiry_reaches_a_handler_as_absolute(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """The absolute deadline is the key's TTL, so it arrives as ``expired``.
+
+    And not as ``hexpired`` too: the payload's own TTL is far away, so the
+    first event must name the absolute clock.
+    """
+    sid, session_id, cause = await _first_event(
+        real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1
+    )
+    assert (session_id, cause) == (sid, "absolute")

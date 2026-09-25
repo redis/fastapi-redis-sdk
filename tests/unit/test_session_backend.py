@@ -1,11 +1,13 @@
 """Unit tests for :class:`RedisSessionStore`, against ``fakeredis``.
 
-These run the real key schema, the real TTL commands and the real two-field
+These run the real key schema, the real TTL commands and the real two-clock
 layout - not a substitute - which is the whole reason the design refuses an
 in-memory store.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -15,7 +17,6 @@ from redis_fastapi.exceptions import (
     SessionStoreError,
 )
 from redis_fastapi.session_backend import (
-    FIELD_ABSOLUTE,
     FIELD_DATA,
     RedisSessionStore,
     SessionMetadata,
@@ -34,6 +35,11 @@ def store(fake_async_redis) -> RedisSessionStore:
 async def _httl(redis, key: str, field: str) -> int:
     reply = await redis.execute_command("HTTL", key, "FIELDS", 1, field)
     return int(reply[0])
+
+
+async def _deadline(redis, key: str) -> int:
+    """The absolute clock: the session key's own TTL."""
+    return int(await redis.ttl(key))
 
 
 class TestKeySchema:
@@ -79,67 +85,68 @@ class TestIdentifiers:
         assert store.new_id() == "a" * 30
 
 
-class TestTwoFieldsTwoClocks:
-    async def test_save_writes_both_fields_with_their_own_ttls(
+class TestTwoClocks:
+    async def test_create_sets_the_key_deadline_and_the_idle_field(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         sid = store.new_id()
         await store.create(sid, store.new_record({"user_id": 42}))
 
         key = store.session_key(sid)
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
+        assert about(await _deadline(fake_async_redis, key), 600)
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
+        assert await fake_async_redis.hkeys(key) == [FIELD_DATA.encode()], (
+            "the session key holds the payload and nothing else"
+        )
 
     async def test_writing_the_payload_never_extends_the_deadline(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         """N-6, asserted directly rather than inferred.
 
-        This is the guarantee the whole two-field layout exists for, so it is
-        checked by watching field ``a``'s TTL rather than by reasoning about
-        which command was sent.
+        This is the guarantee the two-clock layout exists for, so it is checked
+        by watching the key's TTL rather than by reasoning about which command
+        was sent.
         """
         sid = store.new_id()
         key = store.session_key(sid)
         await store.create(sid, store.new_record({"n": 1}))
 
         # Age the absolute clock, then write the payload many times over.
-        await fake_async_redis.execute_command(
-            "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
-        )
+        await fake_async_redis.expire(key, 100)
         for n in range(5):
             await store.save(sid, store.new_record({"n": n}))
 
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
-            "field 'a' moved on a payload write - refreshed, shortened or "
-            "deleted; the absolute deadline is no longer absolute"
+        assert about(await _deadline(fake_async_redis, key), 100), (
+            "the key's TTL moved on a payload write - refreshed, shortened or "
+            "removed; the absolute deadline is no longer absolute"
         )
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60), (
             "field 'd' should have been refreshed by the write"
         )
 
-    async def test_field_a_always_has_a_ttl(
+    async def test_a_created_key_always_has_a_ttl(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
-        """The ``-1`` row of the state table must be unreachable."""
+        """A create never leaves the key without a deadline."""
         sid = store.new_id()
         await store.create(sid, store.new_record({}))
-        assert await _httl(fake_async_redis, store.session_key(sid), FIELD_ABSOLUTE) > 0
+        assert await _deadline(fake_async_redis, store.session_key(sid)) > 0
 
     async def test_zero_ttls_fall_back_to_gc_ttl(self, fake_async_redis) -> None:
-        """Cookie-only mode: both fields still expire eventually."""
+        """Cookie-only mode: both clocks still expire eventually."""
         store = RedisSessionStore(
             fake_async_redis, idle_ttl=0, absolute_ttl=0, gc_ttl=1234
         )
         sid = store.new_id()
         await store.create(sid, store.new_record({}))
         key = store.session_key(sid)
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 1234)
+        assert about(await _deadline(fake_async_redis, key), 1234)
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 1234)
 
 
 class TestLoadStateTable:
-    """All five rows of the table in Section 4.1."""
+    """Every state a load can find, from Section 4.1."""
 
     async def test_alive(self, store: RedisSessionStore) -> None:
         sid = store.new_id()
@@ -149,18 +156,33 @@ class TestLoadStateTable:
         assert loaded.record.data == {"user_id": 42}
         assert 0 < loaded.absolute_remaining <= 600
 
-    async def test_absolute_deadline_passed_deletes_the_key(
+    async def test_the_absolute_deadline_ends_a_fresh_session(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
+        """Redis deletes the whole key, however fresh the idle clock is."""
         sid = store.new_id()
         key = store.session_key(sid)
         await store.create(sid, store.new_record({"user_id": 42}))
-        await fake_async_redis.execute_command(
-            "HDEL", key, FIELD_ABSOLUTE
-        )  # simulate 'a' expiring
+        await fake_async_redis.pexpire(key, 20)
+        await asyncio.sleep(0.05)
+        assert await store.load(sid) is None
+
+    async def test_a_key_with_no_deadline_is_deleted(
+        self, store: RedisSessionStore, fake_async_redis
+    ) -> None:
+        """What a save leaves when it lands after the session ended.
+
+        The save recreates the key with ``d`` and no TTL.  That is not a live
+        session - its deadline passed, or it was revoked - so the load deletes
+        it, and the index entry can follow.
+        """
+        sid = store.new_id()
+        key = store.session_key(sid)
+        await store.create(sid, store.new_record({"user_id": 42}))
+        await fake_async_redis.persist(key)
         assert await store.load(sid) is None
         assert await fake_async_redis.exists(key) == 0, (
-            "a half-dead key must be removed so the index entry can follow"
+            "a key with no deadline must be removed so the index entry can follow"
         )
 
     async def test_no_such_session(self, store: RedisSessionStore) -> None:
@@ -181,10 +203,9 @@ class TestLoadStateTable:
     ) -> None:
         """The bug that made every such session dead on arrival.
 
-        An earlier design read ``HTTL`` returning ``-2`` as "the absolute
-        deadline passed" and wrote no field ``a`` at all when the limit was
-        disabled, so every session in such a deployment was unreadable the
-        moment it was created.
+        An earlier design wrote no deadline at all when the limit was
+        disabled, and read the missing deadline as "passed", so every session
+        in such a deployment was unreadable the moment it was created.
         """
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=0)
         sid = store.new_id()
@@ -249,17 +270,15 @@ class TestIdleRefresh:
         sid = store.new_id()
         key = store.session_key(sid)
         await store.create(sid, store.new_record({}))
-        await fake_async_redis.execute_command(
-            "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
-        )
+        await fake_async_redis.expire(key, 100)
         await store.touch(sid)
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
+        assert about(await _deadline(fake_async_redis, key), 100), (
             "touch moved the absolute clock"
         )
 
 
 class TestSevenFourFallback:
-    """The 7.4 path writes the same fields with the same expirations.
+    """The 7.4 path writes the same data with the same expirations.
 
     Section 13.1: the fallback costs an extra command and never changes
     behaviour, so every assertion above must hold here too.
@@ -287,7 +306,7 @@ class TestSevenFourFallback:
         sid = old_store.new_id()
         await old_store.create(sid, old_store.new_record({}))
         key = old_store.session_key(sid)
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 600)
+        assert about(await _deadline(fake_async_redis, key), 600)
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
 
     async def test_repeated_writes_still_never_extend_the_deadline(
@@ -296,11 +315,9 @@ class TestSevenFourFallback:
         sid = old_store.new_id()
         key = old_store.session_key(sid)
         await old_store.create(sid, old_store.new_record({}))
-        await fake_async_redis.execute_command(
-            "HEXPIRE", key, 100, "FIELDS", 1, FIELD_ABSOLUTE
-        )
+        await fake_async_redis.expire(key, 100)
         await old_store.save(sid, old_store.new_record({"n": 2}))
-        assert about(await _httl(fake_async_redis, key, FIELD_ABSOLUTE), 100), (
+        assert about(await _deadline(fake_async_redis, key), 100), (
             "the 7.4 write path moved the absolute clock"
         )
 

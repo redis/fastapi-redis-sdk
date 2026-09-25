@@ -1,9 +1,9 @@
 """The cookie must not expire before its record, against a real server.
 
-Research §6 of ``session-di-factory-research.md``: the load refreshes the idle
-clock in Redis on every request, but the cookie is sent only on writes. When
-the cookie's ``Max-Age`` followed the idle clock, a user who only read lost the
-cookie while the record was alive. ``Max-Age`` now follows the absolute clock,
+§6 of ``session-design.md``: the load refreshes the idle clock in Redis on
+every request, but the cookie is sent only on writes. When the cookie's
+``Max-Age`` followed the idle clock, a user who only read lost the cookie while
+the record was alive. ``Max-Age`` now follows the absolute clock,
 which never slides, and Redis alone enforces the idle clock.
 
 ``TestClient`` keeps cookies in an ``http.cookiejar`` jar, which drops a cookie
@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
-from redis_fastapi.session_backend import FIELD_ABSOLUTE, FIELD_DATA
+from redis_fastapi.session_backend import FIELD_DATA
 from redis_fastapi.setup import FastAPIRedis
 from tests.conftest import requires_redis
 
@@ -114,7 +114,7 @@ def test_a_reading_user_stays_signed_in(
 
         # The record is alive in Redis ...
         assert _httl(real_redis, key, FIELD_DATA) > 0
-        assert _httl(real_redis, key, FIELD_ABSOLUTE) > 0
+        assert real_redis.ttl(key) > 0
 
         response = client.get("/read")
         sent_cookie = response.request.headers.get("cookie")
@@ -157,8 +157,8 @@ def test_an_idle_user_is_signed_out_although_the_cookie_lives(
     """The cookie now outlives the idle clock, so Redis must enforce it.
 
     After ``IDLE`` seconds with no request the client still holds the cookie
-    and sends it, but the record's idle field has expired: the session is
-    empty, and the load deletes the half-dead key.
+    and sends it, but the record's idle field has expired - and with it the
+    key, which held nothing else. The session is empty.
     """
     with TestClient(app) as client:
         session_id = _sign_in(client)
@@ -166,9 +166,8 @@ def test_an_idle_user_is_signed_out_although_the_cookie_lives(
 
         time.sleep(IDLE + 1)
         assert _httl(real_redis, key, FIELD_DATA) == -2
-        assert _httl(real_redis, key, FIELD_ABSOLUTE) > 0
 
         response = client.get("/read")
         assert response.request.headers.get("cookie") == f"session={session_id}"
         assert response.json() == {"user_id": None}
-        assert real_redis.exists(key) == 0, "the half-dead key was not deleted"
+        assert real_redis.exists(key) == 0
