@@ -92,6 +92,11 @@ _ALL_CLASSES_ALIAS = "A"
 
 REQUIRED_CONFIG = "Ehx"
 
+# Seconds between attempts to subscribe again after the subscription is lost.
+# Fixed, not a backoff: one attempt a second costs a server nothing, and the
+# events sent while no subscriber is connected are lost whatever the delay.
+_RECONNECT_DELAY = 1.0
+
 
 class SessionEvents:
     """Calls registered handlers when a session ends.
@@ -109,9 +114,14 @@ class SessionEvents:
         ...
         await events.stop()
 
+    When the subscription is lost, the subscriber tries again every second
+    until it is back or :meth:`stop` is called.  Pass ``reconnect=False`` to
+    stop at the first loss instead.
+
     Attributes:
         tier: ``"key"`` when the server can deliver events, ``"none"`` when
-            it cannot.  Read it to decide whether a handler will ever run.
+            it cannot or while the subscription is lost.  Read it to decide
+            whether a handler will run.
     """
 
     def __init__(
@@ -120,10 +130,12 @@ class SessionEvents:
         *,
         key_prefix: str,
         db: int = 0,
+        reconnect: bool = True,
     ) -> None:
         self._redis = redis
         self._session_prefix = f"{key_prefix}:session:"
         self._db = db
+        self._reconnect = reconnect
         self._handlers: list[Handler] = []
         self._task: asyncio.Task[None] | None = None
         self.tier: Tier = "none"
@@ -230,7 +242,7 @@ class SessionEvents:
             await task
 
     async def _run(self) -> None:
-        """Subscribe and dispatch until cancelled.
+        """Subscribe and dispatch until cancelled, subscribing again on a loss.
 
         On a cluster this covers one node only.  Keyspace events are
         node-local and are **not** broadcast, so a full deployment needs one
@@ -241,21 +253,52 @@ class SessionEvents:
             _IDLE_CHANNEL.format(db=self._db): "idle",
             _ABSOLUTE_CHANNEL.format(db=self._db): "absolute",
         }
-        try:
-            pubsub = self._redis.pubsub()
-            await pubsub.subscribe(*channels)
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                cause = channels.get(_text(message.get("channel")))
-                if cause is not None:
-                    await self._dispatch(message.get("data"), cause)
-        except asyncio.CancelledError:
-            raise
-        except STORE_ERRORS as exc:
-            # Losing the subscription is not an application error. Say so once
-            # and stop; nothing downstream depends on this stream.
-            logger.warning("Session event subscription ended: %s", exc)
+        lost = False
+        while True:
+            pubsub = None
+            try:
+                # A new Pub/Sub on every attempt, rather than reusing one whose
+                # connection failed: nothing about the old one needs keeping.
+                pubsub = self._redis.pubsub()
+                await pubsub.subscribe(*channels)
+                if lost:
+                    lost = False
+                    self.tier = "key"
+                    logger.info("Session event subscription restored")
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    cause = channels.get(_text(message.get("channel")))
+                    if cause is not None:
+                        await self._dispatch(message.get("data"), cause)
+                # ``listen()`` ends only when nothing is subscribed, which this
+                # class never does; there is nothing to reconnect to.
+                return
+            except asyncio.CancelledError:
+                raise
+            except STORE_ERRORS as exc:
+                # Losing the subscription is not an application error; nothing
+                # downstream depends on this stream.  ``tier`` must stop
+                # claiming that handlers will run until it is back.  Said once
+                # per loss, not once per attempt.
+                self.tier = "none"
+                if not self._reconnect:
+                    logger.warning("Session event subscription ended: %s", exc)
+                    return
+                if not lost:
+                    lost = True
+                    logger.warning(
+                        "Session event subscription lost; trying again every %gs: %s",
+                        _RECONNECT_DELAY,
+                        exc,
+                    )
+            finally:
+                # Cancellation from ``stop()`` lands here too; without this the
+                # subscriber connection stays checked out of the pool.
+                if pubsub is not None:
+                    with contextlib.suppress(*STORE_ERRORS):
+                        await pubsub.aclose()  # type: ignore[no-untyped-call]
+            await asyncio.sleep(_RECONNECT_DELAY)
 
     async def _dispatch(self, data: Any, cause: Cause) -> None:
         session_id = self._session_id(data)

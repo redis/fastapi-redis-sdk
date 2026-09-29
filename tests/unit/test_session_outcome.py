@@ -115,12 +115,14 @@ class TestPrecedence:
             is Outcome.SIGN_OUT
         )
 
-    def test_emptying_a_session_that_was_never_stored_is_not_a_sign_out(
+    def test_emptying_a_session_that_was_never_stored_owes_nothing(
         self,
     ) -> None:
+        # Writing it would mint a new, empty session and cookie for a user who
+        # signed out after idle expiry.
         assert (
             decide_outcome(_signals(modified=True, empty=True, stored=False))
-            is Outcome.WRITE
+            is Outcome.NOTHING
         )
 
 

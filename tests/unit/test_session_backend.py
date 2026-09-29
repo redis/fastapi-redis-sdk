@@ -144,6 +144,28 @@ class TestTwoClocks:
         assert about(await _deadline(fake_async_redis, key), 1234)
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 1234)
 
+    async def test_zero_idle_ttl_disables_the_idle_clock(
+        self, fake_async_redis
+    ) -> None:
+        """idle_ttl=0 gives field 'd' the key's TTL, not gc_ttl.
+
+        With gc_ttl shorter than absolute_ttl, a gc_ttl on 'd' would end a
+        session the idle clock was told to leave alone.
+        """
+        store = RedisSessionStore(
+            fake_async_redis, idle_ttl=0, absolute_ttl=5000, gc_ttl=1234
+        )
+        sid = store.new_id()
+        await store.create(sid, store.new_record({}))
+        key = store.session_key(sid)
+        assert about(await _deadline(fake_async_redis, key), 5000)
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 5000)
+
+        assert await store.load(sid) is not None
+        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 5000), (
+            "the load's idle refresh fell back to gc_ttl"
+        )
+
 
 class TestLoadStateTable:
     """Every state a load can find, from Section 4.1."""

@@ -171,3 +171,48 @@ def test_an_idle_user_is_signed_out_although_the_cookie_lives(
         assert response.request.headers.get("cookie") == f"session={session_id}"
         assert response.json() == {"user_id": None}
         assert real_redis.exists(key) == 0
+
+
+def _override_app(monkeypatch, prefix: str, settings: tuple[int, int], **overrides):
+    """An app whose clocks come from ``.sessions()`` rather than the settings."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
+    monkeypatch.setenv("REDIS_PREFIX", prefix)
+    monkeypatch.setenv("REDIS_SESSION_IDLE_TTL", str(settings[0]))
+    monkeypatch.setenv("REDIS_SESSION_ABSOLUTE_TTL", str(settings[1]))
+    get_settings.cache_clear()
+
+    application = FastAPI()
+    FastAPIRedis(application).lifespan().sessions(**overrides)
+
+    @application.post("/login")
+    async def login(session: SessionDep) -> dict:
+        session["user_id"] = 42
+        return {}
+
+    return application
+
+
+def test_overrides_of_zero_give_a_browser_session_cookie(
+    real_redis: sync_redis.Redis, test_prefix: str, monkeypatch
+) -> None:
+    """Both clocks disabled in ``.sessions()`` wins over the settings."""
+    app = _override_app(
+        monkeypatch, test_prefix, (IDLE, ABSOLUTE), idle_ttl=0, absolute_ttl=0
+    )
+    with TestClient(app) as client:
+        response = client.post("/login")
+    assert "max-age" not in response.headers["set-cookie"].lower()
+    get_settings.cache_clear()
+
+
+def test_overrides_give_a_max_age_when_the_settings_disable_both_clocks(
+    real_redis: sync_redis.Redis, test_prefix: str, monkeypatch
+) -> None:
+    app = _override_app(
+        monkeypatch, test_prefix, (0, 0), idle_ttl=60, absolute_ttl=ABSOLUTE
+    )
+    with TestClient(app) as client:
+        response = client.post("/login")
+    assert _max_age(response) == ABSOLUTE
+    get_settings.cache_clear()

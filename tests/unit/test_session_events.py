@@ -397,7 +397,9 @@ class TestTheDeliveryPath:
             def pubsub(self):
                 raise RedisError("connection reset")
 
-        events = SessionEvents(_Dropping([]), key_prefix="redis:fastapi")
+        events = SessionEvents(
+            _Dropping([]), key_prefix="redis:fastapi", reconnect=False
+        )
         await events.start()
         await asyncio.wait_for(events._task, timeout=5)
         await events.stop()
@@ -424,6 +426,191 @@ class TestTheDeliveryPath:
         await events.stop()
         assert task.cancelled() or task.done()
         assert events._task is None
+
+    async def test_stop_closes_the_pubsub(self) -> None:
+        """Cancelling the task must return the subscriber connection."""
+        redis = _ScriptedRedis([])
+        pubsub = redis.pubsub_obj
+
+        async def _forever():
+            while True:
+                await asyncio.sleep(0.01)
+                yield {"type": "subscribe", "data": 1}
+
+        pubsub.listen = _forever  # type: ignore[method-assign]
+        events = SessionEvents(redis, key_prefix="redis:fastapi")
+        await events.start()
+        await asyncio.sleep(0.05)
+        await events.stop()
+        assert pubsub.closed
+
+    async def test_a_lost_subscription_closes_the_pubsub_and_drops_the_tier(
+        self,
+    ) -> None:
+        """With reconnecting off, ``tier`` must stop promising delivery."""
+        redis = _ScriptedRedis([])
+        pubsub = redis.pubsub_obj
+
+        async def _drop():
+            raise RedisError("connection reset")
+            yield  # pragma: no cover - makes this an async generator
+
+        pubsub.listen = _drop  # type: ignore[method-assign]
+        events = SessionEvents(redis, key_prefix="redis:fastapi", reconnect=False)
+        await events.start()
+        assert events.tier == "key"
+        await asyncio.wait_for(events._task, timeout=5)
+        assert events.tier == "none"
+        assert pubsub.closed
+        await events.stop()
+
+
+class _DroppingPubSub(_FakePubSub):
+    """A subscription whose connection fails as soon as it is read."""
+
+    async def listen(self):
+        raise RedisError("connection reset")
+        yield  # pragma: no cover - makes this an async generator
+
+
+class _SequencedRedis(_FakeRedis):
+    """Hands out the next scripted Pub/Sub on each call to ``pubsub()``.
+
+    ``None`` in the script stands for a server that cannot be reached, so
+    ``pubsub()`` raises.  Once the script runs out, every call raises.
+    """
+
+    def __init__(self, script: list[_FakePubSub | None]) -> None:
+        super().__init__()
+        self.script = list(script)
+        self.handed_out: list[_FakePubSub] = []
+        self.calls = 0
+
+    def pubsub(self) -> _FakePubSub:
+        self.calls += 1
+        if not self.script or self.script[0] is None:
+            if self.script:
+                self.script.pop(0)
+            raise RedisError("connection refused")
+        pubsub = self.script.pop(0)
+        assert pubsub is not None
+        self.handed_out.append(pubsub)
+        return pubsub
+
+
+class TestReconnect:
+    """The subscriber comes back after a loss, unless told not to."""
+
+    @pytest.fixture(autouse=True)
+    def _no_wait(self, monkeypatch) -> None:
+        import redis_fastapi.session_events as module
+
+        monkeypatch.setattr(module, "_RECONNECT_DELAY", 0)
+
+    async def test_reconnecting_is_the_default(self) -> None:
+        assert SessionEvents(_FakeRedis(), key_prefix="p")._reconnect is True
+
+    async def test_a_lost_subscription_is_restored_and_delivers(self) -> None:
+        sid = "a" * 40
+        redis = _SequencedRedis(
+            [_DroppingPubSub([]), None, _FakePubSub([_event("hexpired", sid)])]
+        )
+        events = SessionEvents(redis, key_prefix="redis:fastapi")
+        seen: list[tuple[str, str]] = []
+        events.on_session_end(lambda i, c: _record(seen, i, c))
+        await events.start()
+        await asyncio.wait_for(events._task, timeout=5)
+
+        assert seen == [(sid, "idle")]
+        assert events.tier == "key"
+        assert redis.calls == 3
+        assert all(pubsub.closed for pubsub in redis.handed_out)
+        await events.stop()
+
+    async def test_tier_is_none_while_the_subscription_is_lost(
+        self, monkeypatch
+    ) -> None:
+        """And ``stop()`` ends the task while it waits to try again."""
+        import redis_fastapi.session_events as module
+
+        monkeypatch.setattr(module, "_RECONNECT_DELAY", 60)
+        redis = _SequencedRedis([_DroppingPubSub([])])
+        events = SessionEvents(redis, key_prefix="redis:fastapi")
+        await events.start()
+        task = events._task
+        for _ in range(100):
+            if events.tier == "none":
+                break
+            await asyncio.sleep(0.01)
+        assert events.tier == "none"
+        assert task is not None and not task.done()
+
+        await asyncio.wait_for(events.stop(), timeout=1)
+        assert task.done()
+
+    async def test_it_keeps_trying_with_no_limit(self) -> None:
+        redis = _SequencedRedis([])
+        events = SessionEvents(redis, key_prefix="redis:fastapi")
+        await events.start()
+        for _ in range(200):
+            if redis.calls >= 20:
+                break
+            await asyncio.sleep(0.005)
+        assert redis.calls >= 20
+        assert events._task is not None and not events._task.done()
+        await events.stop()
+
+    async def test_a_loss_is_logged_once_and_the_recovery_once(self, caplog) -> None:
+        redis = _SequencedRedis(
+            [_DroppingPubSub([]), None, None, None, _FakePubSub([])]
+        )
+        events = SessionEvents(redis, key_prefix="redis:fastapi")
+        with caplog.at_level("INFO", logger="redis_fastapi.session_events"):
+            await events.start()
+            await asyncio.wait_for(events._task, timeout=5)
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("subscription lost" in m for m in messages) == 1
+        assert sum("subscription restored" in m for m in messages) == 1
+        await events.stop()
+
+    async def test_with_reconnect_off_it_tries_once(self) -> None:
+        redis = _SequencedRedis([_DroppingPubSub([]), _FakePubSub([])])
+        events = SessionEvents(redis, key_prefix="redis:fastapi", reconnect=False)
+        await events.start()
+        await asyncio.wait_for(events._task, timeout=5)
+        assert redis.calls == 1
+        assert events.tier == "none"
+        await events.stop()
+
+
+class TestTheLifespanPassesTheSetting:
+    @pytest.mark.parametrize(("value", "expected"), [(None, True), ("false", False)])
+    async def test_session_events_reconnect_reaches_the_subscriber(
+        self, monkeypatch, value, expected
+    ) -> None:
+        from fastapi import FastAPI
+
+        from redis_fastapi.config import get_settings
+        from redis_fastapi.lifespan import _start_session_events
+
+        monkeypatch.setenv("REDIS_SESSION_EVENTS_ENABLED", "true")
+        if value is not None:
+            monkeypatch.setenv("REDIS_SESSION_EVENTS_RECONNECT", value)
+        get_settings.cache_clear()
+
+        class _Pools:
+            def get_async_client(self):
+                return _ScriptedRedis([])
+
+        app = FastAPI()
+        app.state._redis_sessions = True
+        try:
+            events = await _start_session_events(app, _Pools())  # type: ignore[arg-type]
+            assert events is not None
+            assert events._reconnect is expected
+            await events.stop()
+        finally:
+            get_settings.cache_clear()
 
 
 async def _record(sink: list, session_id: str, cause: str) -> None:

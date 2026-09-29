@@ -2,9 +2,8 @@
 
 The gate answers one question - did this request arrive with a session this
 application created in an earlier response? - and, with ``issued_within``, a
-second: was that session's ID issued recently?  Each test below pins one line
-of ``docs/specs/session-di-factory-research.md`` (S-1, S-1.5, S-1.6, S-2 and
-Section 4).
+second: was that session's ID issued recently?  Each test below pins one rule
+of the gate.
 """
 
 from __future__ import annotations
@@ -123,7 +122,7 @@ class _ProtocolOnlyStore:
 
 
 # ---------------------------------------------------------------------------
-# S-1: the three reasons
+# The three reasons
 # ---------------------------------------------------------------------------
 
 
@@ -184,7 +183,7 @@ class TestReasons:
         assert "Cookie" in response.headers["vary"]
 
     def test_an_anonymous_session_passes(self, store) -> None:
-        """S-1 is not about identity."""
+        """The gate checks for a session, not for an identity."""
         with TestClient(_app(store)) as client:
             client.post("/basket")
             response = client.get("/gated")
@@ -211,7 +210,7 @@ class TestReasons:
 
 
 # ---------------------------------------------------------------------------
-# S-1: a session ended or created earlier in the same request
+# A session ended or created earlier in the same request
 # ---------------------------------------------------------------------------
 
 
@@ -253,7 +252,7 @@ class TestEarlierInTheRequest:
 
 
 # ---------------------------------------------------------------------------
-# S-1: configuration mistakes fail loudly
+# Configuration mistakes fail loudly
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +276,7 @@ class TestConfiguration:
 
 
 # ---------------------------------------------------------------------------
-# S-1: on_reject
+# on_reject
 # ---------------------------------------------------------------------------
 
 
@@ -338,7 +337,7 @@ class TestOnReject:
 
 
 # ---------------------------------------------------------------------------
-# S-1: the WWW-Authenticate challenge
+# The WWW-Authenticate challenge
 # ---------------------------------------------------------------------------
 
 
@@ -414,13 +413,13 @@ class TestChallenge:
 
 
 # ---------------------------------------------------------------------------
-# S-1: cookies the gate refuses
+# Cookies the gate refuses
 # ---------------------------------------------------------------------------
 
 
 class TestRefusedCookies:
     def test_a_write_after_an_unknown_id_issues_a_new_one(self, store) -> None:
-        """The client's value is never adopted (S-1.7)."""
+        """The client's value is never adopted."""
         forged = store.new_id()
         with TestClient(_app(store)) as client:
             response = client.post("/basket", headers=_cookie(forged))
@@ -435,7 +434,7 @@ class TestRefusedCookies:
 
 
 # ---------------------------------------------------------------------------
-# S-1.5 and Section 4: headers on gated responses
+# Headers on gated responses
 # ---------------------------------------------------------------------------
 
 
@@ -480,7 +479,7 @@ class TestHeaders:
         assert response.headers["cache-control"] == "max-age=0, private"
 
     def test_always_save_writes_on_a_gated_request(self, store, monkeypatch) -> None:
-        """S-1.5 accepts this cost; the test pins it so a change is deliberate."""
+        """The gate accepts this cost; the test pins it so a change is deliberate."""
         monkeypatch.setenv("REDIS_SESSION_ALWAYS_SAVE", "true")
         get_settings.cache_clear()
         saved: list[str] = []
@@ -498,7 +497,7 @@ class TestHeaders:
 
 
 # ---------------------------------------------------------------------------
-# S-1.6: the gate and cache()
+# The gate and cache()
 # ---------------------------------------------------------------------------
 
 
@@ -670,7 +669,7 @@ class TestTheGateAndCache:
 
 
 # ---------------------------------------------------------------------------
-# S-2: issued_within
+# issued_within
 # ---------------------------------------------------------------------------
 
 
@@ -827,7 +826,7 @@ class TestIssuedWithin:
 
 
 class TestTypes:
-    """The two overloads promise exact reason types (S-1, step 3)."""
+    """The two overloads promise exact reason types."""
 
     def test_the_overloads_narrow_the_reason_type(self, tmp_path) -> None:
         api = pytest.importorskip("mypy.api")

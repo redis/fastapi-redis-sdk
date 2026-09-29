@@ -88,6 +88,11 @@ def app(real_redis: sync_redis.Redis, test_prefix: str, monkeypatch):
     async def undeclared(session: SessionDep) -> dict:
         return {"user_id": session.get("user_id")}
 
+    # Row 4 on a parametrized route: one route, many concrete paths.
+    @application.get("/undeclared/{item}", dependencies=[Depends(cache(ttl=300))])
+    async def undeclared_item(item: int, session: SessionDep) -> dict:
+        return {"item": item, "user_id": session.get("user_id")}
+
     # Row 2 with the library's own gate: shared in Redis, private downstream.
     @application.get(
         "/members-catalogue",
@@ -244,7 +249,7 @@ class TestRow2SharedButSessionReading:
 
 
 class TestRow2BehindValidSession:
-    """Row 2 again, gated by ``valid_session()`` rather than by hand (S-1.6).
+    """Row 2 again, gated by ``valid_session()`` rather than by hand.
 
     Redis keeps the one shared entry - the gate runs before it on every
     request. A shared cache downstream would serve it to anyone, gate or no
@@ -343,6 +348,21 @@ class TestRow4UndeclaredIsNotStored:
         warnings = [r for r in caplog.records if "vary_on_session" in r.message]
         assert len(warnings) == 1
         assert "/undeclared" in warnings[0].getMessage()
+
+    def test_a_parametrized_route_warns_once_under_its_template(
+        self, alice, caplog
+    ) -> None:
+        """Keyed on the concrete path, every item ID added an entry and a log."""
+        from redis_fastapi.cache import _WARNED_ROUTES
+
+        _WARNED_ROUTES.clear()
+        with caplog.at_level("WARNING"):
+            for item in range(1, 4):
+                alice.get(f"/undeclared/{item}")
+        warnings = [r for r in caplog.records if "vary_on_session" in r.message]
+        assert len(warnings) == 1
+        assert "GET /undeclared/{item}" in warnings[0].getMessage()
+        assert _WARNED_ROUTES == {"GET /undeclared/{item}"}
 
 
 class TestASessionRouteWithNoCacheAtAll:
