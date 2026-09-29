@@ -4,8 +4,8 @@ The session record lives in Redis; the cookie carries an opaque identifier and
 nothing else.  See ``docs/specs/session-design.md`` for the full design.
 
 This module holds the request-facing half of the feature: the :class:`Session`
-mapping the application sees as ``request.session``, the middleware that loads
-and saves it, and the exception hierarchy.  The Redis half lives in
+mapping the application sees as ``request.session`` and the middleware that
+loads and saves it.  The Redis half lives in
 ``session_backend.py``.
 """
 
@@ -88,9 +88,6 @@ class Session(dict):  # type: ignore[type-arg]
         # application touching anything, so both flags start clean.
         self.accessed = False
         self.modified = False
-        # Set by the middleware after a load, and by the store after a
-        # rotation.  ``None`` means this session has never been written, so
-        # there is no key to delete and no cookie to replace.
 
     # -- flags ---------------------------------------------------------------
 
@@ -236,7 +233,7 @@ class CookieSpec:
 
     Passed to a ``cookie_builder`` seam so an application can add attributes
     this package does not know about.  Starlette's own middleware cannot emit
-    ``Partitioned`` and cannot use a ``__Host-`` prefix, and Section 2a of
+    ``Partitioned`` and cannot use a ``__Host-`` prefix, and Section 9.1 of
     ``session-mgmt.md`` records that as a common reason people abandon it.
 
     ``max_age`` of ``None`` means a session cookie: no ``Max-Age``, and the
@@ -369,7 +366,7 @@ class Outcome(Enum):
 class _Signals:
     """The flags :func:`decide_outcome` reads.
 
-    A record rather than ten positional arguments, so the decision can be
+    A record rather than eleven positional arguments, so the decision can be
     exercised over its whole input space without a store, a request or Redis.
     """
 
@@ -433,15 +430,20 @@ def decide_outcome(signals: _Signals) -> Outcome:
     # handler touches ``request.session`` at all - so the unqualified test
     # wrote a key and set a cookie for every anonymous visitor to any route
     # that so much as asked ``session.get("user_id")``.  On a public page that
-    # is one Redis key per crawler, per health check, per preflight, held for
-    # ``gc_ttl``.
+    # is one Redis key per crawler, per health check, per preflight, held
+    # until its absolute deadline.
     #
     # Nothing is lost that the setting exists for.  Its purpose is nested
     # mutation - ``session["a"]["b"] = 1``, which no ``dict`` subclass can see
     # - and that implies a top-level key already holding the nested value, so
     # the session is not empty.  What it no longer does is create a session
     # out of an empty one, which no nested mutation could have produced.
-    if signals.modified or (signals.always_save and not signals.empty):
+    #
+    # ``modified`` takes the same qualifier.  An empty session that reaches
+    # this line was never stored - ``SIGN_OUT`` caught the stored one - so
+    # writing it would turn a sign-out after idle expiry into a new, empty,
+    # valid session with a fresh cookie.
+    if (signals.modified or signals.always_save) and not signals.empty:
         return Outcome.WRITE
 
     # The load was a plain read under this setting, so this is the only place
@@ -495,6 +497,8 @@ class SessionMiddleware:
         cookie_builder: Callable[[CookieSpec], str] | None = None,
         descriptor_of: Callable[[Request, Session], dict[str, Any]] | None = None,
         skip: Callable[[Request], bool] | None = None,
+        idle_ttl: int | timedelta | None = None,
+        absolute_ttl: int | timedelta | None = None,
     ) -> None:
         self.app = app
         self._store_factory = store_factory
@@ -503,6 +507,10 @@ class SessionMiddleware:
         self._cookie_builder = cookie_builder or build_cookie
         self._descriptor_of = descriptor_of
         self._skip = skip
+        # The overrides given to ``add_redis_sessions``, which the store also
+        # received.  ``None`` means "use the setting", read per request.
+        self._idle_ttl = idle_ttl
+        self._absolute_ttl = absolute_ttl
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -818,9 +826,15 @@ class SessionMiddleware:
         slides, so a cookie sent on any write stays correct until the record's
         last possible moment.  Redis still enforces the idle clock.
         """
-        cookie_only = (
-            not settings.session_idle_ttl and not settings.session_absolute_ttl
+        idle = (
+            self._idle_ttl if self._idle_ttl is not None else settings.session_idle_ttl
         )
+        lifetime = (
+            self._absolute_ttl
+            if self._absolute_ttl is not None
+            else settings.session_absolute_ttl
+        )
+        cookie_only = not _seconds(idle) and not _seconds(lifetime)
         return CookieSpec(
             name=settings.session_cookie_name,
             value=value,
@@ -934,7 +948,7 @@ def add_redis_sessions(
         absolute_ttl: Absolute clock, overriding ``session_absolute_ttl``.
         gc_ttl: Backstop TTL, overriding ``session_gc_ttl``.
 
-    These last eight exist because the store constructor has always accepted
+    The last seven exist because the store constructor has always accepted
     them and nothing reachable from here passed them on: the only way to change
     a coder was to replace the whole dependency, and that did not reach the
     middleware at all.
@@ -1001,6 +1015,8 @@ def add_redis_sessions(
         cookie_builder=cookie_builder,
         descriptor_of=descriptor_of,
         skip=skip,
+        idle_ttl=idle_ttl,
+        absolute_ttl=absolute_ttl,
     )
 
 
@@ -1133,8 +1149,8 @@ def valid_session(
             it with the application's own authentication.
         on_reject: Build the rejection.  Receives the request and the reason,
             and returns the response - sync or async.  Default: 401, with a
-            ``WWW-Authenticate`` header only if the ``challenge`` setting is
-            configured.
+            ``WWW-Authenticate`` header only if ``add_redis_sessions`` was
+            given a ``challenge``.
 
     Raises:
         SessionConfigurationError: At request time, if sessions are not set
@@ -1241,7 +1257,7 @@ def _default_rejection(
 def challenge_headers(request: Request, reason: str) -> dict[str, str]:
     """The ``WWW-Authenticate`` header for a default rejection, or none.
 
-    Read from the ``challenge`` setting at request time, so it does not matter
+    Read from the ``challenge`` argument at request time, so it does not matter
     whether routes are declared before or after ``.sessions()``.
     """
     challenge = getattr(request.app.state, "_redis_session_challenge", None)

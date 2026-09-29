@@ -560,7 +560,10 @@ async def _(session_id: str, cause: Cause) -> None: ...
 
 Started and stopped by the lifespan when `session_events_enabled` is set.
 `events.tier` is `"key"` when the server can deliver events and `"none"`
-otherwise — in which case handlers never fire. Requires
+otherwise — in which case handlers never fire. It is also `"none"` while a
+lost subscription is being restored: the subscriber tries again every second
+unless `session_events_reconnect` is off, or `SessionEvents(...,
+reconnect=False)` was used. Requires
 `notify-keyspace-events` including `Ehx` — `E` for the `__keyevent@`
 channels, `h` for hash events and `x` for expiry events. `A` covers `h` and
 `x`. An idle timeout arrives as `hexpired`, an absolute timeout as `expired`.

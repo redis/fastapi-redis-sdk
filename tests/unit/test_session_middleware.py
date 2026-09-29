@@ -448,7 +448,7 @@ class TestAlwaysSaveDoesNotMintAnonymousSessions:
     async def test_a_nested_mutation_still_persists(
         self, always_save_app: FastAPI, fake_async_redis
     ) -> None:
-        """What the setting is for, and the reason (a) is safe.
+        """What the setting is for, and why the ``not empty`` qualifier is safe.
 
         A nested mutation needs a top-level key already holding the nested
         value, so the session is never empty when it happens.
@@ -456,7 +456,7 @@ class TestAlwaysSaveDoesNotMintAnonymousSessions:
         with TestClient(always_save_app) as client:
             client.post("/login")
             sid = client.cookies["session"]
-            # Seed a nested value through the ordinary path.
+            # Seed a nested value directly in the store.
             client.post("/login")
             store = always_save_app.state._store
             loaded = await store.load(sid)

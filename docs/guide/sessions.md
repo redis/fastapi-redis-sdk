@@ -402,7 +402,11 @@ every other application on the instance.
     [`CONFIG GET`](https://redis.io/docs/latest/commands/config-get/) is
     unavailable - which is common on managed Redis - `events.tier` is `"none"`,
     one warning is logged at startup, and **your handlers never run**. Startup
-    still succeeds and every request still works.
+    still succeeds and every request still works. If the subscription is lost
+    later, for example on a network error, `events.tier` changes to `"none"`
+    and one warning is logged. The subscriber tries again every second, with
+    no limit, and `events.tier` returns to `"key"` once it is back. Set
+    `session_events_reconnect=False` to stop at the first loss instead.
 
     A revocation handler that never fires looks exactly like one that works. If
     prompt closure matters, check `events.tier` and add a periodic sweep as
@@ -884,6 +888,7 @@ Every setting is an environment variable prefixed `REDIS_`, so
 | `session_always_save` | `False` | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt |
 | `session_principal_keys` | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role` |
 | `session_events_enabled` | `False` | Opt in to real-time events |
+| `session_events_reconnect` | `True` | Subscribe again every second after a lost subscription. `False` stops at the first loss |
 
 ---
 

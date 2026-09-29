@@ -378,7 +378,7 @@ class TestTheStoreIsInjectable:
 
 
 class TestSessionCarriesNoTransportState:
-    """Proposal 2: ``Session`` is a dict with two flags, and nothing else.
+    """``Session`` is a dict with two flags, and nothing else.
 
     The store used to write ``sid``/``subject``/``revoked``/``rotated`` onto
     the object the application holds, which made those four a public mutable

@@ -119,11 +119,10 @@ async def test_both_index_tiers_expire_the_entry(
 ) -> None:
     """``_index_add``'s fallback had no test in either suite.
 
-    Unlike the session write it uses no ``NX``, so nothing about it followed
-    from the session-path tests. The entry carries the *remainder* of the
-    absolute clock, never the full lifetime - a full lifetime would restart
-    the entry's clock on every write and let the index outlive the session it
-    names, which is unrevocable rather than merely untidy.
+    The entry carries the *remainder* of the absolute clock, never the full
+    lifetime - a full lifetime would restart the entry's clock on every write
+    and let the index outlive the session it names, which is unrevocable
+    rather than merely untidy.
     """
     if supports_hsetex and not await probe_hsetex_support(real_async_redis):
         pytest.skip("server has no HSETEX; the 8.0 tier cannot be forced on")
@@ -289,6 +288,42 @@ async def test_rotation_deletes_the_old_key_before_writing_the_new_one(
     assert await real_async_redis.exists(store.session_key(new)) == 1
 
 
+async def test_rotation_without_a_subject_keeps_the_current_one(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """A handler's step-up ``rotate(state)`` must stay indexed under its user."""
+    from redis_fastapi.session_backend import SessionState
+
+    store = _store(real_async_redis, test_prefix)
+    state = SessionState(data={"user_id": 42}, session_id=store.new_id(), subject="42")
+    record = store.new_record(dict(state.data))
+    await store.create(state.session_id, record)
+    await store.index("42", state.session_id, record, absolute_remaining=600)
+
+    new = await store.rotate(state)
+    assert state.subject == "42"
+    assert await real_async_redis.hkeys(store.index_key("42")) == [new]
+
+
+async def test_rotation_to_no_subject_leaves_the_old_index_alone(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """``subject=None`` is how the middleware says the session is anonymous."""
+    from redis_fastapi.session_backend import SessionState
+
+    store = _store(real_async_redis, test_prefix)
+    state = SessionState(
+        data={"user_id": None}, session_id=store.new_id(), subject="42"
+    )
+    record = store.new_record(dict(state.data))
+    await store.create(state.session_id, record)
+    await store.index("42", state.session_id, record, absolute_remaining=600)
+
+    await store.rotate(state, subject=None)
+    assert state.subject is None
+    assert await real_async_redis.hkeys(store.index_key("42")) == []
+
+
 async def test_writing_the_payload_leaves_the_deadline_alone(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
@@ -406,3 +441,107 @@ async def test_an_absolute_expiry_reaches_a_handler_as_absolute(
         real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1
     )
     assert (session_id, cause) == (sid, "absolute")
+
+
+async def _pubsub_clients(redis: async_redis.Redis) -> int:
+    return len(await redis.client_list(_type="pubsub"))
+
+
+async def test_stop_returns_the_subscriber_connection(
+    real_async_redis: async_redis.Redis, test_prefix: str
+) -> None:
+    """Cancelling the subscriber must close its Pub/Sub connection."""
+    original = (await real_async_redis.config_get("notify-keyspace-events")).get(
+        "notify-keyspace-events", ""
+    )
+    try:
+        try:
+            await real_async_redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
+        except async_redis.RedisError as exc:
+            pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
+
+        events = SessionEvents(real_async_redis, key_prefix=test_prefix)
+        before = await _pubsub_clients(real_async_redis)
+        await events.start()
+        if events.tier == "none":
+            pytest.skip("server cannot supply keyspace notifications")
+        for _ in range(50):
+            if await _pubsub_clients(real_async_redis) > before:
+                break
+            await asyncio.sleep(0.05)
+        assert await _pubsub_clients(real_async_redis) == before + 1
+
+        await events.stop()
+        for _ in range(50):
+            if await _pubsub_clients(real_async_redis) == before:
+                break
+            await asyncio.sleep(0.05)
+        assert await _pubsub_clients(real_async_redis) == before, (
+            "stop() left the subscriber connection open"
+        )
+    finally:
+        await real_async_redis.config_set("notify-keyspace-events", original)
+
+
+async def test_a_killed_subscription_reconnects_and_still_delivers(
+    real_async_redis: async_redis.Redis, test_prefix: str, monkeypatch
+) -> None:
+    """``CLIENT KILL`` is a real connection loss, not a scripted one.
+
+    The subscriber must notice, report ``tier == "none"``, subscribe again on
+    a new connection, and then deliver an expiry that happens afterwards.
+    """
+    import redis_fastapi.session_events as module
+
+    monkeypatch.setattr(module, "_RECONNECT_DELAY", 0.1)
+    original = (await real_async_redis.config_get("notify-keyspace-events")).get(
+        "notify-keyspace-events", ""
+    )
+    try:
+        try:
+            await real_async_redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
+        except async_redis.RedisError as exc:
+            pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
+
+        before = {c["id"] for c in await real_async_redis.client_list(_type="pubsub")}
+        events = SessionEvents(real_async_redis, key_prefix=test_prefix)
+        delivered: asyncio.Queue = asyncio.Queue()
+
+        @events.on_session_end
+        async def _(session_id: str, cause: str) -> None:
+            await delivered.put((session_id, cause))
+
+        await events.start()
+        if events.tier == "none":
+            pytest.skip("server cannot supply keyspace notifications")
+        try:
+
+            async def _ours() -> set[str]:
+                clients = await real_async_redis.client_list(_type="pubsub")
+                return {c["id"] for c in clients} - before
+
+            for _ in range(50):
+                if first := await _ours():
+                    break
+                await asyncio.sleep(0.05)
+            assert len(first) == 1
+            await real_async_redis.client_kill_filter(_id=next(iter(first)))
+
+            for _ in range(100):
+                current = await _ours()
+                if current and current != first and events.tier == "key":
+                    break
+                await asyncio.sleep(0.05)
+            assert current and current != first, "no new subscriber connection"
+            assert events.tier == "key"
+
+            store = _store(real_async_redis, test_prefix, idle_ttl=1)
+            sid = store.new_id()
+            await store.create(sid, store.new_record({"user_id": 42}))
+            await asyncio.sleep(1.5)
+            assert await store.load(sid) is None
+            assert await asyncio.wait_for(delivered.get(), timeout=10) == (sid, "idle")
+        finally:
+            await events.stop()
+    finally:
+        await real_async_redis.config_set("notify-keyspace-events", original)

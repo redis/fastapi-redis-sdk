@@ -109,6 +109,11 @@ _ID_ALPHABET = frozenset(
 _ID_BYTES = 32
 _ID_MIN_LENGTH = 22
 
+# The default for ``rotate(subject=...)``: keep the session's current subject.
+# ``None`` cannot mean that, because ``None`` is how the middleware says the
+# session is now anonymous.
+_UNSET: Any = object()
+
 
 def _seconds(value: int | timedelta) -> int:
     """Normalise a TTL setting to whole seconds.
@@ -405,18 +410,22 @@ class SessionStore(ABC):
     def idle_seconds(self) -> int:
         """TTL for field ``d``.
 
-        ``session_idle_ttl=0`` disables the idle clock, and the field then
-        falls back to ``gc_ttl`` rather than being left unexpiring, so Redis
-        can always collect an abandoned key.
+        ``session_idle_ttl=0`` disables the idle clock.  The field then takes
+        the key's TTL, so the key always expires first and takes the field
+        with it.  Every command on ``d`` still gets a positive TTL, and no
+        read can end a session the idle clock was told to leave alone.
+        ``gc_ttl`` here would act as a hidden idle clock whenever
+        ``absolute_ttl`` is longer than it.
         """
-        return self._idle_ttl or self._gc_ttl
+        return self._idle_ttl or self.absolute_seconds
 
     @property
     def absolute_seconds(self) -> int:
         """TTL for the session key, set once at creation and never refreshed.
 
         ``session_absolute_ttl=0`` disables the absolute clock, and the key
-        then falls back to ``gc_ttl`` for the same reason as above.
+        then falls back to ``gc_ttl``.  The load reads a key with no TTL as
+        a dead session, so the key must always carry one.
         """
         return self._absolute_ttl or self._gc_ttl
 
@@ -757,10 +766,10 @@ class SessionStore(ABC):
         self,
         state: SessionState,
         *,
-        subject: str | None = None,
+        subject: str | None = _UNSET,
         descriptor: dict[str, Any] | None = None,
     ) -> str:
-        """Issue a new identifier for *session*, deleting the old key first.
+        """Issue a new identifier for *state*, deleting the old key first.
 
         This is the defence against session fixation, and the **middleware
         normally drives it** when the principal changes (Section 5.1).  It is
@@ -777,6 +786,9 @@ class SessionStore(ABC):
         rotation follows authentication or a privilege change, so the deadline
         should run from that moment rather than from whenever the anonymous
         session began.
+
+        Omit *subject* to keep the session's current one.  ``None`` makes the
+        new session anonymous: it is not indexed under any subject.
 
         Returns:
             The new session ID.
@@ -795,7 +807,8 @@ class SessionStore(ABC):
         descriptor: dict[str, Any] | None,
     ) -> str:
         """Body of :meth:`rotate`, so the span wraps the whole four trips."""
-        subject = subject if subject is not None else state.subject
+        if subject is _UNSET:
+            subject = state.subject
         old_id = state.session_id
         if old_id is not None:
             await self.delete(old_id)
@@ -853,7 +866,7 @@ class SessionStore(ABC):
 
         *subject* drops the index entry alongside the key.  The middleware
         supplies it from the subject captured at load time, so a handler
-        calling ``store.revoke(session)`` need not pass anything; pass it
+        calling ``store.revoke(state)`` need not pass anything; pass it
         explicitly only when using the store outside a request.
 
         Leaving the entry behind is not cosmetic: ``list_for_subject`` prunes
@@ -1515,7 +1528,7 @@ class SyncSessionStore:
         self,
         state: SessionState,
         *,
-        subject: str | None = None,
+        subject: str | None = _UNSET,
         descriptor: dict[str, Any] | None = None,
     ) -> str:
         """Issue a new identifier, deleting the old key first (blocking)."""

@@ -299,7 +299,7 @@ class CachePending:
     vary_on_session: bool | None = None
     """What the route declared about session dependence.  ``None`` means the
     developer did not say, which is what arms the safety net in
-    :func:`_store_cache_entry`."""
+    :func:`_leaks_across_users`."""
     route: str = ""
     """For the one-time warning, so it names something useful."""
 
@@ -505,7 +505,7 @@ def cache(
             # 4. HIT: short-circuit via exception — endpoint never runs.
             #    A gate that ran first decides the directives too: a gated
             #    body is private, and a route that asked for a recent session
-            #    is sensitive (valid_session(), S-1.6 and S-2).
+            #    is sensitive (valid_session(), N-18).
             private_here = _private or bool(request.scope.get(SESSION_GATED_SCOPE_KEY))
             no_store_here = no_store or bool(
                 request.scope.get(SESSION_NO_STORE_SCOPE_KEY)
@@ -539,7 +539,8 @@ def cache(
             no_store=no_store_here,
             redis=redis,
             vary_on_session=vary_on_session,
-            route=f"{request.method} {request.url.path}",
+            route=f"{request.method} "
+            f"{getattr(request.scope.get('route'), 'path', request.url.path)}",
         )
         yield
 

@@ -266,6 +266,9 @@ also accept a `timedelta`; Section 9 gives the convention and why a settings fie
 sensibly take one. With both at zero the session is cookie-only: no `max-age` on the cookie, so the
 browser drops it when it closes, and **both** clocks get `gc_ttl` so Redis eventually
 collects what the browser abandoned.
+With only `idle_ttl` at zero, field `d` takes the key's TTL rather than `gc_ttl`, so the
+key always expires first and only the absolute clock can end the session. A `gc_ttl` on
+`d` would act as a hidden idle clock whenever `absolute_ttl` is longer than `gc_ttl`.
 
 ### 3.3 The subject index: from a user back to their sessions
 

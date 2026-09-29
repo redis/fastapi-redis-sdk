@@ -29,7 +29,7 @@ CACHE_STATUS_HEADER: str = "X-Redis-Cache"
 # Scope keys the caching and session features use to agree about a response,
 # rather than each appending headers independently.  They live here because
 # neither feature may import the other: caching must work with sessions absent,
-# and deps.py already imports sessions, so cache -> sessions would be a cycle.
+# and deps.py already imports sessions, so sessions -> cache would be a cycle.
 CACHE_ROUTE_SCOPE_KEY: str = "redis_cache_route"
 """Set by ``cache()``: this route owns its ``Cache-Control``."""
 CACHE_SUPPRESS_VARY_SCOPE_KEY: str = "redis_cache_no_vary"
@@ -238,7 +238,7 @@ class RedisSettings(BaseSettings):
             "Idle clock, in seconds.  The session dies this long after the "
             "last request that carried its cookie.  Stored as the TTL of hash "
             "field 'd'.  0 disables the idle clock, and the field then takes "
-            "session_gc_ttl."
+            "the key's TTL, so only the absolute clock can end the session."
         ),
     )
     session_absolute_ttl: int = Field(
@@ -255,10 +255,10 @@ class RedisSettings(BaseSettings):
         default=2592000,
         gt=0,
         description=(
-            "Backstop TTL for a field whose real deadline is unknown: "
-            "cookie-only mode, or session_absolute_ttl=0.  Never reached in "
-            "normal operation; it exists so Redis can always collect an "
-            "abandoned key."
+            "Backstop TTL for a key whose real deadline is unknown: "
+            "session_absolute_ttl=0, alone or with session_idle_ttl=0 "
+            "(cookie-only mode).  Never reached in normal operation; it exists so Redis "
+            "can always collect an abandoned key."
         ),
     )
     session_refresh_on_load: bool = Field(
@@ -308,6 +308,14 @@ class RedisSettings(BaseSettings):
             "when a session ends.  Best-effort: on a server that cannot "
             "supply them the store logs one warning at startup and the "
             "handlers never fire."
+        ),
+    )
+    session_events_reconnect: bool = Field(
+        default=True,
+        description=(
+            "Subscribe again, every second and with no limit, when the "
+            "session-event subscription is lost.  False: stop at the first "
+            "loss, and the handlers stay silent until the process restarts."
         ),
     )
 

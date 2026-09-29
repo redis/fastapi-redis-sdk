@@ -192,7 +192,10 @@ async def _start_session_events(app: FastAPI, ps: _PoolState) -> Any:
 
     try:
         events = SessionEvents(
-            ps.get_async_client(), key_prefix=settings.prefix, db=settings.db
+            ps.get_async_client(),
+            key_prefix=settings.prefix,
+            db=settings.db,
+            reconnect=settings.session_events_reconnect,
         )
         await events.start()
     except Exception:
