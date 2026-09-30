@@ -1,0 +1,2654 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Official FastAPI integration for Redis">
+      
+      
+        <meta name="author" content="Redis">
+      
+      
+        <link rel="canonical" href="https://redis.github.io/fastapi-redis-sdk/feature-session-management/guide/sessions/">
+      
+      
+        <link rel="prev" href="../rate-limiting/">
+      
+      
+        <link rel="next" href="../observability/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../logo.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Sessions - FastAPI Redis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#sessions" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="FastAPI Redis" class="md-header__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            FastAPI Redis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Sessions
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/reference/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="FastAPI Redis" class="md-nav__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    FastAPI Redis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#rotation-is-automatic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rotation is automatic
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-clocks-both-enforced-by-redis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two clocks, both enforced by Redis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signing-out-everywhere" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signing out, everywhere
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requiring-a-valid-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requiring a valid session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Requiring a valid session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-www-authenticate-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The WWW-Authenticate header
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#requiring-a-recently-issued-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requiring a recently issued session
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-redis-is-unreachable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Redis is unreachable
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nested-changes-are-invisible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nested changes are invisible
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-time-session-events-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time session events (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caching-an-endpoint-that-uses-the-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching an endpoint that uses the session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Caching an endpoint that uses the session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#vary_on_sessiontrue-cache-per-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vary_on_session=True - cache per user
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vary_on_sessionfalse-reads-the-session-but-cache-is-shared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vary_on_session=False - reads the session, but cache is shared
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#saying-nothing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saying nothing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At a glance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-session-route-with-no-caching-on-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A session route with no caching on it
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitation-websockets-have-no-session-in-this-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitation: WebSockets have no session in this release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csrf-what-a-cookie-session-reintroduces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSRF: what a cookie session reintroduces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#encrypting-the-payload-at-rest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encrypting the payload at rest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migrating-from-something-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from something else
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Migrating from something else">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#from-starlettes-sessionmiddleware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From Starlette's SessionMiddleware
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-starsessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From starsessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-fastapi-users-redisstrategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From fastapi-users' RedisStrategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-an-in-process-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From an in-process store
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-in-production" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it in production
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sync-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sync endpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#replacing-the-pieces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replacing the pieces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#rotation-is-automatic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rotation is automatic
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-clocks-both-enforced-by-redis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two clocks, both enforced by Redis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signing-out-everywhere" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signing out, everywhere
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requiring-a-valid-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requiring a valid session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Requiring a valid session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-www-authenticate-header" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The WWW-Authenticate header
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#requiring-a-recently-issued-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requiring a recently issued session
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-redis-is-unreachable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Redis is unreachable
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nested-changes-are-invisible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nested changes are invisible
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-time-session-events-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time session events (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caching-an-endpoint-that-uses-the-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching an endpoint that uses the session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Caching an endpoint that uses the session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#vary_on_sessiontrue-cache-per-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vary_on_session=True - cache per user
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vary_on_sessionfalse-reads-the-session-but-cache-is-shared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vary_on_session=False - reads the session, but cache is shared
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#saying-nothing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saying nothing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At a glance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-session-route-with-no-caching-on-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A session route with no caching on it
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitation-websockets-have-no-session-in-this-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitation: WebSockets have no session in this release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#csrf-what-a-cookie-session-reintroduces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CSRF: what a cookie session reintroduces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#encrypting-the-payload-at-rest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encrypting the payload at rest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migrating-from-something-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from something else
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Migrating from something else">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#from-starlettes-sessionmiddleware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From Starlette's SessionMiddleware
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-starsessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From starsessions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-fastapi-users-redisstrategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From fastapi-users' RedisStrategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#from-an-in-process-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From an in-process store
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-in-production" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it in production
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sync-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sync endpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#replacing-the-pieces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replacing the pieces
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h1>
+<p>Server-side sessions for FastAPI. The cookie carries an opaque identifier and
+nothing else; the record lives in Redis, where the server enforces both of its
+deadlines.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPI</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span><span class="p">,</span> <span class="n">SessionDep</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">()</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/login&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">login</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">42</span>       <span class="c1"># this rotates the session ID</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/me&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">me</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;user_id&quot;</span><span class="p">:</span> <span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;user_id&quot;</span><span class="p">)}</span>
+</code></pre></div>
+<p><code>request.session</code> works too, so code written against Starlette's signed-cookie
+<a href="https://starlette.dev/middleware/#sessionmiddleware"><code>SessionMiddleware</code></a> runs
+unchanged.</p>
+<hr />
+<h2 id="rotation-is-automatic">Rotation is automatic<a class="headerlink" href="#rotation-is-automatic" title="Permanent link">&para;</a></h2>
+<p>Writing the identity rotates the session ID. There is no <code>rotate()</code> to call and
+therefore none to forget, which matters because forgetting it is the one
+mistake in this API that is a vulnerability -
+<a href="https://owasp.org/www-community/attacks/Session_fixation">session fixation</a>.</p>
+<p>The middleware evaluates a <strong>principal</strong> twice per request, once before the
+application runs and once at <code>http.response.start</code>. If the two differ and the
+response status is below 400, it issues a new ID and deletes the old key first.</p>
+<p>Watch more than the user ID to get OWASP's
+<a href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#renew-the-session-id-after-any-privilege-level-change">privilege-change rotation</a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span><span class="n">principal_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">,</span> <span class="s2">&quot;role&quot;</span><span class="p">])</span>
+</code></pre></div>
+<p>For anything a list of keys cannot express, supply a function:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="c1"># Identity exists, but authentication is not finished at MFA step one.</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">principal_of</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;user_id&quot;</span><span class="p">)</span> <span class="k">if</span> <span class="n">s</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;mfa_ok&quot;</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>principal_of</code> must be <strong>pure, cheap and deterministic</strong> - it runs twice per
+request and the two results are compared by value - and it must return a
+<em>verified</em> identity, never something the client set.</p>
+<div class="admonition warning">
+<p class="admonition-title">A misconfigured resolver is silent</p>
+<p>If your application writes <code>uid</code> but the resolver reads <code>user_id</code>, nothing
+rotates and nothing complains. Assert it once:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_login_rotates</span><span class="p">(</span><span class="n">client</span><span class="p">):</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">before</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/write&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">cookies</span><span class="p">[</span><span class="s2">&quot;session&quot;</span><span class="p">]</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">after</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/login&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">cookies</span><span class="p">[</span><span class="s2">&quot;session&quot;</span><span class="p">]</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="k">assert</span> <span class="n">after</span> <span class="o">!=</span> <span class="n">before</span>
+</code></pre></div>
+<p>The <code>operation="rotate"</code> counter is the runtime backstop: sign-ins with no
+rotations is a visible anomaly on a dashboard.</p>
+</div>
+<hr />
+<h2 id="two-clocks-both-enforced-by-redis">Two clocks, both enforced by Redis<a class="headerlink" href="#two-clocks-both-enforced-by-redis" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>What it bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_idle_ttl</code></td>
+<td>30 min</td>
+<td>Time since the last request carrying the cookie</td>
+</tr>
+<tr>
+<td><code>session_absolute_ttl</code></td>
+<td>8 h</td>
+<td>Time since the session was created, however active the user</td>
+</tr>
+</tbody>
+</table>
+<p>The idle clock is the <a href="https://redis.io/docs/latest/commands/hexpire/">expiration</a>
+of the hash field that holds the payload, and the absolute clock is the
+<a href="https://redis.io/docs/latest/commands/expire/">expiration</a> of the session key
+itself. So <strong>Redis enforces both and this library computes neither</strong>. At the
+absolute deadline Redis deletes the whole key, however recently the payload
+was refreshed. Writing the payload never touches the key's expiration, so no
+number of writes can extend the absolute deadline.</p>
+<p>The absolute clock is the one that matters against a stolen session. An
+<a href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#idle-timeout">idle timeout</a>
+cannot expire a session an attacker is actively using, because the attacker's
+own requests keep refreshing it - OWASP says so directly under
+<a href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#absolute-timeout">absolute timeout</a>.
+The absolute deadline is the only clock that fires on a live compromise.</p>
+<p>Both accept an <code>int</code> number of seconds. The store constructor also accepts a
+<a href="https://docs.python.org/3/library/datetime.html#datetime.timedelta"><code>timedelta</code></a>;
+the settings and their environment variables take seconds. Setting either to
+<code>0</code> disables that clock; setting both gives a cookie-only session that the
+browser drops when it closes.</p>
+<p>The cookie's
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#max-agenumber"><code>Max-Age</code></a>
+is the time left on the absolute clock, and the number comes from Redis rather
+than from your process. It does not follow the idle clock: a read-only request
+sends no cookie, so an idle-sized cookie would expire while the user is still
+active. After an idle timeout the browser keeps a cookie that no longer names a
+session, and the next request with it gets an empty session.</p>
+<hr />
+<h2 id="signing-out-everywhere">Signing out, everywhere<a class="headerlink" href="#signing-out-everywhere" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">SessionStateDep</span><span class="p">,</span> <span class="n">SessionStoreDep</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/logout&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">logout</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="n">SessionStateDep</span><span class="p">,</span> <span class="n">store</span><span class="p">:</span> <span class="n">SessionStoreDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">await</span> <span class="n">store</span><span class="o">.</span><span class="n">revoke</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/logout-everywhere&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">logout_all</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">store</span><span class="p">:</span> <span class="n">SessionStoreDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ended&quot;</span><span class="p">:</span> <span class="k">await</span> <span class="n">store</span><span class="o">.</span><span class="n">revoke_all</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">]))}</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/devices&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">devices</span><span class="p">(</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    <span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">SessionStateDep</span><span class="p">,</span> <span class="n">store</span><span class="p">:</span> <span class="n">SessionStoreDep</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>    <span class="n">current</span> <span class="o">=</span> <span class="n">store</span><span class="o">.</span><span class="n">session_id</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    <span class="k">return</span> <span class="p">[</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>        <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">info</span><span class="o">.</span><span class="n">session_id</span><span class="p">,</span> <span class="s2">&quot;this_device&quot;</span><span class="p">:</span> <span class="n">info</span><span class="o">.</span><span class="n">session_id</span> <span class="o">==</span> <span class="n">current</span><span class="p">,</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>         <span class="s2">&quot;last_seen&quot;</span><span class="p">:</span> <span class="n">info</span><span class="o">.</span><span class="n">last_access</span><span class="p">}</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>        <span class="k">for</span> <span class="n">info</span> <span class="ow">in</span> <span class="k">await</span> <span class="n">store</span><span class="o">.</span><span class="n">list_for_subject</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">]))</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>    <span class="p">]</span>
+</code></pre></div>
+<p><code>SessionDep</code> is the data - a <code>dict</code> you read and write. <code>SessionStateDep</code> is
+the handle: the identifier, the subject and the timestamps. Operations that
+act on the <em>session</em> rather than its contents take the handle.</p>
+<p>Simply emptying the session signs the user out too, and is often all you need:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/logout&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">logout</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">session</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>          <span class="c1"># key deleted, index entry dropped, cookie cleared</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</code></pre></div>
+<p><code>revoke_id</code> requires the subject and refuses an ID that is not indexed under it,
+so a handler taking an ID from a request cannot end a stranger's session.</p>
+<p>A listing is <strong>verified before it is returned</strong>. The index that answers "which
+sessions has this user got?" is an upper bound: entries expire on the absolute
+clock while most sessions die of idleness long before, so an entry routinely
+outlives the session it names. Reporting one would show a user a device they
+are not signed in on and a sign-out button that does nothing.</p>
+<hr />
+<h2 id="requiring-a-valid-session">Requiring a valid session<a class="headerlink" href="#requiring-a-valid-session" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Depends</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">valid_session</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/checkout&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">valid_session</span><span class="p">())])</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">checkout</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span> <span class="o">...</span>
+</code></pre></div>
+<p><code>valid_session()</code> rejects a request that did not arrive with a session this
+application created in an earlier response. A value a client makes up finds no
+record in Redis, so it fails, whatever its shape.</p>
+<p>It checks nothing else. It does not ask who the session belongs to: an
+anonymous session that holds a basket passes. Identity and roles stay with your
+own authentication.</p>
+<p>The default rejection is a <code>401</code>. To build your own, pass <code>on_reject</code>. It
+receives the request and a reason, and returns the response:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Request</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi.responses</span><span class="w"> </span><span class="kn">import</span> <span class="n">JSONResponse</span><span class="p">,</span> <span class="n">RedirectResponse</span><span class="p">,</span> <span class="n">Response</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">SessionRejection</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">start_over</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">Request</span><span class="p">,</span> <span class="n">reason</span><span class="p">:</span> <span class="n">SessionRejection</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Response</span><span class="p">:</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="s2">&quot;unavailable&quot;</span><span class="p">:</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>        <span class="k">return</span> <span class="n">JSONResponse</span><span class="p">({</span><span class="s2">&quot;detail&quot;</span><span class="p">:</span> <span class="s2">&quot;Try again shortly&quot;</span><span class="p">},</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">503</span><span class="p">)</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="k">return</span> <span class="n">RedirectResponse</span><span class="p">(</span><span class="s2">&quot;/?expired=1&quot;</span> <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="s2">&quot;expired&quot;</span> <span class="k">else</span> <span class="s2">&quot;/&quot;</span><span class="p">,</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">303</span><span class="p">)</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/basket&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">valid_session</span><span class="p">(</span><span class="n">on_reject</span><span class="o">=</span><span class="n">start_over</span><span class="p">))])</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">basket</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span> <span class="o">...</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Reason</th>
+<th>What happened</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"missing"</code></td>
+<td>No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied</td>
+</tr>
+<tr>
+<td><code>"expired"</code></td>
+<td>A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart.</td>
+</tr>
+<tr>
+<td><code>"unavailable"</code></td>
+<td>Redis could not be read, and the request continued without a session. Answer <code>503</code>, not a sign-in page.</td>
+</tr>
+</tbody>
+</table>
+<p><code>on_reject</code> may be sync or async. It <strong>returns</strong> the response instead of
+raising it, so a callback that forgets to return fails with a <code>500</code> instead of
+letting the request through.</p>
+<p>The gate also:</p>
+<ul>
+<li><strong>marks the session as read</strong>, so the response carries <code>Vary: Cookie</code> and
+  <code>Cache-Control: private</code>;</li>
+<li><strong>counts malformed cookies</strong>, on every request, gated or not, as the session
+  operation metric with <code>result="malformed"</code>. Every identifier the store issues
+  passes the format check, so a malformed value was never ours. The middleware
+  neither logs it nor clears it: the cookie may belong to another application
+  on the same domain;</li>
+<li><strong>refuses a route excluded by <code>skip</code></strong> with <code>SessionConfigurationError</code>,
+  because such a route can never pass.</li>
+</ul>
+<h3 id="the-www-authenticate-header">The <code>WWW-Authenticate</code> header<a class="headerlink" href="#the-www-authenticate-header" title="Permanent link">&para;</a></h3>
+<p>By default a rejection sends none, as most frameworks do for cookie sessions:
+the browser shows the body, and no password dialog. To send one, set
+<code>challenge</code> once for the application:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi.security</span><span class="w"> </span><span class="kn">import</span> <span class="n">APIKeyCookie</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># The security scheme your application already declares.</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span><span class="n">challenge</span><span class="o">=</span><span class="n">APIKeyCookie</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;session&quot;</span><span class="p">))</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># A fixed value.</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">challenge</span><span class="o">=</span><span class="s1">&#39;Cookie realm=&quot;shop&quot; form-action=&quot;/login&quot; cookie-name=session&#39;</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">)</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="c1"># A value that depends on the request or the reason; None sends no header.</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    <span class="n">challenge</span><span class="o">=</span><span class="k">lambda</span> <span class="n">request</span><span class="p">,</span> <span class="n">reason</span><span class="p">:</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="s2">&quot;unavailable&quot;</span> <span class="k">else</span> <span class="s2">&quot;APIKey&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>Basic</code> is refused: every browser answers it with a password dialog, on every
+gated page. The header goes on the default rejection only; a response from
+<code>on_reject</code> is your own.</p>
+<h3 id="requiring-a-recently-issued-session">Requiring a recently issued session<a class="headerlink" href="#requiring-a-recently-issued-session" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="s2">&quot;/account/email&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">current_user</span><span class="p">),</span>                      <span class="c1"># your authentication</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">valid_session</span><span class="p">(</span><span class="n">issued_within</span><span class="o">=</span><span class="mi">600</span><span class="p">)),</span>  <span class="c1"># the session ID is at most 10 minutes old</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="p">],</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="p">)</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">change_email</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span> <span class="o">...</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/confirm-password&quot;</span><span class="p">)</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">confirm</span><span class="p">(</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">form</span><span class="p">:</span> <span class="n">PasswordForm</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">SessionStateDep</span><span class="p">,</span> <span class="n">store</span><span class="p">:</span> <span class="n">SessionStoreDep</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="k">await</span> <span class="n">verify</span><span class="p">(</span><span class="n">form</span><span class="o">.</span><span class="n">password</span><span class="p">):</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">401</span><span class="p">)</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>    <span class="k">await</span> <span class="n">store</span><span class="o">.</span><span class="n">reauthenticate</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>   <span class="c1"># issues a new session ID</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</code></pre></div>
+<p><code>issued_within</code> asks one more question: was this session's ID issued within the
+last N seconds? A session gets a new ID when it is created, when the principal
+changes - a sign-in, a role change - and when you call <code>store.rotate()</code> or
+<code>store.reauthenticate()</code>. Reads and writes keep the ID. The age comes from the
+session key's TTL in Redis, so a container with a wrong clock cannot make an old
+session look recent.</p>
+<p>This is the building block for a step-up before a sensitive action, as
+<a href="https://github.com/OWASP/ASVS">OWASP ASVS V7.5</a> asks: your route checks the
+password and calls <code>reauthenticate()</code>, and for the next <code>issued_within</code> seconds
+the sensitive routes pass.</p>
+<div class="admonition warning">
+<p class="admonition-title"><code>issued_within</code> is not an authentication check</p>
+<ul>
+<li><strong>A new anonymous session is recent.</strong> Pair it with your own
+  authentication dependency, as in the example.</li>
+<li><strong>Every new ID counts.</strong> If your principal includes something a user can
+  change without a password - an active tenant, say - changing it makes the
+  session recent.</li>
+<li><strong>A handler that calls <code>store.rotate()</code> makes the session recent too.</strong></li>
+</ul>
+</div>
+<p>A session that is too old gets the reason <code>"stale"</code>. The default response is:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="mi">401</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="p">{</span><span class="nt">&quot;detail&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;A recently issued session is required&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w"> </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;stale_session&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w"> </span><span class="nt">&quot;issued_within&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">600</span><span class="p">}</span>
+</code></pre></div>
+<p>Branch on <code>error</code> in the client: open a password prompt, then retry. Every
+response from such a route, passed or rejected, says <code>Cache-Control: no-store</code>,
+so no cache keeps it, the browser's included. For a "confirm your password to
+continue" banner, <code>store.session_age(state)</code> returns the age in seconds.</p>
+<p>Two side effects to know:</p>
+<ul>
+<li><strong>A step-up changes the cookie</strong>, because <code>reauthenticate()</code> rotates the
+  session. A form open in another tab, carrying a CSRF token from the old
+  session, fails after it.</li>
+<li><strong>Lowering <code>session_absolute_ttl</code> makes older sessions stale</strong> until they
+  expire. The age is the configured lifetime minus the time left, and a session
+  created under the longer lifetime has more time left than the new one allows.
+  It is reported as <code>"stale"</code>, never as recent.</li>
+</ul>
+<hr />
+<h2 id="when-redis-is-unreachable">When Redis is unreachable<a class="headerlink" href="#when-redis-is-unreachable" title="Permanent link">&para;</a></h2>
+<p>The default is asymmetric by design:</p>
+<ul>
+<li><strong>A failed read yields an empty session.</strong> The user looks anonymous, your own
+  authorization dependency finds no user, and a protected route stays protected
+  because it never depended on the read succeeding.</li>
+<li><strong>A failed write raises <code>SessionStoreError</code>.</strong> Losing a login or a rotation is
+  the worst outcome here and must never be silent.</li>
+</ul>
+<p>Set <code>session_fail_closed=True</code> to turn the failed read into an error too, for a
+deployment that prefers a
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503</a>
+to an anonymous page. Writes raise either way.</p>
+<hr />
+<h2 id="nested-changes-are-invisible">Nested changes are invisible<a class="headerlink" href="#nested-changes-are-invisible" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">session</span><span class="p">[</span><span class="s2">&quot;prefs&quot;</span><span class="p">][</span><span class="s2">&quot;theme&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;dark&quot;</span>     <span class="c1"># NOT saved</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">session</span><span class="p">[</span><span class="s2">&quot;prefs&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="o">**</span><span class="n">session</span><span class="p">[</span><span class="s2">&quot;prefs&quot;</span><span class="p">],</span> <span class="s2">&quot;theme&quot;</span><span class="p">:</span> <span class="s2">&quot;dark&quot;</span><span class="p">}</span>   <span class="c1"># saved</span>
+</code></pre></div>
+<p>No <code>dict</code> subclass in any language can see a change inside a value it holds.
+Reassign the top-level key, or set <code>session_always_save=True</code> to write on every
+request that touched the session.</p>
+<div class="admonition warning">
+<p class="admonition-title"><code>session_always_save</code> writes on every request that <em>read</em> the session</p>
+<p>"Touched" includes a plain read - <code>session.get("user_id")</code> is enough - so
+with the setting on, a route that only inspects the session writes it back
+on every request. Prefer reassigning the top-level key, and reach for the
+setting only where you cannot.</p>
+<p>An <strong>empty</strong> session is exempt: reading one does not create it. Without
+that exemption every anonymous visitor to a session-touching route - every
+crawler, health check and preflight - would be minted an identifier, a
+Redis key and a cookie. Nothing the setting exists for is lost, because a
+nested mutation needs a top-level key already holding the nested value.</p>
+</div>
+<hr />
+<h2 id="real-time-session-events-optional">Real-time session events (optional)<a class="headerlink" href="#real-time-session-events-optional" title="Permanent link">&para;</a></h2>
+<p>Close a WebSocket the moment a session ends, instead of finding out on the next
+HTTP request:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Cause</span><span class="p">,</span> <span class="n">SessionEvents</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="n">events</span> <span class="o">=</span> <span class="n">SessionEvents</span><span class="p">(</span><span class="n">redis</span><span class="p">,</span> <span class="n">key_prefix</span><span class="o">=</span><span class="s2">&quot;redis:fastapi&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="nd">@events</span><span class="o">.</span><span class="n">on_session_end</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_</span><span class="p">(</span><span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">cause</span><span class="p">:</span> <span class="n">Cause</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>   <span class="c1"># &quot;idle&quot; or &quot;absolute&quot;</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>    <span class="k">await</span> <span class="n">close_sockets_for</span><span class="p">(</span><span class="n">session_id</span><span class="p">)</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="k">await</span> <span class="n">events</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+</code></pre></div>
+<p><code>Cause</code> has exactly those two members, so an exhaustive <code>match</code> over it stays
+exhaustive. A revocation is not among them: it is a <code>DEL</code>, and Redis publishes
+the same <code>del</code> event when an idle expiry empties the key, so the two cannot be
+told apart. Sign a user out through <code>revoke()</code> and you already know it
+happened - the event stream is for the deaths nobody asked for. <code>Handler</code> is
+exported too, for annotating the callable you register.</p>
+<p>This uses
+<a href="https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/">keyspace notifications</a>,
+which work on every supported Redis version, and it needs the server
+configured for them with
+<a href="https://redis.io/docs/latest/commands/config-set/"><code>CONFIG SET</code></a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>CONFIG SET notify-keyspace-events Ehx
+</code></pre></div>
+<p><code>E</code> enables the <code>__keyevent@</code> channels, <code>h</code> the hash events and <code>x</code> the
+expiry events. An idle timeout arrives as <code>hexpired</code> - the payload field
+expired - and an absolute timeout as <code>expired</code> - the key expired. <code>A</code> covers
+both <code>h</code> and <code>x</code>, so a server already set to <code>KEA</code> needs nothing more.
+This library will never set the option for you: it is server-wide and affects
+every other application on the instance.</p>
+<div class="admonition danger">
+<p class="admonition-title">The callback is best-effort, and silence is a possible outcome</p>
+<p>On a server without the flags, or one where
+<a href="https://redis.io/docs/latest/commands/config-get/"><code>CONFIG GET</code></a> is
+unavailable - which is common on managed Redis - <code>events.tier</code> is <code>"none"</code>,
+one warning is logged at startup, and <strong>your handlers never run</strong>. Startup
+still succeeds and every request still works. If the subscription is lost
+later, for example on a network error, <code>events.tier</code> changes to <code>"none"</code>
+and one warning is logged. The subscriber tries again every second, with
+no limit, and <code>events.tier</code> returns to <code>"key"</code> once it is back. Set
+<code>session_events_reconnect=False</code> to stop at the first loss instead.</p>
+<p>A revocation handler that never fires looks exactly like one that works. If
+prompt closure matters, check <code>events.tier</code> and add a periodic sweep as
+well. <a href="https://redis.io/docs/latest/develop/pubsub/">Redis Pub/Sub</a> is
+fire-and-forget: events sent while no subscriber is connected are lost, and
+an <a href="https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#timing-of-expired-events">expiry event</a>
+fires when Redis removes the field or the key rather than when the
+deadline passed.</p>
+<p>Nothing else depends on this. Expiry, revocation and the index all work
+identically with events switched off.</p>
+</div>
+<p>On a <a href="https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#events-in-a-cluster">cluster</a>,
+keyspace events are node-local and are not broadcast, so seeing every event
+needs one subscriber per node.</p>
+<hr />
+<h2 id="caching-an-endpoint-that-uses-the-session">Caching an endpoint that uses the session<a class="headerlink" href="#caching-an-endpoint-that-uses-the-session" title="Permanent link">&para;</a></h2>
+<p>A cached response is stored once and served many times. A session-dependent
+response is different for every user. Without handling this in a special way
+the first user's body could end up being served to the second.</p>
+<p>Using the <code>vary_on_session</code> parameter you can control three distinct situations:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">vary_on_session</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>    <span class="c1"># depends on who is asking</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">vary_on_session</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>   <span class="c1"># reads the session but the body is the same for everyone</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>                          <span class="c1"># unknown, reading the session is potentially dangerous</span>
+</code></pre></div>
+<h3 id="vary_on_sessiontrue-cache-per-user"><code>vary_on_session=True</code> - cache per user<a class="headerlink" href="#vary_on_sessiontrue-cache-per-user" title="Permanent link">&para;</a></h3>
+<p>Use it when the response contains the user's own data.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="s2">&quot;/me&quot;</span><span class="p">,</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">vary_on_session</span><span class="o">=</span><span class="kc">True</span><span class="p">))],</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="p">)</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">me</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;user_id&quot;</span><span class="p">:</span> <span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">],</span> <span class="s2">&quot;cart&quot;</span><span class="p">:</span> <span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;cart&quot;</span><span class="p">,</span> <span class="p">[])}</span>
+</code></pre></div>
+<p>Each user gets their own cache entry and their own hits - Alice's second
+request is a <code>HIT</code> on Alice's copy. The key is built from the <strong>subject</strong>, not
+the session ID, so it survives a rotation (a privilege change does not throw
+the entry away) and is shared across that user's devices.</p>
+<p>The response carries
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private"><code>Cache-Control: private, max-age=300</code></a>.
+The <code>private</code> is not optional and is added for you: our entry is per user, so a
+CDN told it may keep one copy for everyone would recreate the leak one hop
+further out.</p>
+<h3 id="vary_on_sessionfalse-reads-the-session-but-cache-is-shared"><code>vary_on_session=False</code> - reads the session, but cache is shared<a class="headerlink" href="#vary_on_sessionfalse-reads-the-session-but-cache-is-shared" title="Permanent link">&para;</a></h3>
+<p>Use it when an auth dependency reads the session but the payload does not
+depend on who asked.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">require_user</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>    <span class="k">if</span> <span class="s2">&quot;user_id&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">session</span><span class="p">:</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">401</span><span class="p">)</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="k">return</span> <span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">]</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>    <span class="s2">&quot;/catalogue&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">require_user</span><span class="p">),</span>                          <span class="c1"># reads the session</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">vary_on_session</span><span class="o">=</span><span class="kc">False</span><span class="p">)),</span> <span class="c1"># body does not</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    <span class="p">],</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="p">)</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">catalogue</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">load_products</span><span class="p">()</span>
+</code></pre></div>
+<p>One shared entry serves every signed-in user, and the
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Vary"><code>Vary: Cookie</code></a>
+the session middleware would otherwise add is suppressed - keeping it would
+force a CDN to store one identical copy per user and destroy the hit rate this
+declaration exists to protect.</p>
+<p><strong>This is an assertion, and the library takes your word for it.</strong> If the body
+does depend on the session, you have re-enabled the leak deliberately.</p>
+<p>With <a href="#requiring-a-valid-session"><code>valid_session()</code></a> as the gate, two things
+change:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="s2">&quot;/members/catalogue&quot;</span><span class="p">,</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">valid_session</span><span class="p">()),</span>                       <span class="c1"># first</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">vary_on_session</span><span class="o">=</span><span class="kc">False</span><span class="p">)),</span> <span class="c1"># then the cache</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>    <span class="p">],</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="p">)</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">members_catalogue</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]:</span>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">load_products</span><span class="p">()</span>
+</code></pre></div>
+<ul>
+<li><strong>The gate goes first.</strong> FastAPI resolves <code>dependencies=[...]</code> in order, and
+  a cache hit ends the resolution, so in the other order a hit would be served
+  before the gate runs - to anyone. <code>valid_session()</code> detects that order and
+  raises <code>SessionConfigurationError</code> on the first request, before anything is
+  stored.</li>
+<li><strong>The response says <code>private</code>.</strong> Redis still keeps one shared entry, because
+  the gate runs before it on every request. A CDN cannot check a session, so it
+  would serve that entry to anyone; <code>private</code> keeps it out.</li>
+</ul>
+<p>A hand-written gate like <code>require_user</code> gets neither. List it before <code>cache()</code>
+yourself, and pass <code>cache(..., private=True)</code> when the route sits behind a CDN
+or another shared cache.</p>
+<h3 id="saying-nothing">Saying nothing<a class="headerlink" href="#saying-nothing" title="Permanent link">&para;</a></h3>
+<p>If the endpoint never touches the session, say nothing - there is nothing to
+declare and caching behaves exactly as it always has.</p>
+<p>If it <em>does</em> touch the session and you have not declared anything, the response
+is served normally but <strong>not stored</strong>, and the route is named once in a log
+line:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>WARNING  GET /me read the session but is cached without vary_on_session set;
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>         the response was not stored. Pass vary_on_session=True to cache it
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>         per user, or False if the response does not depend on the session.
+</code></pre></div>
+<p>Losing caching is a visible, recoverable problem. Serving Alice's account page
+to Bob is not, which is why the default errs this way.</p>
+<p>Note that these last two are the <em>same</em> declaration - you write nothing in both
+cases. The library tells them apart by whether the endpoint actually read the
+session, which it can only know after the endpoint has run. That is also why
+the choice cannot be inferred for you: the cache key is needed <em>before</em> the
+endpoint runs, and reading the session does not tell us whether the response
+depends on it.</p>
+<h3 id="at-a-glance">At a glance<a class="headerlink" href="#at-a-glance" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Your endpoint</th>
+<th>Declaration</th>
+<th>Cached as</th>
+<th>Response headers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Body depends on the user</td>
+<td><code>vary_on_session=True</code></td>
+<td>one entry per user</td>
+<td><code>private, max-age=N</code> + <code>Vary: Cookie</code></td>
+</tr>
+<tr>
+<td>Reads the session, body identical</td>
+<td><code>vary_on_session=False</code></td>
+<td>one shared entry</td>
+<td><code>max-age=N</code>, no <code>Vary</code></td>
+</tr>
+<tr>
+<td>Gated by <code>valid_session()</code>, body identical</td>
+<td><code>vary_on_session=False</code></td>
+<td>one shared entry</td>
+<td><code>private, max-age=N</code>, no <code>Vary</code></td>
+</tr>
+<tr>
+<td>Gated by <code>valid_session(issued_within=...)</code></td>
+<td>any</td>
+<td>as declared</td>
+<td><code>no-store</code></td>
+</tr>
+<tr>
+<td>Never touches the session</td>
+<td><em>(nothing)</em></td>
+<td>one shared entry</td>
+<td><code>max-age=N</code></td>
+</tr>
+<tr>
+<td>Touches it, nothing declared</td>
+<td><em>(nothing)</em></td>
+<td><strong>not cached</strong></td>
+<td><code>private, no-store</code> + <code>Vary: Cookie</code></td>
+</tr>
+</tbody>
+</table>
+<p>The rule underneath every row: <strong>what a response tells other caches they may do
+is never more permissive than what this library does itself.</strong> If we key per
+user, or serve our entry only to callers who pass the gate, we say
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches"><code>private</code></a>.
+If we refuse to store, we say
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#no-store"><code>no-store</code></a>.</p>
+<h3 id="a-session-route-with-no-caching-on-it">A session route with no caching on it<a class="headerlink" href="#a-session-route-with-no-caching-on-it" title="Permanent link">&para;</a></h3>
+<p>Reading the session on an uncached route emits <code>Cache-Control: private</code> and
+<code>Vary: Cookie</code> on its own, since nothing else will. Where <code>cache()</code> is present
+it owns the header outright - one writer, so you never see two contradictory
+<code>Cache-Control</code> values on one response.</p>
+<p>For a sensitive page - an order history, a bank statement - set
+<code>Cache-Control: no-store</code> in the handler. The middleware then adds nothing, so
+the browser does not keep the page and cannot show it again from history after
+a sign-out:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/orders&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">orders</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">response</span><span class="p">:</span> <span class="n">Response</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">response</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="s2">&quot;Cache-Control&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;no-store&quot;</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;orders&quot;</span><span class="p">:</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">orders_for</span><span class="p">(</span><span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">])}</span>
+</code></pre></div>
+<p>On a cached route, pass <code>cache(..., no_store=True)</code> instead: the entry is still
+kept in Redis, and every miss and hit says <code>no-store</code>.</p>
+<hr />
+<h2 id="limitation-websockets-have-no-session-in-this-release">Limitation: WebSockets have no session in this release<a class="headerlink" href="#limitation-websockets-have-no-session-in-this-release" title="Permanent link">&para;</a></h2>
+<p>The middleware handles <code>http</code> scopes only. In a WebSocket handler,
+<code>websocket.session</code> raises <code>AssertionError</code>, and <code>SessionDep</code> /
+<code>SessionStateDep</code> raise <code>SessionConfigurationError</code>.</p>
+<p>This is a deliberate boundary for the first release, not an oversight, and it
+is a difference from Starlette's own <code>SessionMiddleware</code>, which handles both
+scopes. If you are migrating from it and read the session inside a WebSocket
+handler, that code needs changing.</p>
+<p><strong>Why it is not simply switched on.</strong> The read half is easy; the write half has
+nowhere to go. A WebSocket has no <code>http.response.start</code>, so there is no point
+at which a cookie can be set - which means no rotation, no save, and no
+idle-clock refresh for the life of the connection. Half a session object,
+silently read-only, invites exactly the bug the rest of this design works to
+prevent: an application writes to it, sees no error, and loses the write.</p>
+<p><strong>What to do instead.</strong> Authenticate during the
+<a href="https://fastapi.tiangolo.com/advanced/websockets/">HTTP handshake</a>, where the
+cookie <em>is</em> available, and pass what the socket needs into the handler:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">websocket</span><span class="p">(</span><span class="s2">&quot;/ws&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">ws</span><span class="p">(</span><span class="n">websocket</span><span class="p">:</span> <span class="n">WebSocket</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="c1"># The handshake is an HTTP request, so the cookie arrives with it.</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">raw</span> <span class="o">=</span> <span class="n">websocket</span><span class="o">.</span><span class="n">cookies</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;session&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>    <span class="n">store</span> <span class="o">=</span> <span class="k">await</span> <span class="n">get_session_store</span><span class="p">(</span><span class="n">websocket</span><span class="p">)</span>      <span class="c1"># type: ignore[arg-type]</span>
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="n">loaded</span> <span class="o">=</span> <span class="k">await</span> <span class="n">store</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">raw</span><span class="p">)</span> <span class="k">if</span> <span class="n">raw</span> <span class="ow">and</span> <span class="n">store</span><span class="o">.</span><span class="n">is_valid_id</span><span class="p">(</span><span class="n">raw</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
+<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>    <span class="k">if</span> <span class="n">loaded</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>        <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">code</span><span class="o">=</span><span class="mi">1008</span><span class="p">)</span>   <span class="c1"># policy violation, RFC 6455 §7.4.1</span>
+<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>        <span class="k">return</span>
+<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a>
+<a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>    <span class="n">user_id</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">record</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;user_id&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>    <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">accept</span><span class="p">()</span>
+<a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>    <span class="o">...</span>
+</code></pre></div>
+<p>Load once at accept time and hold the identity for the connection. If you need
+the socket to close when the session ends, pair it with
+<a href="#real-time-session-events-optional-redis-88">real-time session events</a> - that
+is the case those exist for.</p>
+<hr />
+<h2 id="csrf-what-a-cookie-session-reintroduces">CSRF: what a cookie session reintroduces<a class="headerlink" href="#csrf-what-a-cookie-session-reintroduces" title="Permanent link">&para;</a></h2>
+<p>A <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies">cookie</a> is
+attached by the browser to <strong>every</strong> request to your origin, including one
+triggered by a form on somebody else's page. That is what makes a session cookie
+convenient and it is also the whole of
+<a href="https://owasp.org/www-community/attacks/csrf">CSRF</a>: an attacker cannot read
+your session, but they can make the browser spend it.</p>
+<p>A bearer token in an
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Authorization"><code>Authorization</code></a>
+header does not have this problem, because nothing attaches it automatically.
+Moving to cookies gets you revocation, rotation and server-side expiry, and it
+hands this back.</p>
+<p><strong><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value"><code>SameSite=Lax</code></a>
+is the default here and it is most of the remedy.</strong> The browser withholds the
+cookie on cross-site <code>POST</code>, <code>PUT</code>, <code>PATCH</code> and <code>DELETE</code>. It does <em>not</em> withhold
+it on a cross-site top-level <code>GET</code>, so:</p>
+<ul>
+<li><strong>Never change state in a <code>GET</code>.</strong> A <code>GET /account/delete</code> is exploitable
+  under <code>Lax</code> and no cookie attribute will save it.</li>
+<li><strong>Add a CSRF token for anything a browser form can reach.</strong> <code>SameSite</code> is a
+  <a href="https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#limitations-of-samesite">defence in depth, not a substitute</a></li>
+<li>it is unenforced on some older browsers, and <code>Lax</code> has a
+  <a href="https://www.chromium.org/updates/same-site/faq/">two-minute exemption window</a>
+  for top-level POSTs in some Chromium versions.</li>
+<li><strong><code>SameSite=Strict</code></strong> closes the top-level <code>GET</code> hole too, at the cost of the
+  cookie being withheld when a user follows a link into your site from
+  anywhere else - including their own email.</li>
+</ul>
+<p>The session is the natural place to keep the token - this is OWASP's
+<a href="https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#synchronizer-token-pattern">synchronizer token pattern</a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">secrets</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">HTTPException</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/form&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">form</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>    <span class="n">token</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">,</span> <span class="n">secrets</span><span class="o">.</span><span class="n">token_urlsafe</span><span class="p">(</span><span class="mi">32</span><span class="p">))</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;csrf_token&quot;</span><span class="p">:</span> <span class="n">token</span><span class="p">}</span>
+<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>
+<a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/transfer&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">transfer</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">csrf_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Form</span><span class="p">(</span><span class="o">...</span><span class="p">))</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a>    <span class="n">expected</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">expected</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">secrets</span><span class="o">.</span><span class="n">compare_digest</span><span class="p">(</span><span class="n">csrf_token</span><span class="p">,</span> <span class="n">expected</span><span class="p">):</span>
+<a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">403</span><span class="p">,</span> <span class="s2">&quot;CSRF token mismatch&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a>    <span class="o">...</span>
+</code></pre></div>
+<p><a href="https://docs.python.org/3/library/secrets.html#secrets.compare_digest"><code>secrets.compare_digest</code></a>
+rather than <code>==</code>, and
+<a href="https://docs.python.org/3/library/secrets.html#secrets.token_urlsafe"><code>secrets.token_urlsafe</code></a>
+for the token itself. The token rotates with the session - a sign-in issues a
+new session ID, so the next <code>setdefault</code> mints a fresh token.</p>
+<hr />
+<h2 id="encrypting-the-payload-at-rest">Encrypting the payload at rest<a class="headerlink" href="#encrypting-the-payload-at-rest" title="Permanent link">&para;</a></h2>
+<p>Anyone with <a href="https://redis.io/docs/latest/develop/tools/cli/"><code>redis-cli</code></a>
+access can read a session. That is usually acceptable - the guidance is to keep
+identifiers in the session and entities outside it - but if you must store
+something sensitive, supply an <code>Encryptor</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cryptography.hazmat.primitives.ciphers.aead</span><span class="w"> </span><span class="kn">import</span> <span class="n">AESGCM</span>
+<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>
+<a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">AesGcmEncryptor</span><span class="p">:</span>
+<a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Ten lines, and yours to audit.&quot;&quot;&quot;</span>
+<a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>
+<a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_aes</span> <span class="o">=</span> <span class="n">AESGCM</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>              <span class="c1"># 16, 24 or 32 bytes</span>
+<a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a>
+<a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">encrypt</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+<a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a>        <span class="n">nonce</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">urandom</span><span class="p">(</span><span class="mi">12</span><span class="p">)</span>
+<a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>        <span class="k">return</span> <span class="n">nonce</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_aes</span><span class="o">.</span><span class="n">encrypt</span><span class="p">(</span><span class="n">nonce</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a>
+<a id="__codelineno-22-14" name="__codelineno-22-14" href="#__codelineno-22-14"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decrypt</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+<a id="__codelineno-22-15" name="__codelineno-22-15" href="#__codelineno-22-15"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_aes</span><span class="o">.</span><span class="n">decrypt</span><span class="p">(</span><span class="n">data</span><span class="p">[:</span><span class="mi">12</span><span class="p">],</span> <span class="n">data</span><span class="p">[</span><span class="mi">12</span><span class="p">:],</span> <span class="kc">None</span><span class="p">)</span>
+</code></pre></div>
+<p>Encryption <strong>wraps</strong> serialization, never the reverse: the coder turns your
+value into text, and only then does the encryptor see it. A coder is never
+handed ciphertext.</p>
+<p>This package ships the seam and not the implementation, deliberately.
+<a href="https://csrc.nist.gov/pubs/sp/800/38/d/final">AES-GCM</a>, via
+<a href="https://cryptography.io/en/latest/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM"><code>AESGCM</code></a>,
+in your codebase is a smaller liability for everyone than a cryptographic
+primitive maintained here - and it means a key rotation is your decision, on
+your schedule.</p>
+<p>Two things to know before you turn it on. A record that will not decrypt raises
+<code>SessionStoreError</code> rather than looking like an empty session, so rotating a key
+without a re-encryption pass signs everybody out loudly rather than silently.
+And the index descriptor is <strong>not</strong> encrypted - it holds only what your
+<code>descriptor_of</code> returns, so do not put anything sensitive there.</p>
+<hr />
+<h2 id="migrating-from-something-else">Migrating from something else<a class="headerlink" href="#migrating-from-something-else" title="Permanent link">&para;</a></h2>
+<p>Sessions do not survive the switch, by decision: existing cookies reference
+records this store cannot read, so every user signs in again once. Deploy
+accordingly.</p>
+<h3 id="from-starlettes-sessionmiddleware">From Starlette's <code>SessionMiddleware</code><a class="headerlink" href="#from-starlettes-sessionmiddleware" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="c1"># before</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">starlette.middleware.sessions</span><span class="w"> </span><span class="kn">import</span> <span class="n">SessionMiddleware</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="n">app</span><span class="o">.</span><span class="n">add_middleware</span><span class="p">(</span><span class="n">SessionMiddleware</span><span class="p">,</span> <span class="n">secret_key</span><span class="o">=</span><span class="s2">&quot;…&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>
+<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="c1"># after</span>
+<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">()</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Their behaviour</th>
+<th>Here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>request.session["user_id"] = 42</code></td>
+<td>unchanged - and it now rotates the ID</td>
+</tr>
+<tr>
+<td><code>request.session.clear()</code></td>
+<td>unchanged - and it now deletes the record too</td>
+</tr>
+<tr>
+<td>payload capped at ~4 KB by the cookie</td>
+<td>no cap; the cookie carries an ID</td>
+</tr>
+<tr>
+<td>data signed but readable by the client</td>
+<td>never leaves the server</td>
+</tr>
+<tr>
+<td><code>max_age</code></td>
+<td><code>session_idle_ttl</code> plus <code>session_absolute_ttl</code></td>
+</tr>
+<tr>
+<td>no revocation</td>
+<td><code>revoke</code>, <code>revoke_id</code>, <code>revoke_all</code></td>
+</tr>
+</tbody>
+</table>
+<p>Handler code does not change. <code>secret_key</code> has no equivalent because nothing is
+signed: the cookie is an opaque 256-bit identifier, well past OWASP's
+<a href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#session-id-entropy">64-bit entropy floor</a>.</p>
+<h3 id="from-starsessions">From <a href="https://github.com/alex-oleshkevich/starsessions"><code>starsessions</code></a><a class="headerlink" href="#from-starsessions" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Theirs</th>
+<th>Here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lifetime=N, rolling=True</code></td>
+<td><code>session_idle_ttl=N</code></td>
+</tr>
+<tr>
+<td><code>lifetime=N, rolling=False</code></td>
+<td><code>session_absolute_ttl=N</code></td>
+</tr>
+<tr>
+<td>both behaviours at once</td>
+<td>not expressible for them; set both settings here</td>
+</tr>
+<tr>
+<td><code>load_session(request)</code></td>
+<td>nothing - the load is automatic and eager</td>
+</tr>
+<tr>
+<td><code>regenerate_session_id(request)</code></td>
+<td>delete the call; writing the identity rotates</td>
+</tr>
+<tr>
+<td><code>get_session_metadata(request)</code></td>
+<td><code>store.list_for_subject()</code> for the fields</td>
+</tr>
+<tr>
+<td><code>RedisStore(...)</code></td>
+<td><code>FastAPIRedis(app).lifespan().sessions()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Their <code>lifetime</code> accepts a <code>timedelta</code>; so does this store's constructor.</p>
+<h3 id="from-fastapi-users-redisstrategy">From <code>fastapi-users</code>' <code>RedisStrategy</code><a class="headerlink" href="#from-fastapi-users-redisstrategy" title="Permanent link">&para;</a></h3>
+<p><a href="https://fastapi-users.github.io/fastapi-users/latest/configuration/authentication/strategies/redis/"><code>RedisStrategy</code></a>
+is a token store, not a session store: it maps an opaque token
+to a user ID and nothing else. Keep <code>fastapi-users</code> for registration, password
+reset and OAuth linking - this package does not replace it. Swap the strategy
+for the session and read the identity from <code>request.session</code> instead of from
+the strategy's token.</p>
+<h3 id="from-an-in-process-store">From an in-process store<a class="headerlink" href="#from-an-in-process-store" title="Permanent link">&para;</a></h3>
+<p>A dict keyed by session ID, or a
+<a href="https://cachetools.readthedocs.io/en/latest/#cachetools.TTLCache"><code>TTLCache</code></a>. The behaviour you gain is that it
+survives a restart and is shared across workers; the behaviour you lose is
+none. Delete the store and call <code>.sessions()</code>.</p>
+<hr />
+<h2 id="running-it-in-production">Running it in production<a class="headerlink" href="#running-it-in-production" title="Permanent link">&para;</a></h2>
+<p><strong>A session store is not a cache, and
+<a href="https://redis.io/docs/latest/develop/reference/eviction/#eviction-policies"><code>maxmemory-policy</code></a>
+must say so.</strong> Under <code>allkeys-lru</code>, <code>allkeys-lfu</code> or <code>allkeys-random</code>, Redis
+will evict live sessions to make room, and every evicted session is a user
+signed out mid-task with nothing in any log to explain it. Use <code>volatile-ttl</code> or
+<code>noeviction</code>, or give sessions their own instance or
+<a href="https://redis.io/docs/latest/commands/select/">logical database</a>.</p>
+<p>This is the single most likely production incident with this feature.</p>
+<p>A large tenant's index key is a single key that every login and logout writes,
+which makes it a candidate hot spot.
+<a href="https://redis.io/docs/latest/commands/hotkeys-start/"><code>HOTKEYS START METRICS 2 CPU NET SAMPLE 100</code></a>
+finds it; the <code>subject_of</code> seam is what shards it.</p>
+<hr />
+<h2 id="sync-endpoints">Sync endpoints<a class="headerlink" href="#sync-endpoints" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">SyncSessionStoreDep</span>
+<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>
+<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/logout&quot;</span><span class="p">)</span>
+<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">logout</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">store</span><span class="p">:</span> <span class="n">SyncSessionStoreDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>    <span class="n">store</span><span class="o">.</span><span class="n">revoke</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+<a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</code></pre></div>
+<hr />
+<h2 id="replacing-the-pieces">Replacing the pieces<a class="headerlink" href="#replacing-the-pieces" title="Permanent link">&para;</a></h2>
+<p>Every seam is a keyword argument to <code>.sessions()</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span>
+<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>    <span class="n">coder</span><span class="o">=</span><span class="n">pydantic_model_coder</span><span class="p">(</span><span class="n">MySession</span><span class="p">),</span>   <span class="c1"># serialization</span>
+<a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>    <span class="n">encryptor</span><span class="o">=</span><span class="n">AesGcmEncryptor</span><span class="p">(</span><span class="n">key</span><span class="p">),</span>          <span class="c1"># encryption at rest</span>
+<a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a>    <span class="n">id_factory</span><span class="o">=</span><span class="n">my_id_factory</span><span class="p">,</span>                <span class="c1"># identifier generation (validated)</span>
+<a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a>    <span class="n">key_prefix</span><span class="o">=</span><span class="s2">&quot;myapp&quot;</span><span class="p">,</span>                      <span class="c1"># key namespace</span>
+<a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a>    <span class="n">idle_ttl</span><span class="o">=</span><span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">15</span><span class="p">),</span>          <span class="c1"># the two clocks</span>
+<a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a>    <span class="n">absolute_ttl</span><span class="o">=</span><span class="n">timedelta</span><span class="p">(</span><span class="n">hours</span><span class="o">=</span><span class="mi">8</span><span class="p">),</span>
+<a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a>    <span class="n">descriptor_of</span><span class="o">=</span><span class="k">lambda</span> <span class="n">req</span><span class="p">,</span> <span class="n">s</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;ip&quot;</span><span class="p">:</span> <span class="n">req</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">host</span><span class="p">},</span>
+<a id="__codelineno-25-9" name="__codelineno-25-9" href="#__codelineno-25-9"></a>    <span class="n">principal_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">,</span> <span class="s2">&quot;role&quot;</span><span class="p">],</span>      <span class="c1"># what rotates the ID</span>
+<a id="__codelineno-25-10" name="__codelineno-25-10" href="#__codelineno-25-10"></a>    <span class="n">subject_of</span><span class="o">=</span><span class="k">lambda</span> <span class="n">s</span><span class="p">:</span> <span class="n">s</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;tenant_id&quot;</span><span class="p">),</span> <span class="c1"># what the index is keyed on</span>
+<a id="__codelineno-25-11" name="__codelineno-25-11" href="#__codelineno-25-11"></a>    <span class="n">cookie_builder</span><span class="o">=</span><span class="n">my_cookie_builder</span><span class="p">,</span>        <span class="c1"># Set-Cookie rendering</span>
+<a id="__codelineno-25-12" name="__codelineno-25-12" href="#__codelineno-25-12"></a>    <span class="n">skip</span><span class="o">=</span><span class="k">lambda</span> <span class="n">req</span><span class="p">:</span> <span class="n">req</span><span class="o">.</span><span class="n">url</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;/health&quot;</span><span class="p">),</span>
+<a id="__codelineno-25-13" name="__codelineno-25-13" href="#__codelineno-25-13"></a><span class="p">)</span>
+</code></pre></div>
+<p>To supply the store object yourself - one you built and configured, or a test
+double - pass <code>store</code> or <code>store_factory</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="n">store</span> <span class="o">=</span> <span class="n">RedisSessionStore</span><span class="p">(</span><span class="n">redis</span><span class="p">,</span> <span class="n">key_prefix</span><span class="o">=</span><span class="s2">&quot;tenant-a&quot;</span><span class="p">,</span> <span class="n">absolute_ttl</span><span class="o">=</span><span class="mi">3600</span><span class="p">)</span>
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">sessions</span><span class="p">(</span><span class="n">store</span><span class="o">=</span><span class="n">store</span><span class="p">)</span>
+</code></pre></div>
+<p>In tests,
+<a href="https://fastapi.tiangolo.com/advanced/testing-dependencies/"><code>dependency_overrides</code></a>
+reaches the middleware as well as your handlers, so one override covers the whole request:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="n">app</span><span class="o">.</span><span class="n">dependency_overrides</span><span class="p">[</span><span class="n">get_session_store</span><span class="p">]</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">request</span><span class="p">:</span> <span class="n">fake_store</span>
+</code></pre></div>
+<hr />
+<h2 id="settings">Settings<a class="headerlink" href="#settings" title="Permanent link">&para;</a></h2>
+<p>Every setting is an environment variable prefixed <code>REDIS_</code>, so
+<code>session_idle_ttl</code> is <code>REDIS_SESSION_IDLE_TTL</code>. See
+<a href="../configuration/">Configuration</a> for how these are loaded.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_cookie_name</code></td>
+<td><code>session</code></td>
+<td>Matches Starlette and <code>starsessions</code></td>
+</tr>
+<tr>
+<td><code>session_cookie_https_only</code></td>
+<td><code>True</code></td>
+<td>Adds <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#secure"><code>Secure</code></a>. Turn it off for local HTTP only</td>
+</tr>
+<tr>
+<td><code>session_cookie_same_site</code></td>
+<td><code>lax</code></td>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value"><code>none</code></a> requires <code>https_only=True</code></td>
+</tr>
+<tr>
+<td><code>session_idle_ttl</code></td>
+<td><code>1800</code></td>
+<td><code>0</code> disables the idle clock</td>
+</tr>
+<tr>
+<td><code>session_absolute_ttl</code></td>
+<td><code>28800</code></td>
+<td><code>0</code> disables the absolute clock</td>
+</tr>
+<tr>
+<td><code>session_gc_ttl</code></td>
+<td><code>2592000</code></td>
+<td>Backstop so Redis can always collect an abandoned key</td>
+</tr>
+<tr>
+<td><code>session_refresh_on_load</code></td>
+<td><code>True</code></td>
+<td><code>False</code>: only a request that <em>used</em> the session counts as activity</td>
+</tr>
+<tr>
+<td><code>session_fail_closed</code></td>
+<td><code>False</code></td>
+<td>Read behaviour when Redis is down</td>
+</tr>
+<tr>
+<td><code>session_always_save</code></td>
+<td><code>False</code></td>
+<td>Escape route for nested mutation. Writes on every request that <strong>read</strong> the session; an empty session is exempt</td>
+</tr>
+<tr>
+<td><code>session_principal_keys</code></td>
+<td><code>["user_id"]</code></td>
+<td>What a change to rotates the ID. Comma-separated in the environment: <code>REDIS_SESSION_PRINCIPAL_KEYS=user_id,role</code></td>
+</tr>
+<tr>
+<td><code>session_events_enabled</code></td>
+<td><code>False</code></td>
+<td>Opt in to real-time events</td>
+</tr>
+<tr>
+<td><code>session_events_reconnect</code></td>
+<td><code>True</code></td>
+<td>Subscribe again every second after a lost subscription. <code>False</code> stops at the first loss</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<p>The standards and specifications this design follows:</p>
+<ul>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html">OWASP Session Management Cheat Sheet</a></li>
+<li>identifier entropy, rotation on privilege change, and the two timeouts</li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html">OWASP Cross-Site Request Forgery Prevention Cheat Sheet</a></li>
+<li>the token patterns and the limits of <code>SameSite</code></li>
+<li><a href="https://owasp.org/www-project-application-security-verification-standard/">OWASP ASVS, chapter 3: Session Management</a></li>
+<li>the verifiable requirements behind the cheat sheets</li>
+<li><a href="https://datatracker.ietf.org/doc/html/rfc6265">RFC 6265</a> and
+  <a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis">RFC 6265bis</a></li>
+<li>HTTP cookies, and the draft that defines <code>SameSite</code></li>
+<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching">MDN: HTTP caching</a>
+  and <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control"><code>Cache-Control</code></a></li>
+<li>what <code>private</code>, <code>no-store</code> and <code>Vary</code> mean to a shared cache</li>
+<li><a href="https://redis.io/docs/latest/develop/reference/eviction/">Redis key eviction</a></li>
+<li>why <code>maxmemory-policy</code> decides whether sessions survive</li>
+<li><a href="https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/">Redis keyspace notifications</a></li>
+<li>the delivery guarantees behind <code>SessionEvents</code></li>
+<li><a href="https://redis.io/docs/latest/commands/expire/">Redis key expiration</a> and
+  <a href="https://redis.io/docs/latest/commands/hexpire/">hash field expiration</a></li>
+<li>the mechanisms the two clocks are built on</li>
+</ul>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 29, 2026 15:43:40 UTC">September 29, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 3, 2026 14:20:29 UTC">September 3, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/redis/fastapi-redis-sdk" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

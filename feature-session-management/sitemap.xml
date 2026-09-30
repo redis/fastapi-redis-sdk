@@ -44,4 +44,8 @@
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-session-management/guide/rate-limiting/</loc>
          <lastmod>2026-09-30</lastmod>
     </url>
+    <url>
+         <loc>https://redis.github.io/fastapi-redis-sdk/feature-session-management/guide/sessions/</loc>
+         <lastmod>2026-09-30</lastmod>
+    </url>
 </urlset>
