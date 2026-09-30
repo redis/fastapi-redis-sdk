@@ -1,0 +1,2124 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Official FastAPI integration for Redis">
+      
+      
+        <meta name="author" content="Redis">
+      
+      
+        <link rel="canonical" href="https://redis.github.io/fastapi-redis-sdk/latest/guide/architecture/">
+      
+      
+        <link rel="prev" href="../../getting-started/quick-start/">
+      
+      
+        <link rel="next" href="../caching/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../logo.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Architecture - FastAPI Redis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="FastAPI Redis" class="md-header__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            FastAPI Redis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/reference/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="FastAPI Redis" class="md-nav__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    FastAPI Redis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#connection-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connection lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifespan-wrapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifespan wrapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#async-first-design-and-sync-endpoint-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Async-first design and sync endpoint support
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Async-first design and sync endpoint support">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-fastapi-dispatches-endpoints-and-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How FastAPI dispatches endpoints and dependencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cachebackenddep-async-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CacheBackendDep - async endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synccachebackenddep-sync-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SyncCacheBackendDep - sync endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-no-sync-redis-pool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why no sync Redis pool?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-di-caching-factories-cache-cache_evict-cache_put" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The DI caching factories (cache(), cache_evict(), cache_put())
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-dependency-injection-not-decorators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why dependency injection, not decorators
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-not-a-full-asgi-middleware-for-cache-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why not a full ASGI middleware for cache reads?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cache-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache scope
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cache scope">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#binary-belongs-somewhere-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binary belongs somewhere else
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching-a-streamed-response-defeats-the-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching a streamed response defeats the streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vary-is-not-honoured" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vary is not honoured
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#headers-a-hit-carries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Headers a hit carries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compression-middleware-must-wrap-the-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compression middleware must wrap the cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-model-strings-vs-hashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage model - strings vs hashes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limiting-command-tiers-and-capability-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate limiting - command tiers and capability detection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rate limiting - command tiers and capability detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#detection-is-per-process-not-per-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detection is per process, not per request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Telemetry
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#connection-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connection lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifespan-wrapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifespan wrapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#async-first-design-and-sync-endpoint-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Async-first design and sync endpoint support
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Async-first design and sync endpoint support">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-fastapi-dispatches-endpoints-and-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How FastAPI dispatches endpoints and dependencies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cachebackenddep-async-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CacheBackendDep - async endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synccachebackenddep-sync-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SyncCacheBackendDep - sync endpoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-no-sync-redis-pool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why no sync Redis pool?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-di-caching-factories-cache-cache_evict-cache_put" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The DI caching factories (cache(), cache_evict(), cache_put())
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-dependency-injection-not-decorators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why dependency injection, not decorators
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-not-a-full-asgi-middleware-for-cache-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why not a full ASGI middleware for cache reads?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cache-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache scope
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cache scope">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#binary-belongs-somewhere-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binary belongs somewhere else
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching-a-streamed-response-defeats-the-streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching a streamed response defeats the streaming
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vary-is-not-honoured" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vary is not honoured
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#headers-a-hit-carries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Headers a hit carries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compression-middleware-must-wrap-the-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compression middleware must wrap the cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-model-strings-vs-hashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage model - strings vs hashes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limiting-command-tiers-and-capability-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate limiting - command tiers and capability detection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rate limiting - command tiers and capability detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#detection-is-per-process-not-per-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detection is per process, not per request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Telemetry
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>This page covers the key architectural decisions behind fastapi-redis-sdk and the
+reasoning that shaped them.</p>
+<hr />
+<h2 id="connection-lifecycle">Connection lifecycle<a class="headerlink" href="#connection-lifecycle" title="Permanent link">&para;</a></h2>
+<p>All components - DI factories and <code>CacheBackend</code> -
+share a single async Redis connection pool managed by the
+<a href="https://fastapi.tiangolo.com/advanced/events/#lifespan">FastAPI lifespan</a>.</p>
+<p>Every request borrows from the same pool rather than opening a new TCP
+socket.  This bounds the number of connections to Redis, avoids per-request
+TLS handshakes, and keeps connection limits predictable under load.</p>
+<p>Pool construction is cheap - <code>redis-py</code> pools are lazy and allocate empty
+bookkeeping (~48 bytes, ~4 µs) without opening any sockets.</p>
+<p>Tying the pool to the lifespan gives deterministic startup and shutdown.
+The pool is guaranteed to exist before the first request and is drained
+gracefully when the app stops - no leaked sockets, no race conditions.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant App as FastAPI
+    participant LS as FastAPIRedis(app).lifespan()
+    participant PS as _PoolState
+    participant R as Redis
+
+    App-&gt;&gt;LS: startup
+    LS-&gt;&gt;PS: build async pool (no TCP yet)
+
+    loop Every request
+        App-&gt;&gt;PS: borrow connection
+        PS-&gt;&gt;R: connect on first use, then GET / SET / DEL
+        R--&gt;&gt;PS: response
+        PS--&gt;&gt;App: return to pool
+    end
+
+    App-&gt;&gt;LS: shutdown
+    LS-&gt;&gt;PS: close pool
+    PS-&gt;&gt;R: disconnect all sockets</code></pre>
+<hr />
+<h2 id="lifespan-wrapping">Lifespan wrapping<a class="headerlink" href="#lifespan-wrapping" title="Permanent link">&para;</a></h2>
+<p><code>FastAPIRedis(app).lifespan()</code> wraps the app's existing lifespan rather than
+replacing it.  FastAPI only accepts
+<a href="https://github.com/fastapi/fastapi/discussions/10083">one lifespan</a>, so
+if the library owned it outright, the user would have to manually compose
+it with every other library's lifespan.  Wrapping avoids this - multiple
+builder calls just nest around whatever is already there, starting up in
+registration order and tearing down in reverse.</p>
+<p>This relies on <code>app.router.lifespan_context</code>, which is not part of
+Starlette's public API but has been stable since 0.20+ and is used
+internally by FastAPI's own
+<a href="https://github.com/fastapi/fastapi/pull/9630">router lifespan merging</a>.
+Nesting order is determined by call order rather than being explicitly
+visible, which can make debugging startup hangs harder.</p>
+<p>For scenarios where explicit ordering matters, skip <code>.lifespan()</code> and
+compose manually using <code>redis_lifespan</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">asynccontextmanager</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span><span class="p">,</span> <span class="n">redis_lifespan</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nd">@asynccontextmanager</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">my_lifespan</span><span class="p">(</span><span class="n">app</span><span class="p">):</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">redis_lifespan</span><span class="p">(</span><span class="n">app</span><span class="p">):</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="k">async</span> <span class="k">with</span> <span class="n">db_lifespan</span><span class="p">(</span><span class="n">app</span><span class="p">):</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>            <span class="k">yield</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">(</span><span class="n">lifespan</span><span class="o">=</span><span class="n">my_lifespan</span><span class="p">)</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>   <span class="c1"># no .lifespan() - user owns the lifespan</span>
+</code></pre></div>
+<p>The builder methods are independent - <code>.caching()</code> does not require
+<code>.lifespan()</code> (but it is recommended).</p>
+<hr />
+<h2 id="async-first-design-and-sync-endpoint-support">Async-first design and sync endpoint support<a class="headerlink" href="#async-first-design-and-sync-endpoint-support" title="Permanent link">&para;</a></h2>
+<p>fastapi-redis-sdk is <strong>async-only at the transport layer</strong> - the sole Redis
+connection pool is an <code>redis.asyncio</code> pool.  There is no sync <code>redis.Redis</code>
+pool.  This section explains why that works for both <code>async def</code> and plain
+<code>def</code> endpoints.</p>
+<p>For background on how FastAPI handles <code>async def</code> vs <code>def</code>, see
+<a href="https://fastapi.tiangolo.com/async/">Concurrency and async / await</a>
+(especially the <a href="https://fastapi.tiangolo.com/async/#very-technical-details">Very Technical Details</a>
+section).</p>
+<h3 id="how-fastapi-dispatches-endpoints-and-dependencies">How FastAPI dispatches endpoints and dependencies<a class="headerlink" href="#how-fastapi-dispatches-endpoints-and-dependencies" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Declaration</th>
+<th>Where it runs</th>
+<th>Blocking I/O safe?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async def endpoint(…)</code></td>
+<td>Main event loop</td>
+<td>No - would block all requests</td>
+</tr>
+<tr>
+<td><code>def endpoint(…)</code></td>
+<td>Worker threadpool (<code>anyio.to_thread</code>)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>async def dependency(…)</code></td>
+<td>Main event loop</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>def dependency(…)</code></td>
+<td>Worker threadpool</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>All of fastapi-redis-sdk's DI factories (<code>cache()</code>, <code>cache_evict()</code>,
+<code>cache_put()</code>, <code>get_cache_backend()</code>) are <code>async def</code>.  They run on the
+event loop and use <code>await</code> for every Redis call - no thread is blocked.
+Sync endpoints that declare these as <code>Depends(…)</code> still work correctly:
+FastAPI awaits the async dependency on the event loop, then hands the
+resolved value to the sync endpoint which runs in the threadpool.</p>
+<h3 id="cachebackenddep-async-endpoints"><code>CacheBackendDep</code> - async endpoints<a class="headerlink" href="#cachebackenddep-async-endpoints" title="Permanent link">&para;</a></h3>
+<p><code>CacheBackendDep</code> injects a <code>CacheBackend</code> whose methods (<code>get</code>, <code>set</code>,
+<code>delete</code>, <code>has</code>, <code>delete_group</code>) are all coroutines.  Use it from
+<code>async def</code> endpoints:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items/</span><span class="si">{item_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cb</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cb</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">if</span> <span class="n">cached</span><span class="p">:</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        <span class="k">return</span> <span class="n">cached</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">item</span> <span class="o">=</span> <span class="k">await</span> <span class="n">fetch_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="k">await</span> <span class="n">cb</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="k">return</span> <span class="n">item</span>
+</code></pre></div>
+<h3 id="synccachebackenddep-sync-endpoints"><code>SyncCacheBackendDep</code> - sync endpoints<a class="headerlink" href="#synccachebackenddep-sync-endpoints" title="Permanent link">&para;</a></h3>
+<p>Sync (<code>def</code>) endpoints cannot <code>await</code>.  <code>SyncCacheBackendDep</code> provides a
+blocking wrapper that bridges each call back to the event loop via
+<a href="https://anyio.readthedocs.io/en/stable/threads.html#calling-asynchronous-code-from-a-worker-thread"><code>anyio.from_thread.run</code></a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items/</span><span class="si">{item_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cb</span><span class="p">:</span> <span class="n">SyncCacheBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="n">cb</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>      <span class="c1"># blocking - runs on event loop</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="k">if</span> <span class="n">cached</span><span class="p">:</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="k">return</span> <span class="n">cached</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">item</span> <span class="o">=</span> <span class="n">fetch_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">cb</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="k">return</span> <span class="n">item</span>
+</code></pre></div>
+<p>Under the hood, each <code>SyncCacheBackend</code> method does:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>worker thread                         event loop
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>─────────────                         ──────────
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>cb.set(&quot;k&quot;, v, ttl=60)
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  └─ anyio.from_thread.run(lambda)
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>       └─ schedules ──────────────► await backend.set(&quot;k&quot;, v, ttl=60)
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>          blocks thread ◄──────────  result / exception
+</code></pre></div>
+<p>This only works from threads managed by FastAPI's
+<a href="https://anyio.readthedocs.io/">AnyIO</a> threadpool (sync endpoints and sync
+dependencies).  Calling <code>SyncCacheBackend</code> from the main thread or an
+arbitrary thread raises <code>RuntimeError</code>.</p>
+<h3 id="why-no-sync-redis-pool">Why no sync Redis pool?<a class="headerlink" href="#why-no-sync-redis-pool" title="Permanent link">&para;</a></h3>
+<p>The library's purpose is high-level DI features (caching, rate limiting,
+sessions) - not raw Redis access.  All of those features use the async
+client internally.  Maintaining a parallel sync pool would mean:</p>
+<ul>
+<li>Doubling pool-management code in the lifespan.</li>
+<li>Keeping two client wrappers (<code>Redis</code> + <code>AsyncRedis</code>) in sync.</li>
+<li>Opening a second set of TCP connections that most apps never use.</li>
+</ul>
+<p>Users who need a raw sync <code>redis.Redis</code> client can create one outside the
+library in two lines.</p>
+<h3 id="the-di-caching-factories-cache-cache_evict-cache_put">The DI caching factories (<code>cache()</code>, <code>cache_evict()</code>, <code>cache_put()</code>)<a class="headerlink" href="#the-di-caching-factories-cache-cache_evict-cache_put" title="Permanent link">&para;</a></h3>
+<p>These work with <strong>both</strong> <code>async def</code> and <code>def</code> endpoints without any extra
+setup.  They are <code>async def</code> generators resolved by FastAPI's DI system
+<em>before</em> the endpoint runs.  The endpoint function itself never touches
+Redis - caching is handled entirely in the dependency and middleware layers.
+See <a href="../caching/">Caching § Sync endpoint support</a> for details.</p>
+<hr />
+<h2 id="why-dependency-injection-not-decorators">Why dependency injection, not decorators<a class="headerlink" href="#why-dependency-injection-not-decorators" title="Permanent link">&para;</a></h2>
+<p>Many FastAPI caching libraries - most notably
+<a href="https://github.com/long2ice/fastapi-cache">fastapi-cache2</a> - use a
+<code>@cache</code> decorator that wraps the endpoint function.  fastapi-redis-sdk
+<strong>deliberately avoids this pattern</strong> and uses FastAPI's native dependency
+injection (<code>Depends()</code>) instead.  The decorator approach has five concrete
+problems in FastAPI:</p>
+<ol>
+<li>
+<p><strong>Signature rewriting is fragile.</strong>  A caching decorator must inject
+   hidden <code>Request</code> / <code>Response</code> parameters via <code>__signature__</code> manipulation.
+   FastAPI relies on function introspection for validation, OpenAPI generation,
+   and dependency resolution; rewriting the signature operates <em>outside</em> that
+   system and is a known source of breakage
+   (<a href="https://github.com/fastapi/fastapi/issues/1743">fastapi#1743</a>,
+   <a href="https://github.com/fastapi/fastapi/issues/5065">fastapi#5065</a>,
+   <a href="https://saharsh-solanki.medium.com/how-decorators-can-break-fastapi-endpoints-and-how-to-fix-it-398a540b8e0a">article</a>).</p>
+</li>
+<li>
+<p><strong>Conflicts with other DI-based libraries.</strong>  Decorator-based route
+   wrapping prevents other <code>Depends()</code>-based libraries (pagination, security,
+   DB sessions) from initializing correctly
+   (<a href="https://github.com/long2ice/fastapi-cache/issues/557">fastapi-cache#557</a>,
+   <a href="https://github.com/long2ice/fastapi-cache/issues/89">fastapi-cache#89</a>).</p>
+</li>
+<li>
+<p><strong><code>dependency_overrides</code> cannot reach decorator internals.</strong>  FastAPI's
+   primary test-mocking mechanism only works with <code>Depends()</code> callables.
+   Logic inside a decorator bypasses the DI container entirely
+   (<a href="https://github.com/tiangolo/fastapi/issues/4330">fastapi#4330</a>).</p>
+</li>
+<li>
+<p><strong>Decorator order is silently significant.</strong>  <code>@app.get</code> must come before
+   <code>@cache</code>, which must come before <code>@cache_evict</code>.  Reversing the order
+   silently breaks caching.  DI dependencies are resolved as a graph - no
+   ordering constraints.</p>
+</li>
+<li>
+<p><strong>Ecosystem mismatch.</strong>  FastAPI consistently models cross-cutting concerns
+   as dependencies: authentication (<code>Depends(get_current_user)</code>), database
+   sessions (<code>Depends(get_db)</code>).  The
+   <a href="https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-in-path-operation-decorators/">official documentation</a>
+   specifically shows this pattern for side-effect-only concerns - which is
+   exactly what caching is.</p>
+</li>
+</ol>
+<p>Our DI-based design (<code>cache()</code>, <code>cache_evict()</code>, <code>cache_put()</code>) resolves all
+five issues.  On cache hit, the dependency raises a <code>CacheHitException</code>
+(caught by a registered exception handler) that returns the cached response
+directly - the endpoint never executes.  On cache miss, a lightweight capture
+middleware stores the response in Redis after the endpoint returns.  See
+<a href="../caching/#1-caching-factories">Caching § Caching factories</a> for usage.</p>
+<hr />
+<h2 id="why-not-a-full-asgi-middleware-for-cache-reads">Why not a full ASGI middleware for cache reads?<a class="headerlink" href="#why-not-a-full-asgi-middleware-for-cache-reads" title="Permanent link">&para;</a></h2>
+<p>An earlier design used an ASGI middleware to intercept requests <em>before</em>
+routing and return cached responses without entering the FastAPI pipeline at
+all.  In theory this is the fastest possible path - no DI resolution, no routing.</p>
+<p>In practice, benchmarks showed <strong>no measurable improvement</strong> over the
+pure-DI approach.  The ~0.5–2 ms saved by skipping FastAPI's pipeline is
+dwarfed by the Redis round-trip and client network latency
+(see <a href="../benchmarks/#what-happens-when-latency-increases">Benchmarks</a>).
+The middleware also introduced problems the DI path does not have:</p>
+<ul>
+<li><strong>Route registry fragility.</strong> The middleware runs before DI, so per-route
+  config (TTL, eviction group, key builder) must be pre-computed into a lookup
+  table at startup.  This breaks with lazy route registration, dynamic
+  routes, and mounted sub-applications.</li>
+<li><strong>Two mechanisms to coordinate.</strong> Users must register both the middleware
+  and the per-route dependency; forgetting the middleware silently disables
+  caching.</li>
+<li><strong>Cross-layer key consistency.</strong> Eviction and write-through dependencies
+  must produce the same cache keys as the middleware - an error-prone
+  coupling.</li>
+<li><strong>Harder to test.</strong> <code>dependency_overrides</code> covers the DI config but not
+  the middleware; tests require ASGI-level fixtures.</li>
+</ul>
+<p>The current design keeps a single lightweight middleware
+(<code>CacheResponseCaptureMiddleware</code>) solely for <strong>miss-path writes</strong> - it
+buffers the response body and stores it in Redis after the endpoint returns.
+Cache <em>reads</em> and short-circuiting happen entirely in the DI layer via
+<code>CacheHitException</code>.</p>
+<hr />
+<h2 id="cache-scope">Cache scope<a class="headerlink" href="#cache-scope" title="Permanent link">&para;</a></h2>
+<p><code>cache()</code> stores <strong>text representations</strong> — JSON, but also plain text, HTML,
+CSV, XML and JavaScript. The word JSON describes the <em>envelope</em>, not what you
+may return: an entry is a JSON document whose <code>body</code> is a text field, stored
+alongside the response's own header fields — so the media type it was served
+as, and the rest of its metadata, are replayed on a hit. See
+<a href="#headers-a-hit-carries">Headers a hit carries</a>.</p>
+<p>Unstructured payloads are covered. A FastAPI endpoint that returns a bare
+string or a number sends it as JSON — <code>return "hello"</code> goes over the wire as
+<code>"hello"</code> with <code>Content-Type: application/json</code> — so scalars need no special
+handling; they fall under the <code>application/json</code> row below.</p>
+<p>The content type decides whether we store, and the library checks it against
+an allowlist, <strong>refusing anything it does not recognise</strong> rather than storing
+a representation it cannot reproduce:</p>
+<table>
+<thead>
+<tr>
+<th>Stored</th>
+<th>Refused</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>application/json</code></td>
+<td><code>application/octet-stream</code>, <code>application/pdf</code>, <code>application/msgpack</code>, <code>application/x-protobuf</code></td>
+</tr>
+<tr>
+<td>Anything <code>application/…+json</code> or <code>application/…+xml</code></td>
+<td><code>image/*</code>, <code>audio/*</code>, <code>video/*</code> — including <code>image/svg+xml</code></td>
+</tr>
+<tr>
+<td><code>application/xml</code>, <code>application/javascript</code></td>
+<td><code>multipart/*</code></td>
+</tr>
+<tr>
+<td>Any <code>text/*</code></td>
+<td>A response with no <code>Content-Type</code> at all</td>
+</tr>
+<tr>
+<td><code>charset=utf-8</code>, <code>charset=us-ascii</code>, or no charset</td>
+<td>Any other charset — <code>iso-8859-1</code>, <code>utf-16</code></td>
+</tr>
+</tbody>
+</table>
+<p>A refusal <strong>never changes what the caller receives</strong>. The response is served
+whole, with its own headers and status, and only the Redis write is skipped.
+You can see it two ways: the response carries <code>X-Redis-Cache: BYPASS</code>, and the
+library logs the reason once per route:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>WARNING  /thumbnails/{id} was served but not cached: content type &#39;image/png&#39;
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>         is not a text representation.  cache() stores serializable text
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>         representations only; see &#39;Cache scope&#39; in the caching guide.
+</code></pre></div>
+<p>Once per route and reason, not once per request — a refused route will not
+flood your logs.</p>
+<h3 id="binary-belongs-somewhere-else">Binary belongs somewhere else<a class="headerlink" href="#binary-belongs-somewhere-else" title="Permanent link">&para;</a></h3>
+<p><code>cache()</code> refuses binary <strong>by choice, not by necessity</strong>. An entry is a JSON
+envelope with a text <code>body</code>, and base64 could carry arbitrary bytes through it
+— an earlier version of this library did exactly that. So no claim below rests
+on the format being unable to hold the bytes. The reasons are about HTTP
+semantics and about where binary belongs, and they hold whatever your storage
+costs:</p>
+<ul>
+<li><strong>A CDN serves those bytes closer to the user, and serves them correctly.</strong>
+  It answers from a node near the caller and implements <code>Range</code> and
+  conditional requests properly — the two things this library refuses rather
+  than half-supports. Binary is where <code>Range</code> matters most: seeking in video,
+  paging a large PDF. When the endpoint sets no <code>ETag</code> of its own the stored
+  validator is a weak one, and a weak validator cannot serve a range at all.</li>
+<li><strong>Binary is usually immutable and content-addressed</strong> — asset digests,
+  thumbnail hashes. A long <code>max-age</code> at the edge then needs no invalidation,
+  which is the one advantage Redis has over a CDN, and the one you would not
+  be using.</li>
+<li><strong>Memory is a sizing question, not a wall.</strong> Ten thousand 200 KB thumbnails
+  is 2 GB, and on open-source Redis that is 2 GB of RAM. On Redis Software or
+  Redis Cloud, <a href="https://redis.io/docs/latest/operate/rs/databases/flash/">Flex</a>
+  tiers warm values onto locally attached NVMe: the RAM limit floors at 10% of
+  total memory, keeping at least 20% of values in RAM is recommended, key names
+  stay in RAM whatever happens to their values, and cold reads cost
+  milliseconds rather than microseconds. If you run on Flex, read this bullet
+  as capacity planning rather than as an objection.</li>
+</ul>
+<p><code>MAX_CACHEABLE_BODY_SIZE</code> is unrelated to all three: it bounds what your ASGI
+worker buffers in process memory while the middleware captures the body, which
+no storage tier affects.</p>
+<p><code>cache()</code> earns its keep on the opposite shape: small, costly-to-compute,
+often-requested payloads that change, where the saving is the computation
+rather than the bytes.</p>
+<h3 id="caching-a-streamed-response-defeats-the-streaming">Caching a streamed response defeats the streaming<a class="headerlink" href="#caching-a-streamed-response-defeats-the-streaming" title="Permanent link">&para;</a></h3>
+<p>The capture middleware has to see a whole body before it can store it. A
+<code>StreamingResponse</code> on a cached route is therefore drained in full before the
+client receives its first byte, and the peak buffer is one body per request
+in flight.</p>
+<p>Do not put <code>cache()</code> on a route that streams for a reason. If the point of
+streaming is time-to-first-byte or a body too large to hold in memory, caching
+it takes both away.</p>
+<p>Bodies over <code>MAX_CACHEABLE_BODY_SIZE</code> (10 MiB) are passed through and marked
+<code>BYPASS</code>, so an oversized response is a refusal rather than a memory problem.</p>
+<h3 id="vary-is-not-honoured"><code>Vary</code> is not honoured<a class="headerlink" href="#vary-is-not-honoured" title="Permanent link">&para;</a></h3>
+<p>The cache key comes from the request path and its sorted query parameters —
+never from a request header. <code>default_key_builder</code> cannot see <code>Accept</code>,
+<code>Accept-Encoding</code>, <code>Authorization</code> or <code>Range</code>, so a <code>Vary</code> header on the
+response does not affect which entry is read.</p>
+<p>It is still <strong>stored and replayed</strong>. Dropping it would strip the origin's
+instruction from every cache downstream of you as well, so a CDN in front
+would treat your single stored variant as the only one there is. A response
+carrying <code>Vary: *</code> is refused outright: RFC 9111 §4.1 says such a response
+may never be reused, and the lookup ignores <code>Vary</code>, so refusing the store is
+the only place that rule can be honoured.</p>
+<p>One URL that negotiates on a request header therefore has <strong>one</strong> entry, and
+the first variant stored is the one everyone gets. If a route serves WebP to
+clients that accept it and JPEG to the rest, or switches language on
+<code>Accept-Language</code>, pass a <code>key_builder</code> that folds the deciding header into
+the key:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">key_with_language</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">base</span> <span class="o">=</span> <span class="n">default_key_builder</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="n">eviction_group</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="n">prefix</span><span class="p">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">lang</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;accept-language&quot;</span><span class="p">,</span> <span class="s2">&quot;*&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">base</span><span class="si">}</span><span class="s2">:lang=</span><span class="si">{</span><span class="n">lang</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/articles/</span><span class="si">{slug}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">key_builder</span><span class="o">=</span><span class="n">key_with_language</span><span class="p">))])</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">article</span><span class="p">(</span><span class="n">slug</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span> <span class="o">...</span>
+</code></pre></div>
+<p>Fold in only the header you negotiate on. A key that includes <code>Accept-Encoding</code>
+or the full <code>Accept</code> splits the entry across every browser variant and the hit
+rate collapses.</p>
+<h3 id="headers-a-hit-carries">Headers a hit carries<a class="headerlink" href="#headers-a-hit-carries" title="Permanent link">&para;</a></h3>
+<p>An entry stores the body, the validator, and <strong>every header field the endpoint
+sent</strong> apart from five groups. A hit is rebuilt from that block, so the
+representation metadata your endpoint set — <code>Link</code>, <code>Content-Disposition</code>,
+<code>Content-Language</code>, <code>X-Total-Count</code>, anything of your own — arrives on the hit
+exactly as it did on the miss, repeated fields and their order included.</p>
+<p>What an entry deliberately leaves out:</p>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Fields</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Owned by this library</td>
+<td><code>Cache-Control</code>, <code>ETag</code>, <code>X-Redis-Cache</code></td>
+<td>Re-emitted on every hit from the entry's own TTL and validator</td>
+</tr>
+<tr>
+<td>Connection-specific (<a href="https://www.rfc-editor.org/rfc/rfc9110.html#section-7.6.1">RFC 9110 §7.6.1</a>)</td>
+<td><code>Connection</code> and the fields it names, <code>Keep-Alive</code>, <code>Proxy-Connection</code>, <code>TE</code>, <code>Transfer-Encoding</code>, <code>Upgrade</code></td>
+<td>A recipient must remove them before forwarding</td>
+</tr>
+<tr>
+<td>Proxy-specific (<a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.1">RFC 9111 §3.1</a>)</td>
+<td><code>Proxy-Authenticate</code>, <code>Proxy-Authentication-Info</code>, <code>Proxy-Authorization</code></td>
+<td>A <code>MUST NOT</code> unless the proxy's identity is in the key, which it is not</td>
+</tr>
+<tr>
+<td>Framing</td>
+<td><code>Content-Length</code></td>
+<td>Recomputed from the replayed body</td>
+</tr>
+<tr>
+<td>Policy</td>
+<td><code>Date</code>, <code>Set-Cookie</code></td>
+<td>See the two warnings below</td>
+</tr>
+</tbody>
+</table>
+<p>A <code>304</code> carries less still: per
+<a href="https://www.rfc-editor.org/rfc/rfc9110.html#section-15.4.5">RFC 9110 §15.4.5</a>
+only <code>ETag</code>, <code>Cache-Control</code>, <code>Vary</code>, <code>Content-Location</code> and <code>Expires</code> are
+replayed, since the rest describes a body the response does not contain.</p>
+<p><code>Cache-Control</code> is worth calling out: on a cached route this library owns the
+field outright, on the miss as well as the hit. An endpoint that sets
+<code>Cache-Control: public, max-age=600</code> on a route wrapped in <code>cache()</code> has that
+value <strong>replaced</strong> by the library's own, so both responses carry one
+consistent policy. Use the <code>private=True</code> argument rather than the header.</p>
+<p>Bodies have <code>MAX_CACHEABLE_BODY_SIZE</code>; header blocks have
+<code>MAX_CACHEABLE_HEADER_SIZE</code> (8 KiB). A response whose metadata exceeds it is
+served and marked <code>BYPASS</code>, like any other refusal.</p>
+<div class="admonition warning">
+<p class="admonition-title">A cached route cannot set cookies</p>
+<p><code>Set-Cookie</code> is not stored, which is the safe direction — a shared entry
+that replayed one caller's session cookie to the next caller would be a
+session leak. The cost is that a cached route <strong>silently stops setting
+cookies</strong> after the first request: the caller who takes the miss gets the
+cookie, everyone served from the entry does not.</p>
+<p>Do not put <code>cache()</code> on a route that establishes a session, sets a CSRF
+token, or otherwise depends on <code>Set-Cookie</code>.</p>
+</div>
+<p>To supply one of the withheld fields on every response, set it in
+<strong>middleware</strong> rather than in the endpoint. Middleware runs outside the cache,
+so it is applied to a hit as well as to a miss, and its value is recomputed per
+response instead of being stored. That is the remedy for the cookie limitation
+below, and the right home for anything per-request — a request id, a trace
+header, a fresh signature.</p>
+<div class="admonition note">
+<p class="admonition-title">Extension responses are not marked</p>
+<p>A response the middleware cannot buffer — <code>http.response.pathsend</code>,
+<code>zerocopysend</code>, <code>trailers</code>, <code>debug</code> — is forwarded whole and never stored,
+but it carries <strong>no</strong> <code>X-Redis-Cache</code> header at all rather than <code>BYPASS</code>,
+since nothing about it was cached and it must not claim a <code>MISS</code>. It is
+the one served-but-not-stored case you cannot spot from the response
+alone.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">A per-caller header leaks like a per-caller body</p>
+<p>Because an entry now stores the headers your endpoint set, a header whose
+value depends on <strong>who asked</strong> is replayed to everyone the entry serves.
+A route returning <code>X-Account-Tier</code> or <code>X-User-Id</code> hands the first
+caller's value to every later caller, exactly as a per-caller body would.</p>
+<p>The remedy is the same one: fold the caller into the key with a custom
+<code>key_builder</code>, as under
+<a href="../caching/#rfc-9111-conformance">Authenticated routes are not keyed per user</a>. If a
+header is diagnostic rather than part of the representation — a request id,
+a trace id — set it in middleware instead, where it is recomputed per
+response and never stored.</p>
+</div>
+<h3 id="compression-middleware-must-wrap-the-cache">Compression middleware must wrap the cache<a class="headerlink" href="#compression-middleware-must-wrap-the-cache" title="Permanent link">&para;</a></h3>
+<p>The capture middleware stores the body it sees. If a compression middleware
+sits <em>inside</em> it, what it sees is already compressed, <code>Content-Encoding</code> is
+set, and every response is refused — caching is off for every client that
+sends <code>Accept-Encoding: gzip</code>, which is every browser, with nothing to show
+it but one log line.</p>
+<p>Starlette applies the <strong>last</strong> registered middleware outermost, so register
+compression <strong>after</strong> <code>caching()</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">app</span><span class="o">.</span><span class="n">add_middleware</span><span class="p">(</span><span class="n">GZipMiddleware</span><span class="p">,</span> <span class="n">minimum_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>   <span class="c1"># outside the cache</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Wrong - the cache sees gzip bytes and refuses every response</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">app</span><span class="o">.</span><span class="n">add_middleware</span><span class="p">(</span><span class="n">GZipMiddleware</span><span class="p">,</span> <span class="n">minimum_size</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>
+</code></pre></div>
+<p>With the correct order the cache stores the identity representation and the
+compression middleware compresses both the miss and the hit on the way out.
+The same applies to any middleware that rewrites the body — encrypt, sign,
+minify: it belongs outside <code>caching()</code>, or the entry stores its output
+instead of your endpoint's.</p>
+<p>An endpoint that returns an already-compressed body of its own — setting
+<code>Content-Encoding</code> by hand — is refused whatever the ordering. RFC 9110 §8.4
+makes <code>Content-Encoding</code> the instruction for decoding the body, and an entry
+that stored the bytes without it would replay something no client can read.</p>
+<hr />
+<h2 id="storage-model-strings-vs-hashes">Storage model - strings vs hashes<a class="headerlink" href="#storage-model-strings-vs-hashes" title="Permanent link">&para;</a></h2>
+<p>Every cached entry is stored as a standalone Redis
+<a href="https://redis.io/docs/latest/develop/data-types/strings/">string</a> key,
+with eviction groups encoded as key prefixes.  Eviction-group deletion uses
+<a href="https://redis.io/docs/latest/commands/scan/"><code>SCAN</code></a> + <code>DEL</code> to find and
+remove matching keys.</p>
+<p>Redis <a href="https://redis.io/docs/latest/develop/data-types/hashes/">hashes</a>
+would be a natural fit - one hash per eviction group, one field per entry.
+Since Redis 7.4 added
+<a href="https://redis.io/blog/hash-field-expiration-architecture-and-benchmarks/">per-field expiration</a>
+and Redis 8.0 added <a href="https://redis.io/docs/latest/commands/hsetex/"><code>HSETEX</code></a>,
+the main historical blocker is gone.  Group deletion becomes a single
+<code>DEL</code> (~59× faster than <code>SCAN</code> + <code>DEL</code> at 1000 entries), and memory drops
+~5% from eliminating per-key overhead.  Reads and writes are effectively
+identical in latency.</p>
+<p>Strings remain the default for three reasons:
+<a href="https://redis.io/docs/latest/commands/hsetex/"><code>HSETEX</code></a> requires
+Redis ≥ 8.0 and many deployments still run 7.x; key-level features
+(keyspace notifications, <code>MEMORY USAGE</code> per entry) don't work on hash
+fields;</p>
+<hr />
+<h2 id="rate-limiting-command-tiers-and-capability-detection">Rate limiting - command tiers and capability detection<a class="headerlink" href="#rate-limiting-command-tiers-and-capability-detection" title="Permanent link">&para;</a></h2>
+<p>The rate limiter uses the fixed-window (window-counter) pattern and executes it
+through the best command the connected server supports, degrading in two
+tiers:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Command</th>
+<th>Requires</th>
+<th>Atomic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><a href="https://redis.io/docs/latest/commands/increx/"><code>INCREX … BYINT … UBOUND … EX … ENX</code></a></td>
+<td>Redis 8.8+</td>
+<td>Yes (single command)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>EVAL</code> Lua window counter</td>
+<td>Server-side scripting (Redis 2.6+)</td>
+<td>Yes (script)</td>
+</tr>
+</tbody>
+</table>
+<p><code>INCREX</code> is the preferred path: a single round trip that increments, enforces
+the upper bound, and sets the TTL only on window creation (<code>ENX</code>).  When the
+server rejects it as an unknown command the limiter falls back to an equivalent
+atomic Lua script.  Both tiers are atomic — there is deliberately <strong>no</strong>
+non-atomic degrade: a server supporting neither (scripting disabled) surfaces as
+a backend error and takes the fail-open/closed path rather than counting with a
+read-modify-write race.</p>
+<h3 id="detection-is-per-process-not-per-request">Detection is per process, not per request<a class="headerlink" href="#detection-is-per-process-not-per-request" title="Permanent link">&para;</a></h3>
+<p>Which tier a server supports never changes at runtime, so probing for it on
+every request would waste a failed round trip on the hot path for the entire
+life of a pre-8.8 deployment.  Detection state (INCREX support plus the
+registered Lua script) therefore lives on a <strong>shared, pool-lifetime</strong>
+capability cache held on <code>_PoolState</code> - the same object that owns the
+connection pool.</p>
+<h3 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h3>
+<p>The tier that served a check is surfaced two ways: the <code>RateLimitResult.backend</code>
+field (<code>"increx"</code> / <code>"lua"</code>) and, when OpenTelemetry is enabled, the
+<code>ratelimit.backend</code> attribute on the <code>ratelimit.hit</code> / <code>ratelimit.global</code> spans.
+This makes an unexpected fallback (e.g. INCREX silently unavailable in
+production) visible in traces.</p>
+<hr />
+<h2 id="telemetry">Telemetry<a class="headerlink" href="#telemetry" title="Permanent link">&para;</a></h2>
+<p>Observability is layered into three independent tiers - HTTP request spans
+(FastAPI instrumentation), fastapi-redis-sdk operation spans and metrics for
+both caching and rate limiting, and redis-py's native driver metrics.  Each
+tier can be enabled on its own, and the first two compose into one nested trace
+per request.  The design is deliberately <strong>additive</strong>: the library's own layer
+never wraps or replaces the FastAPI or redis-py instrumentation - it only slots
+between them, which is why the three can be toggled independently.</p>
+<p>See the <a href="../observability/">Observability guide</a> for the layer model, the full
+span and metric reference (caching and rate limiting), and how to enable each
+tier.</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 18, 2026 14:01:31 UTC">September 18, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="May 28, 2026 09:46:57 UTC">May 28, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/redis/fastapi-redis-sdk" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
