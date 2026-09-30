@@ -571,6 +571,70 @@ production) visible in traces.
 
 ---
 
+## Session request lifecycle
+
+The session middleware does its Redis work at two points: before the endpoint
+runs and after it returns. The endpoint itself reads and writes a `dict` in
+memory. A `request.session` property cannot await, so the load must happen
+first. The save waits for the response status, because a failed response must
+not sign anyone in.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Session middleware
+    participant E as Endpoint
+    participant R as Redis
+
+    C->>M: request with session cookie
+    M->>R: load record, restart idle clock
+    R-->>M: payload
+    M->>M: take principal snapshot
+    M->>E: call endpoint
+
+    E->>E: session["user_id"] = 42 (memory only)
+    opt Endpoint calls SessionStoreDep
+        E->>R: rotate / revoke now
+    end
+    E-->>M: response (status, headers)
+
+    M->>M: compare principal, choose one outcome
+    alt Principal changed, status below 400
+        M->>R: delete old key, create new key
+    else Principal changed, status 400 or more
+        Note over M,R: nothing is saved
+    else Data changed only
+        M->>R: save record
+    else Session emptied
+        M->>R: delete key and index entry
+    end
+    M-->>C: headers with Set-Cookie, then body
+    Note over C,E: Background tasks run here, after the save
+```
+
+The choice is one function, `decide_outcome()`, with no I/O. It returns
+exactly one outcome for each request, so a rotation, a save and a sign-out can
+never combine. It checks, in this order:
+
+1. The endpoint revoked the session through the store. The middleware only
+   clears the cookie.
+2. The principal changed and the status is 400 or more. Nothing is saved.
+3. The endpoint rotated through the store. The middleware only sets the new
+   cookie, plus a save if the endpoint changed the data after the rotation.
+4. The endpoint emptied a stored session. The middleware deletes it.
+5. The principal changed. The middleware rotates.
+6. The data changed. The middleware saves.
+
+If a Redis call in the second half fails, the middleware raises
+`SessionStoreError` before it sends any header. The client gets a 500, and no
+cookie names a session that does not exist.
+
+The `session.*` spans follow the same timeline. In a trace, `session.load`
+comes before the endpoint's own spans, and `session.rotate`, `session.create`
+or `session.save` comes after them.
+
+---
+
 ## Telemetry
 
 Observability is layered into three independent tiers - HTTP request spans
