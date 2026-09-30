@@ -1,9 +1,16 @@
-name: Build and Deploy Documentation
+name: Documentation
+
+# The site is versioned with mike on the gh-pages branch:
+#   /latest/     - main, which the site root redirects to
+#   /feature-X/  - a preview of branch feature/X, titled "feature/X" in the
+#                  version selector.  mike rejects "/" in a version name, so
+#                  every character outside [A-Za-z0-9._-] becomes "-".
+# Deleting the branch deletes its preview.  A pull request gets the strict
+# build only: a fork's token is read-only, so it cannot push to gh-pages.
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, 'feature/**']
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
@@ -11,26 +18,26 @@ on:
       - 'README.md'
       - 'CONTRIBUTING.md'
   pull_request:
-    branches:
-      - main
+    branches: [main, 'feature/**']
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+  delete:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: false
+env:
+  SITE: https://redis.github.io/fastapi-redis-sdk
 
 jobs:
   build:
     name: Build Documentation
+    if: github.event_name != 'delete'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -43,27 +50,105 @@ jobs:
         with:
           version: "latest"
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
-
+      # mike deploy does not build in strict mode, so this job is the gate.
       - name: Build documentation
         run: uv run nox -s docs_build
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/
-
   deploy:
-    name: Deploy to GitHub Pages
-    runs-on: ubuntu-latest
+    name: Deploy Documentation
     needs: build
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feature/'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Every mike command commits to gh-pages; one at a time.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      name: ${{ github.ref == 'refs/heads/main' && 'docs' || 'docs-preview' }}
+      url: ${{ steps.version.outputs.url }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Prepare git for mike
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages || echo "No gh-pages branch yet; mike creates it."
+
+      # The branch name goes through env, never into the script text: a ref
+      # name may contain shell metacharacters.
+      - name: Choose the version
+        id: version
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ "$BRANCH" = "main" ]; then
+            v="latest"
+          else
+            v="feature-$(printf '%s' "${BRANCH#feature/}" | tr -c 'A-Za-z0-9._-' '-')"
+          fi
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+          echo "url=$SITE/$v/" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the preview
+        if: github.ref != 'refs/heads/main'
+        env:
+          BRANCH: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: uv run --only-group docs mike deploy --push --title "$BRANCH" "$VERSION"
+
+      - name: Deploy main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          uv run --only-group docs mike deploy --push latest
+          uv run --only-group docs mike set-default --push latest
+
+  cleanup:
+    name: Delete Preview
+    if: >-
+      github.event_name == 'delete' &&
+      github.event.ref_type == 'branch' &&
+      startsWith(github.event.ref, 'feature/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      # A delete event runs on the default branch.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      # A branch that never deployed has no preview to delete.  The slug must
+      # match the one in the deploy job.
+      - name: Delete the preview
+        env:
+          BRANCH: ${{ github.event.ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin gh-pages || exit 0
+          v="feature-$(printf '%s' "${BRANCH#feature/}" | tr -c 'A-Za-z0-9._-' '-')"
+          if uv run --only-group docs mike list --json | jq -e --arg v "$v" 'any(.[]; .version == $v)' > /dev/null; then
+            uv run --only-group docs mike delete --push "$v"
+          fi

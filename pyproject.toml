@@ -107,6 +107,7 @@ docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocs-git-revision-date-localized-plugin>=1.2.0",
+    "mike>=2.2.0",
 ]
 
 # Testing configuration
