@@ -3,5 +3,10 @@
     "version": "latest",
     "title": "latest",
     "aliases": []
+  },
+  {
+    "version": "feature-session-management",
+    "title": "feature/session-management",
+    "aliases": []
   }
 ]

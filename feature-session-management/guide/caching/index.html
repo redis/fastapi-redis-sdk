@@ -1,0 +1,2986 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Official FastAPI integration for Redis">
+      
+      
+        <meta name="author" content="Redis">
+      
+      
+        <link rel="canonical" href="https://redis.github.io/fastapi-redis-sdk/feature-session-management/guide/caching/">
+      
+      
+        <link rel="prev" href="../architecture/">
+      
+      
+        <link rel="next" href="../rate-limiting/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../logo.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Caching - FastAPI Redis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#caching" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="FastAPI Redis" class="md-header__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            FastAPI Redis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Caching
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="red" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/reference/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="FastAPI Redis" class="md-nav__button md-logo" aria-label="FastAPI Redis" data-md-component="logo">
+      
+  <img src="../../logo.svg" alt="logo">
+
+    </a>
+    FastAPI Redis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/redis/fastapi-redis-sdk" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    redis/fastapi-redis-sdk
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-caching-factories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Caching factories
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Caching factories">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#basic-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Basic usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cache keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#eviction-groups-and-redis-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Eviction groups and Redis Cluster
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrading-across-a-stored-shape-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading across a stored-shape change
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#http-cache-headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HTTP cache headers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rfc-9111-conformance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RFC 9111 conformance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error handling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-cachebackend-imperative-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. CacheBackend - imperative API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. CacheBackend - imperative API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-reach-for-the-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to reach for the backend
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When to reach for the backend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recipe-typed-values-with-pydantic-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: typed values with Pydantic models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-conditional-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: conditional caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-intermediate-result-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: intermediate result caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-cascade-invalidation-across-eviction-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: cascade invalidation across eviction groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-ttl-from-the-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: TTL from the data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-read-modify-write-a-cached-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: read-modify-write a cached value
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-skip-expensive-work-when-the-cache-is-warm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: skip expensive work when the cache is warm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-caching-outside-http" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: caching outside HTTP
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keys-and-eviction-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keys and eviction groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#combining-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining patterns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#best-practices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Best practices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ttl-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TTL defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further reading
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Further reading">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fastapi-redis-sdk-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fastapi-redis-sdk documentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#http-caching-mdn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HTTP caching (MDN)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redis-caching-guides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redis caching guides
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-caching-factories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Caching factories
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Caching factories">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#basic-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Basic usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cache keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#eviction-groups-and-redis-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Eviction groups and Redis Cluster
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrading-across-a-stored-shape-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading across a stored-shape change
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#http-cache-headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HTTP cache headers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rfc-9111-conformance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RFC 9111 conformance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error handling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-cachebackend-imperative-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. CacheBackend - imperative API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. CacheBackend - imperative API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-to-reach-for-the-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to reach for the backend
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="When to reach for the backend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recipe-typed-values-with-pydantic-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: typed values with Pydantic models
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-conditional-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: conditional caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-intermediate-result-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: intermediate result caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-cascade-invalidation-across-eviction-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: cascade invalidation across eviction groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-ttl-from-the-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: TTL from the data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-read-modify-write-a-cached-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: read-modify-write a cached value
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-skip-expensive-work-when-the-cache-is-warm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: skip expensive work when the cache is warm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-caching-outside-http" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: caching outside HTTP
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keys-and-eviction-groups" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keys and eviction groups
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#combining-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining patterns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#best-practices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Best practices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ttl-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TTL defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further reading
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Further reading">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fastapi-redis-sdk-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fastapi-redis-sdk documentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#http-caching-mdn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HTTP caching (MDN)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redis-caching-guides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redis caching guides
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="caching">Caching<a class="headerlink" href="#caching" title="Permanent link">&para;</a></h1>
+<p>fastapi-redis-sdk provides two caching patterns. This guide covers each one,
+starting with the most common.</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cache()</code> / <code>cache_evict()</code> / <code>cache_put()</code></td>
+<td>Most use cases (type-safe, per-endpoint read/write/invalidate)</td>
+</tr>
+<tr>
+<td><code>CacheBackend</code></td>
+<td>Advanced use cases (complex invalidation, conditional logic, intermediate results)</td>
+</tr>
+</tbody>
+</table>
+<p>Both can be combined in the same application.  See
+<a href="../architecture/">Architecture</a> for how connection pools are managed across
+the application lifecycle.</p>
+<hr />
+<h2 id="1-caching-factories">1. Caching factories<a class="headerlink" href="#1-caching-factories" title="Permanent link">&para;</a></h2>
+<p>Three <strong>dependency factories</strong> cover the full read / invalidate / write-through
+lifecycle.  They return callables suitable for <code>Depends()</code> and integrate
+fully with FastAPI's dependency-injection system. For more details on this design
+decision, see the <a href="../architecture/">Architecture</a> section.</p>
+<table>
+<thead>
+<tr>
+<th>Factory</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cache()</code></td>
+<td>Cache GET responses (read path)</td>
+</tr>
+<tr>
+<td><code>cache_evict()</code></td>
+<td><a href="https://redis.io/glossary/cache-invalidation/">Invalidate</a> cache entries after a write succeeds</td>
+</tr>
+<tr>
+<td><code>cache_put()</code></td>
+<td><a href="https://redis.io/blog/three-ways-to-maintain-cache-consistency/">Write-through</a> - store the return value so subsequent reads see fresh data</td>
+</tr>
+</tbody>
+</table>
+<h3 id="setup">Setup<a class="headerlink" href="#setup" title="Permanent link">&para;</a></h3>
+<p>Use the <code>Redis</code> builder to configure the app.  A single fluent call
+sets up connection pools, the exception handler, and the capture middleware:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Depends</span><span class="p">,</span> <span class="n">FastAPI</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span><span class="p">,</span> <span class="n">cache</span><span class="p">,</span> <span class="n">cache_evict</span><span class="p">,</span> <span class="n">cache_put</span><span class="p">,</span> <span class="n">default_key_builder</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>
+</code></pre></div>
+<p>The builder wraps any existing lifespan - multiple libraries can each
+register their own without conflicting.</p>
+<h3 id="basic-usage">Basic usage<a class="headerlink" href="#basic-usage" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># READ - cache the response</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">))])</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># INVALIDATE - evict the cached entry when the resource is deleted</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nd">@app</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_evict</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">,</span> <span class="n">key_builder</span><span class="o">=</span><span class="n">default_key_builder</span><span class="p">))],</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="p">)</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">delete_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">product_id</span><span class="p">)</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;deleted&quot;</span><span class="p">:</span> <span class="n">product_id</span><span class="p">}</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="c1"># WRITE-THROUGH - update the cached entry so the next GET is a HIT</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="nd">@app</span><span class="o">.</span><span class="n">put</span><span class="p">(</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    <span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_put</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">,</span> <span class="n">key_builder</span><span class="o">=</span><span class="n">default_key_builder</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">))],</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="p">)</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">replace_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">Product</span><span class="p">):</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">product_id</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+</code></pre></div>
+<p><code>cache_evict()</code> and <code>cache_put()</code> always execute the endpoint first;
+cache operations happen <strong>after</strong> success.</p>
+<h3 id="options">Options<a class="headerlink" href="#options" title="Permanent link">&para;</a></h3>
+<p><strong>cache()</strong> - read-path caching:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">ttl</span><span class="o">=</span><span class="mi">120</span><span class="p">,</span>                    <span class="c1"># seconds (default: 0 = no expiry)</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;v2&quot;</span><span class="p">,</span>             <span class="c1"># extra segment in the cache key</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;custom:prefix&quot;</span><span class="p">,</span>     <span class="c1"># override the default key prefix</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">key_builder</span><span class="o">=</span><span class="n">my_key_builder</span><span class="p">,</span> <span class="c1"># custom key function (sync or async)</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">private</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>               <span class="c1"># emit Cache-Control: private (see below)</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">))</span>
+</code></pre></div>
+<p><strong>cache_evict()</strong> - invalidation on write:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">Depends</span><span class="p">(</span><span class="n">cache_evict</span><span class="p">(</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">,</span>               <span class="c1"># eviction group to evict from</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">key_builder</span><span class="o">=</span><span class="n">default_key_builder</span><span class="p">,</span>    <span class="c1"># evict the matching key (omit to clear entire eviction group)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;custom:prefix&quot;</span><span class="p">,</span>             <span class="c1"># override the default key prefix</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">))</span>
+</code></pre></div>
+<p><strong>cache_put()</strong> - write-through on write:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">Depends</span><span class="p">(</span><span class="n">cache_put</span><span class="p">(</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">,</span>               <span class="c1"># eviction group to write into</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">key_builder</span><span class="o">=</span><span class="n">default_key_builder</span><span class="p">,</span>    <span class="c1"># key builder (default: default_key_builder)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;custom:prefix&quot;</span><span class="p">,</span>             <span class="c1"># override the default key prefix</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span>                            <span class="c1"># seconds (default: 0 = no expiry)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">private</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>                       <span class="c1"># emit Cache-Control: private</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="p">))</span>
+</code></pre></div>
+<p><code>private=True</code> works the same way here as on <code>cache()</code> - it adds the
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private"><code>Cache-Control: private</code></a>
+directive so CDNs and shared proxies do not store the response.  The
+entry is still written to Redis for fast subsequent reads; only
+intermediate HTTP caches are told to stay out.  See
+<a href="#http-cache-headers">Response directives</a> for more detail.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># User updates their own profile - cache the result in Redis,</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># but prevent CDNs from serving Alice&#39;s profile to Bob.</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nd">@app</span><span class="o">.</span><span class="n">put</span><span class="p">(</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;/me/profile&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_put</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">private</span><span class="o">=</span><span class="kc">True</span><span class="p">))],</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">update_profile</span><span class="p">(</span><span class="n">body</span><span class="p">:</span> <span class="n">Profile</span><span class="p">,</span> <span class="n">user</span><span class="p">:</span> <span class="n">User</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_current_user</span><span class="p">)):</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">update_profile</span><span class="p">(</span><span class="n">user</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="cache-keys">Cache keys<a class="headerlink" href="#cache-keys" title="Permanent link">&para;</a></h3>
+<p>Keys follow the pattern
+<code>{prefix}:{{eviction_group}}:{path}:{sorted_query_params}</code>.
+Slashes become colons; query parameters are sorted alphabetically.</p>
+<p>When an eviction group is provided it is wrapped in Redis
+<a href="https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags">hash-tag</a>
+braces (<code>{eviction_group}</code>).  This guarantees that all keys in the same
+eviction group map to the <strong>same hash slot</strong>, which is required for
+Lua-based bulk eviction in Redis Cluster and is harmless in standalone
+mode.</p>
+<table>
+<thead>
+<tr>
+<th>Request (eviction_group=<code>products</code>)</th>
+<th>Key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/v1/items</code></td>
+<td><code>redis:fastapi:cache:{products}:api:v1:items</code></td>
+</tr>
+<tr>
+<td><code>GET /items?z=2&amp;a=1</code></td>
+<td><code>redis:fastapi:cache:{products}:items:a=1:z=2</code></td>
+</tr>
+</tbody>
+</table>
+<p>Without an eviction group, no hash tag is added:</p>
+<table>
+<thead>
+<tr>
+<th>Request (no eviction group)</th>
+<th>Key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/v1/items</code></td>
+<td><code>redis:fastapi:cache:api:v1:items</code></td>
+</tr>
+</tbody>
+</table>
+<p>All three factories use the same <code>key_builder</code> function (defaulting to
+<code>default_key_builder</code>), which builds the key from the incoming <code>Request</code>.
+This means the GET, DELETE, and PUT on the same path all resolve to the
+<strong>exact same cache key</strong> automatically - no manual key matching required.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Omit <code>key_builder</code></th>
+<th>Pass <code>default_key_builder</code></th>
+<th>Pass custom</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cache()</code></td>
+<td>uses <code>default_key_builder</code></td>
+<td>same</td>
+<td>uses custom</td>
+</tr>
+<tr>
+<td><code>cache_put()</code></td>
+<td>uses <code>default_key_builder</code></td>
+<td>same</td>
+<td>uses custom</td>
+</tr>
+<tr>
+<td><code>cache_evict()</code></td>
+<td><strong>clears entire eviction group</strong></td>
+<td>deletes single key</td>
+<td>uses custom</td>
+</tr>
+</tbody>
+</table>
+<p>To clear an entire eviction group instead of a single key, omit <code>key_builder</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/admin/clear-products&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_evict</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">))])</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">clear_products</span><span class="p">():</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</code></pre></div>
+<p>For complex invalidation that doesn't map to a single URL path (cross-path
+eviction, multi-key invalidation, conditional logic), use <code>CacheBackend</code>
+directly - see <a href="#2-cachebackend-imperative-api">section 2</a>.</p>
+<h4 id="eviction-groups-and-redis-cluster">Eviction groups and Redis Cluster<a class="headerlink" href="#eviction-groups-and-redis-cluster" title="Permanent link">&para;</a></h4>
+<p>In Redis Cluster, keys are distributed across nodes based on their hash
+slot (CRC16 of the key modulo 16384).  Without hash tags, keys in the
+same logical eviction group would be scattered across multiple nodes, making
+bulk operations like <code>delete_group()</code> unreliable - <code>SCAN</code> only sees
+keys on the node it runs on, and Lua scripts cannot touch keys in
+different slots.</p>
+<p>Hash tags solve this: Redis only hashes the substring inside <code>{…}</code> when
+computing the slot.  Because all keys in an eviction group share the same
+<code>{eviction_group}</code> tag, they are guaranteed to land on the <strong>same node and
+slot</strong>.  This makes the Lua-based <code>SCAN</code> + <code>UNLINK</code> script used by
+<code>delete_group()</code> correct and atomic.</p>
+<p><strong>Trade-off - hot slots:</strong> All keys in one eviction group concentrate on a
+single node.  For typical HTTP response caching this is not a problem
+(eviction groups are small-to-moderate in size).  If an eviction group grows very
+large, consider splitting it into multiple smaller eviction groups to
+distribute load across the cluster.</p>
+<h4 id="upgrading-across-a-stored-shape-change">Upgrading across a stored-shape change<a class="headerlink" href="#upgrading-across-a-stored-shape-change" title="Permanent link">&para;</a></h4>
+<p>Entries carry no format marker, and <code>CacheBackend</code> keys by the same prefix as
+<code>cache()</code>. So when a release changes the shape of a stored entry, clear the
+cache prefix as part of the upgrade rather than letting two shapes meet.</p>
+<p>A rolling deploy cannot do that safely: while old and new pods both serve
+traffic they share one keyspace, and flushing at any point in the rollout
+leaves the old pods free to repopulate the old shape for the new ones to read.
+Upgrade across a shape change with a maintenance window — stop the old
+release, clear the prefix, start the new one. The release notes call out the
+releases where this applies.</p>
+<div class="admonition tip">
+<p class="admonition-title">Invalidating on every deploy</p>
+<p>To get a cold cache on <strong>every</strong> deploy — because your handlers changed
+what they return, say — put a build identifier in the prefix:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nv">REDIS_PREFIX</span><span class="o">=</span>redis:fastapi:build-a3f91c
+</code></pre></div>
+<p>Keys then move wholesale each release, old ones expire on their TTL, and
+nothing needs invalidating by hand. This also covers the shape-change
+case, since a new build never reads the previous build's keys.</p>
+</div>
+<h3 id="http-cache-headers">HTTP cache headers<a class="headerlink" href="#http-cache-headers" title="Permanent link">&para;</a></h3>
+<p>Every <code>cache()</code> response includes these headers automatically:</p>
+<table>
+<thead>
+<tr>
+<th>Header</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>X-Redis-Cache</code></td>
+<td><code>HIT</code>, <code>MISS</code>, or <code>BYPASS</code> when the response was served but not stored (see <a href="../architecture/#cache-scope">Cache scope</a>)</td>
+</tr>
+<tr>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control"><code>Cache-Control</code></a></td>
+<td><code>max-age=&lt;remaining_ttl&gt;</code> when TTL &gt; 0, or <code>no-cache</code> when TTL = 0 (always revalidate via ETag). Adds <code>private</code> prefix when <code>private=True</code>.</td>
+</tr>
+<tr>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag"><code>ETag</code></a></td>
+<td>The endpoint's own <code>ETag</code> when it set one, strong validators included; otherwise a weak tag derived from the body</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Request directives</strong> - the following <code>Cache-Control</code> directives sent by the
+client are respected:</p>
+<ul>
+<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-None-Match"><code>If-None-Match</code></a> with a matching ETag returns <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304"><strong>304 Not Modified</strong></a>.</li>
+<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since"><code>If-Modified-Since</code></a> returns <strong>304</strong> when the endpoint set a <code>Last-Modified</code> and the client's copy is not older. <code>If-None-Match</code> takes precedence when both are sent, as <a href="https://www.rfc-editor.org/rfc/rfc9110.html#section-13.2.2">RFC 9110 §13.2.2</a> requires.</li>
+<li><code>Cache-Control: no-cache</code> forces a cache refresh.</li>
+<li><code>Cache-Control: no-store</code> bypasses caching entirely.</li>
+<li><code>Cache-Control: max-age=N</code> - a cached entry older than <em>N</em> seconds is
+  treated as a cache miss and the endpoint re-executes.
+  <code>max-age=0</code> is equivalent to <code>no-cache</code>.</li>
+</ul>
+<p><strong>Response directives</strong> - use <code>private=True</code> on the factory to emit
+<code>Cache-Control: private, max-age=…</code>.  This tells CDNs and shared proxies
+<strong>not</strong> to store the response - only the end-user's browser may cache it. See
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#private">MDN: Cache-Control: private</a> and
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching#private_caches">MDN: Private caches</a></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># User-specific data - must not be cached by a CDN</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/me/profile&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">private</span><span class="o">=</span><span class="kc">True</span><span class="p">))])</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">my_profile</span><span class="p">(</span><span class="n">user</span><span class="p">:</span> <span class="n">User</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_current_user</span><span class="p">)):</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="k">return</span> <span class="n">user</span><span class="o">.</span><span class="n">profile</span>
+</code></pre></div>
+<h3 id="cache-scope">Cache scope<a class="headerlink" href="#cache-scope" title="Permanent link">&para;</a></h3>
+<p><code>cache()</code> stores <strong>text representations</strong> only — JSON, plain text, HTML, CSV,
+XML, JavaScript. It refuses anything else, including all binary, and a refusal
+never changes what the caller receives: the response is served whole and marked
+<code>X-Redis-Cache: BYPASS</code>, with the reason logged once per route. An entry also
+replays the header fields your endpoint set, apart from the ones this library
+owns and the ones it withholds by policy — <code>Date</code> and <code>Set-Cookie</code> among them.</p>
+<p>For the full allowlist, every refusal reason, the headers a hit carries, and
+the middleware ordering that compression requires, see
+<a href="../architecture/#cache-scope">Cache scope</a> in the architecture guide.</p>
+<h3 id="rfc-9111-conformance">RFC 9111 conformance<a class="headerlink" href="#rfc-9111-conformance" title="Permanent link">&para;</a></h3>
+<p><a href="https://www.rfc-editor.org/rfc/rfc9111.html">RFC 9111</a> governs HTTP caching,
+and a Redis entry shared between requests is a <strong>shared cache</strong> under it. Where
+this library follows the specification and where it deliberately does not:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Requirement</th>
+<th>This library</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3">§3</a></td>
+<td>Store only a cacheable method and a status the cache can reproduce</td>
+<td><strong>Follows.</strong> <code>cache()</code> reads and stores <code>GET</code> only, and stores only a <code>200</code>. An entry carries no status, so a stored <code>201</code> would come back as a <code>200</code>; refusing it keeps the status honest. <code>cache_put()</code> stores any <code>2xx</code>, because its body is installed as the representation for a <em>later</em> <code>GET</code> and the writing response is never replayed.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.1">§3.1</a></td>
+<td>"Caches MUST include all received response header fields … when storing a response"</td>
+<td><strong>Follows in part.</strong> An entry stores every received header field, including unrecognized ones, apart from five groups: the fields this library re-emits, the connection-specific and proxy-specific fields §3.1 itself excludes, the recomputed <code>Content-Length</code>, and <code>Date</code> and <code>Set-Cookie</code> by decision. Trailer fields are discarded, which §3.1 permits, and are never merged into the header block. The two remaining deviations are deliberate: replaying <code>Date</code> would double-count the entry's age (see the warning below), and replaying <code>Set-Cookie</code> from a shared entry would leak a session. See <a href="../architecture/#headers-a-hit-carries">Headers a hit carries</a>.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.2">§3.2</a></td>
+<td>Update stored header fields on validation</td>
+<td><strong>Not applicable.</strong> This is an origin-side cache. It never revalidates against an upstream.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.3">§3.3</a></td>
+<td>"a cache MUST NOT store incomplete or partial-content responses if it does not support the Range and Content-Range header fields", and MUST NOT send a partial response without marking it <code>206</code></td>
+<td><strong>Follows.</strong> Three guards: a response carrying <code>Content-Range</code> is refused, a request carrying <code>Range</code> is refused, and any status other than <code>200</code> is refused. Without them a <code>206</code> would be stored under the full-resource key and replayed to the next client as a truncated <code>200</code>.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.4">§3.4</a></td>
+<td>Combining partial content</td>
+<td><strong>Not applicable.</strong> No partial entry is ever stored.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-3.5">§3.5</a></td>
+<td>"A shared cache MUST NOT use a cached response to a request with an Authorization header field" unless the response permits shared storage</td>
+<td><strong>Deviates.</strong> Read the warning below before caching an authenticated route.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4">§4</a></td>
+<td>Reuse only on a matching URI and method, while fresh</td>
+<td><strong>Follows.</strong> The key is the path plus sorted query, only <code>GET</code> reads it, and the Redis TTL is the freshness lifetime.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4">§4</a></td>
+<td>"a cache MUST generate an Age header field"</td>
+<td><strong>Deviates deliberately.</strong> <code>Cache-Control: max-age</code> is emitted already reduced by the entry's age, so a downstream cache works out the same remaining freshness an <code>Age</code> header would give it. Sending both would subtract the age twice and expire the response early. <strong>Read the warning below before changing this.</strong></td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4.1">§4.1</a></td>
+<td>Match every request header nominated by <code>Vary</code></td>
+<td><strong>Deviates in part.</strong> The key never includes a request header, so <code>Vary</code> is not honoured on lookup. It <em>is</em> stored and replayed, so a cache downstream still receives the origin's instruction, and a response carrying <code>Vary: *</code> — which may never be reused — is refused rather than stored. See <a href="../architecture/#vary-is-not-honoured"><code>Vary</code> is not honoured</a>.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2">§4.2</a></td>
+<td>Freshness</td>
+<td><strong>Follows.</strong> Redis owns it. An expired entry is a missing key, so a stale entry cannot be read.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3">§4.3</a></td>
+<td>Validation</td>
+<td><strong>Follows.</strong> <code>If-None-Match</code> against the stored <code>ETag</code> returns <code>304</code>, and <code>If-Modified-Since</code> against a stored <code>Last-Modified</code> does too — with <code>If-None-Match</code> taking precedence when both are present, as §13.2.2 requires. An endpoint that sets its own <code>ETag</code> keeps it, strong validator included; when it sets none we generate a weak tag from the body, and a weak validator cannot serve a range request — one more reason <code>Range</code> is refused.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-4.4">§4.4</a></td>
+<td>"A cache MUST invalidate the target URI … when it receives a non-error status code in response to an unsafe request method"</td>
+<td><strong>Deviates.</strong> A <code>POST</code>, <code>PUT</code>, <code>PATCH</code> or <code>DELETE</code> does not drop the entry by itself. Put <code>cache_evict()</code> or <code>cache_put()</code> on the writing route — see <a href="#combining-patterns">Combining patterns</a>.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1">§5.2.1</a></td>
+<td>Request directives</td>
+<td><strong>Follows in part.</strong> Honours <code>no-store</code>, <code>no-cache</code> and <code>max-age</code>. Ignores <code>min-fresh</code>, <code>max-stale</code>, <code>only-if-cached</code> and <code>no-transform</code>.</td>
+</tr>
+<tr>
+<td><a href="https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2">§5.2.2</a></td>
+<td>Response directives</td>
+<td><strong>Follows in part.</strong> Refuses to store a response that sets <code>no-store</code> or <code>private</code>, since a Redis entry is shared. Emits <code>private</code> when <code>private=True</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title">Authenticated routes are not keyed per user</p>
+<p>A <code>cache()</code> entry is <strong>shared</strong>. The key does not include the caller, so a
+route behind <code>Authorization</code> serves the first caller's body to everyone
+until the TTL expires. RFC 9111 §3.5 forbids exactly this, and the library
+does not stop you — <code>private=True</code> changes the <code>Cache-Control</code> header it
+emits, not the key it writes.</p>
+<p>Before caching a route whose body depends on who is asking, fold the
+caller into the key:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">key_per_user</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">base</span> <span class="o">=</span> <span class="n">default_key_builder</span><span class="p">(</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>        <span class="n">request</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="n">eviction_group</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="n">prefix</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="p">)</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">base</span><span class="si">}</span><span class="s2">:u:</span><span class="si">{</span><span class="n">request</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="s2">&quot;/me/profile&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>        <span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">private</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">key_builder</span><span class="o">=</span><span class="n">key_per_user</span><span class="p">))</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="p">],</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="p">)</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">my_profile</span><span class="p">(</span><span class="n">user</span><span class="p">:</span> <span class="n">User</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_current_user</span><span class="p">)):</span> <span class="o">...</span>
+</code></pre></div>
+<p>If the body is identical for every caller — an auth check that gates
+access without changing the content — the shared entry is correct and
+needs no change.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Do not add an Age header on its own</p>
+<p>On a hit the library emits <code>Cache-Control: max-age=&lt;seconds the Redis key
+has left&gt;</code> and <strong>no</strong> <code>Age</code> header, while the ASGI server stamps a fresh
+<code>Date</code> on every response. A hit therefore looks like a response generated
+just now that happens to have less life left:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>hit 1   cache-control: max-age=120   date: 13:43:17   (redis ttl 120)
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>hit 2   cache-control: max-age=117   date: 13:43:20   (redis ttl 117)
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>hit 3   cache-control: max-age=114   date: 13:43:23   (redis ttl 114)
+</code></pre></div>
+<p>Those three facts are <strong>one decision, not three</strong>. A downstream cache
+works out <code>current_age</code> from the <code>Age</code> header and from <code>Date</code>, then serves
+the response while <code>max-age &gt; current_age</code>. Because <code>Date</code> is always now
+and <code>Age</code> is absent, <code>current_age</code> starts at zero, so the reduced
+<code>max-age</code> <em>is</em> the whole remaining lifetime. The arithmetic comes out
+right — but only because all three parts agree.</p>
+<p>Change one part on its own and it stops coming out right. Take an entry
+with a 300-second TTL and 120 seconds left, so its age is 180:</p>
+<ul>
+<li><strong>Add an <code>Age</code> header while <code>max-age</code> stays reduced</strong> and the age counts
+  twice. The hit carries <code>max-age=120</code> and <code>Age: 180</code>; a downstream cache
+  computes <code>current_age = 180</code>, finds <code>120 &gt; 180</code> false, and treats every
+  hit as <strong>stale on arrival</strong>. Downstream caching collapses silently — the
+  responses still look correct in a browser.</li>
+<li><strong>Store and replay the entry's original <code>Date</code></strong> and the same
+  double-count happens with no <code>Age</code> header at all, because the cache then
+  derives the age from <code>Date</code> instead of from zero.</li>
+</ul>
+<p>To conform to RFC 9111 §4, change the whole encoding together: store the
+configured TTL in the entry, emit that constant value as <code>max-age</code>, and
+emit <code>Age</code> as <code>stored_ttl - remaining_ttl</code>. A hit then carries
+<code>max-age=300</code> with <code>Age: 180</code>, which leaves the same 120 seconds, and
+replaying <code>Date</code> becomes safe as well.</p>
+<p>Half of that change is worse than none of it.</p>
+</div>
+<h3 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h3>
+<p>The DI factories integrate with FastAPI's <code>dependency_overrides</code>, so
+unit tests can swap the real Redis client for a fake without any
+monkey-patching:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">fakeredis.aioredis</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span><span class="p">,</span> <span class="n">cache</span><span class="p">,</span> <span class="n">get_async_redis</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">))])</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_items</span><span class="p">():</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;items&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]}</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="c1"># In tests:</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="n">fake</span> <span class="o">=</span> <span class="n">fakeredis</span><span class="o">.</span><span class="n">aioredis</span><span class="o">.</span><span class="n">FakeRedis</span><span class="p">()</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="n">app</span><span class="o">.</span><span class="n">dependency_overrides</span><span class="p">[</span><span class="n">get_async_redis</span><span class="p">]</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">fake</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a><span class="k">with</span> <span class="n">TestClient</span><span class="p">(</span><span class="n">app</span><span class="p">)</span> <span class="k">as</span> <span class="n">client</span><span class="p">:</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>    <span class="n">r1</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>    <span class="k">assert</span> <span class="n">r1</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="s2">&quot;X-Redis-Cache&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;MISS&quot;</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>    <span class="n">r2</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>    <span class="k">assert</span> <span class="n">r2</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="s2">&quot;X-Redis-Cache&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;HIT&quot;</span>
+</code></pre></div>
+<h3 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h3>
+<ul>
+<li>If the endpoint raises an exception, no cache operations are performed.</li>
+<li>If the cache operation itself fails (e.g., Redis is down), the error is logged
+and the endpoint's return value is still delivered to the caller.</li>
+</ul>
+<hr />
+<h2 id="2-cachebackend-imperative-api">2. <code>CacheBackend</code> - imperative API<a class="headerlink" href="#2-cachebackend-imperative-api" title="Permanent link">&para;</a></h2>
+<p>For caching that doesn't map to "one endpoint, one response" - a TTL that
+depends on the data, a decision to cache taken after the work is done, or
+sub-computations cached independently of the response - inject
+<code>CacheBackendDep</code>.  It needs only a Redis connection; <code>.caching()</code> is not
+required for the backend itself.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">CacheBackendDep</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items/</span><span class="si">{item_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;items&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>    <span class="k">if</span> <span class="n">cached</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>        <span class="k">return</span> <span class="n">cached</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    <span class="n">item</span> <span class="o">=</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;items&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="k">return</span> <span class="n">item</span>
+</code></pre></div>
+<p>That is <a href="https://redis.io/learn/howtos/solutions/microservices/caching">cache-aside</a>
+written by hand - and it is exactly what <code>cache()</code> does for you, so if this is
+all you need, use <code>cache()</code>.  The recipes below are the cases it cannot express.</p>
+<p>If you are using only <code>CacheBackend</code> (no <code>cache()</code> / <code>cache_evict()</code> /
+<code>cache_put()</code>), setup is just:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get(key, *, default=None, eviction_group=None)</code></td>
+<td>Retrieve and deserialize.  Returns <code>default</code> on miss.</td>
+</tr>
+<tr>
+<td><code>set(key, value, *, ttl=None, eviction_group=None)</code></td>
+<td>Serialize and store.  <code>ttl</code> accepts <code>int</code> seconds or <code>timedelta</code>; omit it to fall back to <code>default_ttl</code>, or pass <code>0</code> for no expiry.</td>
+</tr>
+<tr>
+<td><code>delete(key, *, eviction_group=None)</code></td>
+<td>Delete a single entry.  Returns <code>True</code> if it existed.</td>
+</tr>
+<tr>
+<td><code>has(key, *, eviction_group=None)</code></td>
+<td>Check existence without deserializing (Redis <code>EXISTS</code>).</td>
+</tr>
+<tr>
+<td><code>delete_group(eviction_group=None)</code></td>
+<td>Delete every key in an eviction group.  Returns the count.</td>
+</tr>
+</tbody>
+</table>
+<p>Four things about the semantics are worth knowing before you build on them:</p>
+<ul>
+<li><strong>A miss and an outage look identical.</strong>  <code>get</code> returns <code>default</code> (<code>None</code>
+  unless you pass one) not only on a miss but also on a Redis error or a decode
+  failure, and <code>set</code> silently does nothing when Redis is down.  That is
+  deliberate - a cache outage degrades to recomputation instead of a 500 - but
+  unlike <code>RateLimitResult.degraded</code> there is no flag distinguishing the two.
+  The failure is logged and visible in the <a href="../observability/">metrics</a>; your
+  handler cannot see it.</li>
+<li><strong><code>ttl=None</code> means no expiry</strong>, as does any value below <code>1</code>.  The key stays
+  until it is deleted or evicted by Redis' own memory policy.  Pass an explicit
+  TTL unless you mean forever.</li>
+<li><strong><code>delete_group()</code> with no group is a full cache wipe.</strong>  With neither a call
+  argument nor an instance-level group, it deletes every key under the cache
+  prefix.  It logs a warning and proceeds.</li>
+<li><strong>Keys interoperate with <code>cache()</code>.</strong>  Both produce
+  <code>{prefix}:{eviction_group}:...</code>, so <code>delete_group("items")</code> clears
+  decorator-written and backend-written entries alike - see
+  <a href="#cache-keys">Cache keys</a>.</li>
+</ul>
+<p>A <code>SyncCacheBackend</code> facade (<code>SyncCacheBackendDep</code>) offers the same methods for
+sync endpoints, delegating to the async backend on a worker thread.</p>
+<h3 id="when-to-reach-for-the-backend">When to reach for the backend<a class="headerlink" href="#when-to-reach-for-the-backend" title="Permanent link">&para;</a></h3>
+<p><code>cache()</code> fixes everything at decoration time: one TTL, a key derived from the
+request, and "cache whatever the handler returns".  It wraps the handler, so the
+response is the only thing it can see or store, and the handler never learns
+whether a cache was involved.</p>
+<p>Reach for the backend when one of those has to change - the TTL, the key, the
+<em>decision</em> to cache, or the granularity (part of the work rather than the whole
+response) - or when there is no <code>Request</code> at all.  For plain invalidation or
+write-through, prefer <code>cache_evict()</code> / <code>cache_put()</code>, which do require
+<code>.caching()</code>.  The recipes below cover the common cases.</p>
+<h4 id="recipe-typed-values-with-pydantic-models">Recipe: typed values with Pydantic models<a class="headerlink" href="#recipe-typed-values-with-pydantic-models" title="Permanent link">&para;</a></h4>
+<p><code>cache()</code> stores the serialized HTTP response, so there is nothing to type on the
+way back.  The backend hands values to <em>your</em> code, which makes the coder worth
+choosing.</p>
+<p>By default, <code>CacheBackend</code> uses <code>JsonCoder</code>, a thin wrapper around
+<code>json.dumps()</code> / <code>json.loads()</code>, which cannot serialize Pydantic models,
+<code>datetime</code>, <code>UUID</code>, enums, or <code>Decimal</code>. To cache a Pydantic model, wrap it with
+<code>pydantic_model_coder()</code>: the resulting coder serializes with the model's own
+JSON encoder on write and validates back into a model instance on read, so cache
+hits come back fully typed.</p>
+<p>Because a coder is model-specific, you select it the <strong>DI-native</strong> way - by
+declaring a model-specific <code>CacheBackend</code> provider and injecting it, exactly as
+you would with <code>get_db</code> or <code>get_current_user</code>. The default <code>CacheBackendDep</code>
+stays on <code>JsonCoder</code>; this provider is a parallel dependency that carries the
+<code>Product</code> coder (and its eviction group):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">uuid</span><span class="w"> </span><span class="kn">import</span> <span class="n">UUID</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Depends</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pydantic</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseModel</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncRedisDep</span><span class="p">,</span> <span class="n">CacheBackend</span><span class="p">,</span> <span class="n">pydantic_model_coder</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="k">class</span><span class="w"> </span><span class="nc">Product</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>    <span class="nb">id</span><span class="p">:</span> <span class="n">UUID</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>    <span class="n">created_at</span><span class="p">:</span> <span class="n">datetime</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="c1"># Wire the coder into a model-specific CacheBackend provider, then alias it.</span>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="n">ProductCoder</span> <span class="o">=</span> <span class="n">pydantic_model_coder</span><span class="p">(</span><span class="n">Product</span><span class="p">)</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_product_cache</span><span class="p">(</span><span class="n">redis</span><span class="p">:</span> <span class="n">AsyncRedisDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CacheBackend</span><span class="p">:</span>
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a>    <span class="k">return</span> <span class="n">CacheBackend</span><span class="p">(</span><span class="n">redis</span><span class="p">,</span> <span class="n">coder</span><span class="o">=</span><span class="n">ProductCoder</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a>
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a><span class="n">ProductCacheDep</span> <span class="o">=</span> <span class="n">Annotated</span><span class="p">[</span><span class="n">CacheBackend</span><span class="p">,</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_product_cache</span><span class="p">)]</span>
+<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a>
+<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="n">UUID</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">ProductCacheDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Product</span><span class="p">:</span>
+<a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;product:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a>    <span class="k">if</span> <span class="n">cached</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a>        <span class="k">return</span> <span class="n">cached</span>                          <span class="c1"># a real Product instance, fully typed</span>
+<a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a>    <span class="n">product</span> <span class="o">=</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">)</span>
+<a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;product:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">product</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span>
+<a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a>    <span class="k">return</span> <span class="n">product</span>
+</code></pre></div>
+<p><code>get_product_cache</code> reuses the shared connection pool via <code>AsyncRedisDep</code>, so the
+model-specific backend costs nothing extra beyond the coder. Add one such
+provider per model you cache.</p>
+<h4 id="recipe-conditional-caching">Recipe: conditional caching<a class="headerlink" href="#recipe-conditional-caching" title="Permanent link">&para;</a></h4>
+<p>Cache only when a business rule is met.  <code>cache()</code> has no say in the matter - it
+stores whatever the handler returns - so a draft or a partial result gets cached
+alongside the publishable ones:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items/</span><span class="si">{item_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;items&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    <span class="k">if</span> <span class="n">cached</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>        <span class="k">return</span> <span class="n">cached</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>    <span class="n">item</span> <span class="o">=</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>    <span class="k">if</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;status&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;published&quot;</span><span class="p">:</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>        <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;item:</span><span class="si">{</span><span class="n">item_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;items&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>    <span class="k">return</span> <span class="n">item</span>
+</code></pre></div>
+<h4 id="recipe-intermediate-result-caching">Recipe: intermediate result caching<a class="headerlink" href="#recipe-intermediate-result-caching" title="Permanent link">&para;</a></h4>
+<p>Cache the expensive <em>parts</em> rather than the response, so each part carries its
+own TTL and can be invalidated on its own schedule.  <code>cache()</code> sees one response
+and one TTL, which means a cheap 60-second fragment and an expensive 2-hour one
+must share whichever number you picked:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/dashboard/</span><span class="si">{user_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">dashboard</span><span class="p">(</span><span class="n">user_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>    <span class="n">orders</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;orders:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="k">if</span> <span class="n">orders</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>        <span class="n">orders</span> <span class="o">=</span> <span class="k">await</span> <span class="n">compute_order_summary</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>        <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;orders:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">orders</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="n">recommendations</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;reco:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="k">if</span> <span class="n">recommendations</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>        <span class="n">recommendations</span> <span class="o">=</span> <span class="k">await</span> <span class="n">generate_recommendations</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>        <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;reco:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">recommendations</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">120</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;orders&quot;</span><span class="p">:</span> <span class="n">orders</span><span class="p">,</span> <span class="s2">&quot;recommendations&quot;</span><span class="p">:</span> <span class="n">recommendations</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="recipe-cascade-invalidation-across-eviction-groups">Recipe: cascade invalidation across eviction groups<a class="headerlink" href="#recipe-cascade-invalidation-across-eviction-groups" title="Permanent link">&para;</a></h4>
+<p>One write makes several unrelated caches stale.  <code>cache_evict()</code> clears the group
+attached to its own route, so a fan-out across groups needs explicit deletes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;/profile/</span><span class="si">{user_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">update_profile</span><span class="p">(</span><span class="n">user_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">ProfileUpdate</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">update_profile</span><span class="p">(</span><span class="n">user_id</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>    <span class="c1"># Cascade: profile, dashboard, and user list all become stale</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;profile:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;profiles&quot;</span><span class="p">)</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;orders:</span><span class="si">{</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="s2">&quot;all&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;users&quot;</span><span class="p">)</span>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;ok&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="recipe-ttl-from-the-data">Recipe: TTL from the data<a class="headerlink" href="#recipe-ttl-from-the-data" title="Permanent link">&para;</a></h4>
+<p>Let the value decide how long it lives.  <code>cache(ttl=...)</code> is resolved when the
+route is defined, before any data exists, so it cannot tell a premium record from
+a free one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/content/</span><span class="si">{content_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_content</span><span class="p">(</span><span class="n">content_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="n">cached</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;content:</span><span class="si">{</span><span class="n">content_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;content&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="k">if</span> <span class="n">cached</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>        <span class="k">return</span> <span class="n">cached</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>
+<a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>    <span class="n">content</span> <span class="o">=</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_content</span><span class="p">(</span><span class="n">content_id</span><span class="p">)</span>
+<a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>    <span class="n">ttl</span> <span class="o">=</span> <span class="mi">3600</span> <span class="k">if</span> <span class="n">content</span><span class="p">[</span><span class="s2">&quot;premium&quot;</span><span class="p">]</span> <span class="k">else</span> <span class="mi">300</span>
+<a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;content:</span><span class="si">{</span><span class="n">content_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">content</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="n">ttl</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;content&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>    <span class="k">return</span> <span class="n">content</span>
+</code></pre></div>
+<h4 id="recipe-read-modify-write-a-cached-value">Recipe: read-modify-write a cached value<a class="headerlink" href="#recipe-read-modify-write-a-cached-value" title="Permanent link">&para;</a></h4>
+<p>Derive the new value from the cached one.  <code>cache()</code> never shows the handler what
+is in the cache, so any update that depends on the current value has to be done
+here:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">/view&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">record_view</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">views</span> <span class="o">=</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;views:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;analytics&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="n">views</span> <span class="o">+=</span> <span class="mi">1</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;views:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">views</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">3600</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;analytics&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;product_id&quot;</span><span class="p">:</span> <span class="n">product_id</span><span class="p">,</span> <span class="s2">&quot;views&quot;</span><span class="p">:</span> <span class="n">views</span><span class="p">}</span>
+</code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">This read-modify-write is not atomic</p>
+<p>Two concurrent requests can both read <code>views=5</code> and both write <code>6</code>, losing a
+view.  That is acceptable for an approximate counter and wrong for anything
+you bill or audit.  When the count has to be exact, let Redis do the
+arithmetic with <code>INCR</code> on the raw client (<code>AsyncRedisDep</code>) instead of a
+get/set pair - a cache backend is a value store, not a counter:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">/view&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">record_view</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">redis</span><span class="p">:</span> <span class="n">AsyncRedisDep</span><span class="p">):</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="n">views</span> <span class="o">=</span> <span class="k">await</span> <span class="n">redis</span><span class="o">.</span><span class="n">incr</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;views:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>   <span class="c1"># atomic, one round trip</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;product_id&quot;</span><span class="p">:</span> <span class="n">product_id</span><span class="p">,</span> <span class="s2">&quot;views&quot;</span><span class="p">:</span> <span class="n">views</span><span class="p">}</span>
+</code></pre></div>
+</div>
+<h4 id="recipe-skip-expensive-work-when-the-cache-is-warm">Recipe: skip expensive work when the cache is warm<a class="headerlink" href="#recipe-skip-expensive-work-when-the-cache-is-warm" title="Permanent link">&para;</a></h4>
+<p><code>has</code> answers "is this cached?" without transferring or deserializing the value -
+useful when the decision costs less than the payload:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/warm-check/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">check_warm</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>    <span class="k">if</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">has</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;product:</span><span class="si">{</span><span class="n">product_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">):</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;warm&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>    <span class="c1"># Only do expensive work when cache is cold</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>    <span class="k">await</span> <span class="n">run_expensive_recomputation</span><span class="p">(</span><span class="n">product_id</span><span class="p">)</span>
+<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;warm&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">}</span>
+</code></pre></div>
+<h4 id="recipe-caching-outside-http">Recipe: caching outside HTTP<a class="headerlink" href="#recipe-caching-outside-http" title="Permanent link">&para;</a></h4>
+<p>There is no <code>Request</code> in a background worker, a scheduled job, or a queue
+consumer - but the cache is the same one your endpoints read, so a worker can
+warm it or reuse it.  Construct a <code>CacheBackend</code> from any Redis client:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">timedelta</span>
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>
+<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">CacheBackend</span>
+<a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a>
+<a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">refresh_exchange_rates</span><span class="p">(</span><span class="n">redis</span><span class="p">):</span>
+<a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>    <span class="n">cache</span> <span class="o">=</span> <span class="n">CacheBackend</span><span class="p">(</span><span class="n">redis</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;rates&quot;</span><span class="p">)</span>   <span class="c1"># no Request needed</span>
+<a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a>    <span class="n">rates</span> <span class="o">=</span> <span class="k">await</span> <span class="n">fetch_from_vendor</span><span class="p">()</span>                     <span class="c1"># paid API, called once</span>
+<a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>    <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">&quot;fx:latest&quot;</span><span class="p">,</span> <span class="n">rates</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="n">timedelta</span><span class="p">(</span><span class="n">minutes</span><span class="o">=</span><span class="mi">15</span><span class="p">))</span>
+<a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a>
+<a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/rates&quot;</span><span class="p">)</span>
+<a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">rates</span><span class="p">(</span><span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>    <span class="c1"># Endpoints read what the worker wrote — same key, same eviction group.</span>
+<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;fx:latest&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="p">{},</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;rates&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>This is also the shape to use when a value is expensive to produce but cheap to
+serve: pay for it on a schedule rather than on whichever unlucky request finds
+the cache cold.</p>
+<p>The <code>default=</code> argument keeps the miss path from leaking <code>None</code> into your
+response - <code>default={}</code> above, or <code>default=0</code> in the counter recipe - and <code>ttl</code>
+accepts a <code>timedelta</code> wherever seconds would do.</p>
+<p>Notice what the recipes have in common: each one <strong>reads the cache before
+deciding what to do next</strong>.  That is the structural difference from <code>cache()</code>,
+which resolves the cache entirely outside the handler and hands it a decision
+already made.</p>
+<h3 id="keys-and-eviction-groups">Keys and eviction groups<a class="headerlink" href="#keys-and-eviction-groups" title="Permanent link">&para;</a></h3>
+<p>Backend keys follow the same scheme as decorator keys -
+<code>{prefix}:{eviction_group}:{your key}</code>, with the group wrapped in Redis hash-tag
+braces so a whole group lands on one cluster slot.  The consequences are covered
+under <a href="#cache-keys">Cache keys</a>; the two that matter most here:</p>
+<ul>
+<li>The <code>eviction_group</code> argument can be set per call or once on the instance
+  (<code>CacheBackend(redis, eviction_group="products")</code>), which is what the Pydantic
+  provider above does.</li>
+<li>A group is the unit of bulk eviction.  Keys written by <code>cache()</code> and keys
+  written by the backend sit in the same namespace, so grouping them together is
+  what makes one <code>delete_group()</code> clear both.</li>
+</ul>
+<hr />
+<h2 id="combining-patterns">Combining patterns<a class="headerlink" href="#combining-patterns" title="Permanent link">&para;</a></h2>
+<p>Both patterns can coexist in the same application:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">Depends</span><span class="p">,</span> <span class="n">FastAPI</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>  <span class="n">Redis</span><span class="p">,</span> <span class="n">cache</span><span class="p">,</span> <span class="n">cache_evict</span><span class="p">,</span> <span class="n">cache_put</span><span class="p">,</span> <span class="n">default_key_builder</span><span class="p">,</span> <span class="n">CacheBackendDep</span><span class="p">,</span>
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="p">)</span>
+<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>
+<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span>
+<a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>
+<a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a>
+<a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a><span class="c1"># cache(): read-path caching</span>
+<a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/users/</span><span class="si">{user_id}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;users&quot;</span><span class="p">))])</span>
+<a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">User</span><span class="p">:</span>
+<a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a>  <span class="k">return</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">get_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+<a id="__codelineno-23-14" name="__codelineno-23-14" href="#__codelineno-23-14"></a>
+<a id="__codelineno-23-15" name="__codelineno-23-15" href="#__codelineno-23-15"></a>
+<a id="__codelineno-23-16" name="__codelineno-23-16" href="#__codelineno-23-16"></a><span class="c1"># cache_evict(): invalidate the cached entry on delete</span>
+<a id="__codelineno-23-17" name="__codelineno-23-17" href="#__codelineno-23-17"></a><span class="nd">@app</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span>
+<a id="__codelineno-23-18" name="__codelineno-23-18" href="#__codelineno-23-18"></a>  <span class="s2">&quot;/users/</span><span class="si">{user_id}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-23-19" name="__codelineno-23-19" href="#__codelineno-23-19"></a>  <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_evict</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;users&quot;</span><span class="p">,</span> <span class="n">key_builder</span><span class="o">=</span><span class="n">default_key_builder</span><span class="p">))],</span>
+<a id="__codelineno-23-20" name="__codelineno-23-20" href="#__codelineno-23-20"></a><span class="p">)</span>
+<a id="__codelineno-23-21" name="__codelineno-23-21" href="#__codelineno-23-21"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">delete_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+<a id="__codelineno-23-22" name="__codelineno-23-22" href="#__codelineno-23-22"></a>  <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">delete_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+<a id="__codelineno-23-23" name="__codelineno-23-23" href="#__codelineno-23-23"></a>
+<a id="__codelineno-23-24" name="__codelineno-23-24" href="#__codelineno-23-24"></a>
+<a id="__codelineno-23-25" name="__codelineno-23-25" href="#__codelineno-23-25"></a><span class="c1"># cache_put(): write-through on update</span>
+<a id="__codelineno-23-26" name="__codelineno-23-26" href="#__codelineno-23-26"></a><span class="nd">@app</span><span class="o">.</span><span class="n">put</span><span class="p">(</span>
+<a id="__codelineno-23-27" name="__codelineno-23-27" href="#__codelineno-23-27"></a>  <span class="s2">&quot;/products/</span><span class="si">{product_id}</span><span class="s2">&quot;</span><span class="p">,</span>
+<a id="__codelineno-23-28" name="__codelineno-23-28" href="#__codelineno-23-28"></a>  <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache_put</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">300</span><span class="p">))],</span>
+<a id="__codelineno-23-29" name="__codelineno-23-29" href="#__codelineno-23-29"></a><span class="p">)</span>
+<a id="__codelineno-23-30" name="__codelineno-23-30" href="#__codelineno-23-30"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">replace_product</span><span class="p">(</span><span class="n">product_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">Product</span><span class="p">):</span>
+<a id="__codelineno-23-31" name="__codelineno-23-31" href="#__codelineno-23-31"></a>  <span class="k">return</span> <span class="k">await</span> <span class="n">db</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">product_id</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+<a id="__codelineno-23-32" name="__codelineno-23-32" href="#__codelineno-23-32"></a>
+<a id="__codelineno-23-33" name="__codelineno-23-33" href="#__codelineno-23-33"></a>
+<a id="__codelineno-23-34" name="__codelineno-23-34" href="#__codelineno-23-34"></a><span class="c1"># CacheBackend: complex conditional logic</span>
+<a id="__codelineno-23-35" name="__codelineno-23-35" href="#__codelineno-23-35"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/checkout&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-36" name="__codelineno-23-36" href="#__codelineno-23-36"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">checkout</span><span class="p">(</span><span class="n">cart</span><span class="p">:</span> <span class="n">Cart</span><span class="p">,</span> <span class="n">cache</span><span class="p">:</span> <span class="n">CacheBackendDep</span><span class="p">):</span>
+<a id="__codelineno-23-37" name="__codelineno-23-37" href="#__codelineno-23-37"></a>  <span class="n">order</span> <span class="o">=</span> <span class="k">await</span> <span class="n">process_order</span><span class="p">(</span><span class="n">cart</span><span class="p">)</span>
+<a id="__codelineno-23-38" name="__codelineno-23-38" href="#__codelineno-23-38"></a>  <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;cart:</span><span class="si">{</span><span class="n">cart</span><span class="o">.</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;carts&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-39" name="__codelineno-23-39" href="#__codelineno-23-39"></a>  <span class="k">await</span> <span class="n">cache</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;stats:</span><span class="si">{</span><span class="n">cart</span><span class="o">.</span><span class="n">user_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;dashboard&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-40" name="__codelineno-23-40" href="#__codelineno-23-40"></a>  <span class="k">return</span> <span class="n">order</span>
+</code></pre></div>
+<hr />
+<h2 id="feature-comparison">Feature comparison<a class="headerlink" href="#feature-comparison" title="Permanent link">&para;</a></h2>
+<p>✅ = built-in &nbsp; 🔧 = possible with manual code &nbsp; ❌ = not applicable</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th style="text-align: center;"><code>cache()</code></th>
+<th style="text-align: center;"><code>cache_evict()</code> / <code>cache_put()</code></th>
+<th style="text-align: center;">CacheBackend</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>HTTP compliance</strong></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304">304 Not Modified</a></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag">ETag</a> generation</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control">Cache-Control</a> header</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td>Client <a href="#http-cache-headers"><code>max-age</code></a> respected</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Client <a href="#http-cache-headers"><code>no-cache</code></a> (force refresh)</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Client <a href="#http-cache-headers"><code>no-store</code></a> (bypass cache)</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td><a href="#http-cache-headers"><code>private</code> / <code>public</code></a> directive</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td><a href="#http-cache-headers"><code>X-Redis-Cache</code></a> status header</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td><strong>Caching control</strong></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>Per-endpoint TTL</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><a href="#cache-keys">Group</a> support</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><a href="#cache-keys">Group eviction</a></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅ (no key_builder)</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><a href="https://redis.io/glossary/cache-invalidation/">Key-level invalidation</a></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅ key_builder</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><a href="#options">Write-through</a></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅ <code>cache_put()</code></td>
+<td style="text-align: center;">🔧</td>
+</tr>
+<tr>
+<td><a href="#recipe-conditional-caching">Conditional caching</a></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Custom key builder</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Custom key prefix</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+</tr>
+<tr>
+<td>Custom coder</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><strong>Testing</strong></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td><code>dependency_overrides</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>No monkey-patching needed</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><strong>Data handling</strong></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>Pydantic models</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Type safety</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><strong>Error handling</strong></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>Redis failure graceful degradation</td>
+<td style="text-align: center;">✅ auto-fallback</td>
+<td style="text-align: center;">✅ auto-fallback</td>
+<td style="text-align: center;">🔧</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="quick-reference">Quick reference<a class="headerlink" href="#quick-reference" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Recommended</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Most GET endpoints</td>
+<td><a href="#1-caching-factories"><code>cache()</code></a></td>
+</tr>
+<tr>
+<td>User-specific / authenticated endpoints</td>
+<td><a href="#http-cache-headers"><code>cache(private=True)</code></a></td>
+</tr>
+<tr>
+<td>POST/PUT that invalidates a GET</td>
+<td><a href="#basic-usage"><code>cache_evict()</code></a></td>
+</tr>
+<tr>
+<td>Write-through (update cache on write)</td>
+<td><a href="#basic-usage"><code>cache_put()</code></a></td>
+</tr>
+<tr>
+<td>Public catalog, high traffic</td>
+<td><a href="#1-caching-factories"><code>cache()</code></a></td>
+</tr>
+<tr>
+<td>Complex multi-step invalidation</td>
+<td><a href="#recipe-cascade-invalidation-across-eviction-groups"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>Conditional caching (business rules)</td>
+<td><a href="#recipe-conditional-caching"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>Cache sub-computations independently</td>
+<td><a href="#recipe-intermediate-result-caching"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>TTL that depends on the data</td>
+<td><a href="#recipe-ttl-from-the-data"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>Typed values (Pydantic models)</td>
+<td><a href="#recipe-typed-values-with-pydantic-models"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>Background job / no <code>Request</code> available</td>
+<td><a href="#recipe-caching-outside-http"><code>CacheBackend</code></a></td>
+</tr>
+<tr>
+<td>Exact counters</td>
+<td><code>AsyncRedisDep</code> + <code>INCR</code> - <a href="#recipe-read-modify-write-a-cached-value">not a cache</a></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="best-practices">Best practices<a class="headerlink" href="#best-practices" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Use <code>FastAPIRedis(app).lifespan().caching()</code></strong> for app setup.</li>
+<li><strong>Start with <code>cache()</code></strong> for GET endpoints - it is the simplest option.</li>
+<li><strong>Add <code>cache_evict()</code></strong> on write endpoints that should invalidate cached reads.</li>
+<li><strong>Use <code>cache_put()</code></strong> when the write result should immediately warm the cache.</li>
+<li><strong>Switch to CacheBackend</strong> when you need conditional logic or complex flows.</li>
+<li><strong>Always set explicit TTLs</strong> - see <a href="#ttl-defaults">TTL defaults</a> below.</li>
+<li><strong>Use eviction groups</strong> to group related keys and enable bulk invalidation.</li>
+<li><strong>Use <code>dependency_overrides</code></strong> in tests - no monkey-patching needed.</li>
+<li><strong>Do not over-cache</strong> - cache only what is expensive to recompute.</li>
+</ol>
+<hr />
+<h2 id="ttl-defaults">TTL defaults<a class="headerlink" href="#ttl-defaults" title="Permanent link">&para;</a></h2>
+<p>By default, <code>default_ttl</code> is <strong>0</strong> - cache entries have <strong>no automatic
+expiration</strong> and persist until explicitly evicted (via <code>cache_evict()</code>,
+<code>delete_group()</code>, or Redis memory eviction policies like <code>allkeys-lru</code>).</p>
+<p><code>default_ttl</code> applies to both public APIs.  <code>cache()</code>, <code>cache_put()</code>, and
+<code>CacheBackend.set()</code> all fall back to it when <code>ttl</code> is omitted; pass <code>ttl=0</code>
+to store without an expiry whatever the default is.</p>
+<p>This is a deliberate design choice:</p>
+<ol>
+<li>
+<p><strong>A caching library's job is to cache, not to expire.</strong> Expiry is an
+   application-level policy decision. Only you know whether your data changes
+   every second or every month - a library-imposed default (e.g. 60 seconds,
+   5 minutes) is wrong for most use cases. The library should provide excellent
+   TTL <em>support</em>, not impose a TTL <em>opinion</em>.</p>
+</li>
+<li>
+<p><strong>The real protection against stale data is explicit invalidation.</strong>
+   <code>cache_evict()</code> and <code>cache_put()</code> factories, plus <code>CacheBackend.delete()</code>
+   and <code>delete_group()</code>, give you precise control over when stale data
+   is removed. TTL is a coarse safety net, not a substitute for proper
+   invalidation.</p>
+</li>
+<li>
+<p><strong>Redis can protect you against memory exhaustion - under one policy family.</strong>
+   Only the <code>allkeys-*</code> <a href="https://redis.io/docs/latest/develop/reference/eviction/">eviction policies</a>
+   reclaim keys that carry no TTL.  <code>noeviction</code> (the Redis OSS default) and
+   every <code>volatile-*</code> policy evict only keys that already have an expiry, so
+   entries cached without one can never be reclaimed: Redis rejects writes
+   with an OOM error instead of evicting.  Note that <code>volatile-lru</code> is the
+   default on AWS ElastiCache, Azure Cache for Redis, and Google Memorystore,
+   so relying on <code>default_ttl = 0</code> there means changing your server's
+   eviction policy, not accepting its default.</p>
+</li>
+</ol>
+<p>The SDK checks this for you.  When caching is wired and a route falls back
+   to a <code>default_ttl</code> of <code>0</code>, the lifespan reads <code>INFO memory</code> once at startup
+   and warns if the server cannot evict un-expiring keys.  Set an
+   <code>allkeys-*</code> policy, set <code>REDIS_DEFAULT_TTL</code>, or silence the check with
+   <code>REDIS_WARN_UNBOUNDED_CACHE=false</code>.</p>
+<ol>
+<li>
+<p><strong>Consistency with the ecosystem reduces friction.</strong> Spring Cache, Ehcache,
+   Caffeine, fastapi-cache2, PSR-6/PSR-16, and virtually every other caching
+   framework defaults to no expiry. Developers porting from any of these
+   won't be surprised by silent key expiry.</p>
+</li>
+<li>
+<p><strong>Making the user set TTL explicitly is a feature, not a bug.</strong> It forces
+   you to think about freshness requirements for your specific data, rather
+   than silently accepting an arbitrary value that may or may not be
+   appropriate.</p>
+</li>
+</ol>
+<p><strong>We strongly recommend setting an explicit TTL on every cached endpoint.</strong>
+Choose a value that matches your data's volatility:</p>
+<table>
+<thead>
+<tr>
+<th>Data type</th>
+<th>Suggested TTL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reference / config data</td>
+<td>1 – 24 hours</td>
+</tr>
+<tr>
+<td>Product catalog</td>
+<td>5 – 30 minutes</td>
+</tr>
+<tr>
+<td>User profile</td>
+<td>5 – 15 minutes</td>
+</tr>
+<tr>
+<td>API response (general)</td>
+<td>1 – 5 minutes</td>
+</tr>
+<tr>
+<td>Real-time / financial data</td>
+<td>Use explicit invalidation, not TTL</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># Good: explicit TTL tailored to the data</span>
+<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/products/</span><span class="si">{id}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">ttl</span><span class="o">=</span><span class="mi">600</span><span class="p">,</span> <span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;products&quot;</span><span class="p">))])</span>
+<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
+<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="c1"># Acceptable: rely on explicit eviction for freshness</span>
+<a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/config&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">eviction_group</span><span class="o">=</span><span class="s2">&quot;config&quot;</span><span class="p">))])</span>
+<a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>
+<a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a><span class="c1"># Set a global default if most of your endpoints share a common TTL</span>
+<a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a><span class="c1"># via environment variable:</span>
+<a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a><span class="c1">#   REDIS_DEFAULT_TTL=300</span>
+<a id="__codelineno-24-10" name="__codelineno-24-10" href="#__codelineno-24-10"></a><span class="c1"># or programmatically:</span>
+<a id="__codelineno-24-11" name="__codelineno-24-11" href="#__codelineno-24-11"></a><span class="c1">#   settings.default_ttl = 300</span>
+</code></pre></div>
+<hr />
+<h2 id="further-reading">Further reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<h3 id="fastapi-redis-sdk-documentation">fastapi-redis-sdk documentation<a class="headerlink" href="#fastapi-redis-sdk-documentation" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="../configuration/">Configuration Guide</a> - Redis connection settings</li>
+<li><a href="../../api/configuration/">API Reference</a> - Full API documentation</li>
+</ul>
+<h3 id="http-caching-mdn">HTTP caching (MDN)<a class="headerlink" href="#http-caching-mdn" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching">HTTP Caching</a> - How browsers and servers negotiate cached responses</li>
+</ul>
+<h3 id="redis-caching-guides">Redis caching guides<a class="headerlink" href="#redis-caching-guides" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://redis.io/blog/guide-to-cache-optimization-strategies/">Cache Optimization Strategies</a> - Comprehensive overview of lazy loading, write-through, write-behind, and cache prefetching</li>
+<li><a href="https://redis.io/blog/three-ways-to-maintain-cache-consistency/">Three Ways to Maintain Cache Consistency</a> - Invalidation, write-through, and TTL-based approaches</li>
+<li><a href="https://redis.io/learn/howtos/solutions/caching-architecture/cache-prefetching">Cache Prefetching</a> - Proactive caching for predictable access patterns</li>
+<li><a href="https://redis.io/glossary/distributed-caching/">Distributed Caching</a> - Scaling caches across multiple nodes</li>
+<li><a href="https://redis.io/docs/latest/develop/reference/client-side-caching/">Client-Side Caching</a> - Redis Tracking for application-level caching</li>
+</ul>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 18, 2026 14:01:31 UTC">September 18, 2026</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="May 28, 2026 09:46:57 UTC">May 28, 2026</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/redis/fastapi-redis-sdk" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
