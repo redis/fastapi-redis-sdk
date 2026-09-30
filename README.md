@@ -102,7 +102,7 @@ FastAPIRedis(app).lifespan().sessions()
 
 @app.post("/login")
 async def login(session: SessionDep):
-    session["user_id"] = 42  # sign-in rotates the session ID
+    session["user_id"] = 42  # rotates the session ID after the endpoint completes
     return {"ok": True}
 
 @app.get("/me", dependencies=[Depends(valid_session())])
