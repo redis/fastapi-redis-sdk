@@ -13,7 +13,7 @@ FastAPIRedis(app).lifespan().sessions()
 
 @app.post("/login")
 async def login(session: SessionDep) -> dict:
-    session["user_id"] = 42       # this rotates the session ID
+    session["user_id"] = 42  # rotates the session ID after the endpoint completes
     return {"ok": True}
 
 @app.get("/me")
@@ -24,6 +24,47 @@ async def me(session: SessionDep) -> dict:
 `request.session` works too, so code written against Starlette's signed-cookie
 [`SessionMiddleware`](https://starlette.dev/middleware/#sessionmiddleware) runs
 unchanged.
+
+---
+
+## When changes reach Redis
+
+A write to the session changes a `dict` in memory and nothing else. The
+middleware loads the session before your endpoint runs. It saves, rotates or
+deletes the session after the endpoint returns, just before it sends the
+response headers. While your endpoint runs:
+
+- Reads in the same request see your writes.
+- Redis still holds the old record, and `store.session_id(state)` returns the
+  old ID, or `None` for a new visitor.
+- A response with status 400 or more that changes the principal saves nothing.
+  A sign-in followed by `raise HTTPException(403)` does not sign the user in.
+- If the save fails, the client gets a 500. Your endpoint's own side effects,
+  such as a database commit, have already happened.
+
+To change the session now, call the store. Each `SessionStoreDep` call goes to
+Redis at once:
+
+```python
+@app.post("/login")
+async def login(
+    session: SessionDep, state: SessionStateDep, store: SessionStoreDep
+) -> dict:
+    session["user_id"] = 42
+    new_id = await store.rotate(state, subject="42")  # rotates now
+    return {"ok": True}
+```
+
+The middleware sees the new ID and only sets the cookie. It does not rotate a
+second time. You give up one protection: an error response after `rotate()`
+no longer cancels the sign-in.
+
+Work that must wait until the session is saved belongs in a
+[background task](https://fastapi.tiangolo.com/tutorial/background-tasks/).
+It runs after the response is sent.
+
+The [session request lifecycle](architecture.md#session-request-lifecycle)
+shows the full sequence.
 
 ---
 
