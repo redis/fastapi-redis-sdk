@@ -857,6 +857,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#session-request-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session request lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#telemetry" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1429,6 +1440,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-request-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session request lifecycle
+      
+    </span>
+  </a>
   
 </li>
       
@@ -2028,6 +2050,62 @@ field (<code>"increx"</code> / <code>"lua"</code>) and, when OpenTelemetry is en
 This makes an unexpected fallback (e.g. INCREX silently unavailable in
 production) visible in traces.</p>
 <hr />
+<h2 id="session-request-lifecycle">Session request lifecycle<a class="headerlink" href="#session-request-lifecycle" title="Permanent link">&para;</a></h2>
+<p>The session middleware does its Redis work at two points: before the endpoint
+runs and after it returns. The endpoint itself reads and writes a <code>dict</code> in
+memory. A <code>request.session</code> property cannot await, so the load must happen
+first. The save waits for the response status, because a failed response must
+not sign anyone in.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant C as Client
+    participant M as Session middleware
+    participant E as Endpoint
+    participant R as Redis
+
+    C-&gt;&gt;M: request with session cookie
+    M-&gt;&gt;R: load record, restart idle clock
+    R--&gt;&gt;M: payload
+    M-&gt;&gt;M: take principal snapshot
+    M-&gt;&gt;E: call endpoint
+
+    E-&gt;&gt;E: session["user_id"] = 42 (memory only)
+    opt Endpoint calls SessionStoreDep
+        E-&gt;&gt;R: rotate / revoke now
+    end
+    E--&gt;&gt;M: response (status, headers)
+
+    M-&gt;&gt;M: compare principal, choose one outcome
+    alt Principal changed, status below 400
+        M-&gt;&gt;R: delete old key, create new key
+    else Principal changed, status 400 or more
+        Note over M,R: nothing is saved
+    else Data changed only
+        M-&gt;&gt;R: save record
+    else Session emptied
+        M-&gt;&gt;R: delete key and index entry
+    end
+    M--&gt;&gt;C: headers with Set-Cookie, then body
+    Note over C,E: Background tasks run here, after the save</code></pre>
+<p>The choice is one function, <code>decide_outcome()</code>, with no I/O. It returns
+exactly one outcome for each request, so a rotation, a save and a sign-out can
+never combine. It checks, in this order:</p>
+<ol>
+<li>The endpoint revoked the session through the store. The middleware only
+   clears the cookie.</li>
+<li>The principal changed and the status is 400 or more. Nothing is saved.</li>
+<li>The endpoint rotated through the store. The middleware only sets the new
+   cookie, plus a save if the endpoint changed the data after the rotation.</li>
+<li>The endpoint emptied a stored session. The middleware deletes it.</li>
+<li>The principal changed. The middleware rotates.</li>
+<li>The data changed. The middleware saves.</li>
+</ol>
+<p>If a Redis call in the second half fails, the middleware raises
+<code>SessionStoreError</code> before it sends any header. The client gets a 500, and no
+cookie names a session that does not exist.</p>
+<p>The <code>session.*</code> spans follow the same timeline. In a trace, <code>session.load</code>
+comes before the endpoint's own spans, and <code>session.rotate</code>, <code>session.create</code>
+or <code>session.save</code> comes after them.</p>
+<hr />
 <h2 id="telemetry">Telemetry<a class="headerlink" href="#telemetry" title="Permanent link">&para;</a></h2>
 <p>Observability is layered into three independent tiers - HTTP request spans
 (FastAPI instrumentation), fastapi-redis-sdk operation spans and metrics for
@@ -2061,7 +2139,7 @@ tier.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 18, 2026 14:01:31 UTC">September 18, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 30, 2026 16:15:51 UTC">September 30, 2026</span>
   </span>
 
     
