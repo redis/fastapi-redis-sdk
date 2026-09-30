@@ -149,8 +149,25 @@ uv run nox -s docs_build -- --strict
 
 ### Deployment
 
-Documentation is automatically deployed to GitHub Pages when changes are
-pushed to `main` via `.github/workflows/docs.yml`.
+`.github/workflows/docs.yml` builds the site in strict mode and deploys it
+to GitHub Pages with [mike](https://github.com/jimporter/mike), which keeps
+each version in its own folder on the `gh-pages` branch:
+
+| Version | Built from | URL |
+|---|---|---|
+| `latest` | every docs change pushed to `main` | <https://redis.github.io/fastapi-redis-sdk/latest/> (the site root redirects here) |
+| `feature/<X>` | every docs change pushed to branch `feature/<X>` in this repository | `https://redis.github.io/fastapi-redis-sdk/feature-<X>/` |
+
+mike does not allow `/` in a folder name, so the preview for
+`feature/session-management` lives at `/feature-session-management/`. The
+version selector still shows it as `feature/session-management`.
+
+To preview a larger docs change, push it to a `feature/<X>` branch in this
+repository, or merge a fork's pull request into one. Deleting the branch
+deletes its preview. A pull request gets the strict build but no preview.
+
+The preview shows the branch as it is, not merged with `main`. Merge `main`
+into the branch first to see the guide as it will be after the merge.
 
 ### Structure
 
