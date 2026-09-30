@@ -63,6 +63,24 @@ requires_redis = pytest.mark.skipif(
 )
 
 
+def about(actual: int, expected: int) -> bool:
+    """TTL equality, allowing for a second boundary crossing mid-test.
+
+    Redis counts down in whole seconds, so a TTL set to N reads back as N or
+    N-1 depending on where the call landed.  Asserting equality makes the
+    suite flaky for no gain; the guarantees under test are all about which
+    clock moved, not about sub-second precision.
+
+    **Use this, not ``<= N``, for "the clock did not move".**  ``HTTL``
+    returns ``-2`` for a missing field and ``-1`` for a field with no expiry,
+    and both satisfy ``<= N``.  A one-sided bound is therefore happiest of all
+    about the strongest possible failure - the field being deleted outright -
+    and it also passes when the deadline was *shortened*, which for the
+    absolute clock is as wrong as extending it.
+    """
+    return expected - 1 <= actual <= expected
+
+
 # ---------------------------------------------------------------------------
 # Real Redis fixtures (integration)
 # ---------------------------------------------------------------------------

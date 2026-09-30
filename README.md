@@ -89,6 +89,31 @@ Both limits count per client IP by default; a request must satisfy both, and the
 
 See the [Rate Limiting Guide](docs/guide/rate-limiting.md) for identifiers, the global limiter, custom responses, IETF headers, and the imperative backend.
 
+## Sessions
+
+Keep session data in Redis. The cookie holds only an opaque session ID:
+
+```python
+from fastapi import Depends, FastAPI
+from redis_fastapi import FastAPIRedis, SessionDep, valid_session
+
+app = FastAPI()
+FastAPIRedis(app).lifespan().sessions()
+
+@app.post("/login")
+async def login(session: SessionDep):
+    session["user_id"] = 42  # rotates the session ID after the endpoint completes
+    return {"ok": True}
+
+@app.get("/me", dependencies=[Depends(valid_session())])
+async def me(session: SessionDep):
+    return {"user_id": session.get("user_id")}
+```
+
+Redis enforces an idle timeout and an absolute timeout. `valid_session()` returns `401` when a request has no live session, and `request.session` works as it does with Starlette's `SessionMiddleware`.
+
+See the [Sessions Guide](docs/guide/sessions.md) for timeouts, sign-out everywhere, CSRF, encryption and migration.
+
 ## Configuration
 
 All settings are read from environment variables (prefixed `REDIS_`) or a `.env` file. Set `REDIS_URL` for the simplest setup:
