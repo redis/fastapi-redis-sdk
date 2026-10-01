@@ -35,7 +35,7 @@ async def handler(redis: AsyncRedisDep):
     await redis.get("key")
 ```
 
-`Annotated[AsyncRedis | AsyncRedisCluster, Depends(get_async_redis)]` - returns a cached async Redis client backed by the shared connection pool. Returns `AsyncRedisCluster` when `settings.cluster` is `True`.
+`Annotated[AsyncRedis | AsyncRedisCluster, Depends(get_async_redis)]` - returns a cached async Redis client backed by the shared connection pool. Returns `AsyncRedisCluster` when `settings.cluster` is `True`.  When `settings.sentinel` is `True`, returns `AsyncRedis` connected to the primary that the Sentinels report.
 
 ### `get_async_redis()`
 

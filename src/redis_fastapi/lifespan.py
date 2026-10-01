@@ -174,8 +174,8 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         app = FastAPI(lifespan=redis_lifespan)
 
-    Supports both standalone and OSS Cluster modes based on
-    ``get_settings().cluster``.
+    Supports standalone, OSS Cluster and Sentinel modes based on
+    ``get_settings().cluster`` and ``get_settings().sentinel``.
 
     When ``settings.otel_enabled`` is ``True``, activates cache-layer
     OpenTelemetry instrumentation (same effect as calling ``.otel()``).
@@ -202,6 +202,8 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if settings.cluster:
         ps.async_cluster = _PoolState.build_async_cluster()
+    elif settings.sentinel:
+        ps.async_sentinel, ps.async_pool = _PoolState.build_async_sentinel()
     else:
         ps.async_pool = _PoolState.build_async_pool()
 
@@ -221,4 +223,8 @@ async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             await ps.async_pool.aclose()  # type: ignore[union-attr]
             ps.async_pool = None
+        if ps.async_sentinel is not None:
+            for node in ps.async_sentinel.sentinels:
+                await node.aclose()
+            ps.async_sentinel = None
         _shutdown_redis_otel(otel_instance)

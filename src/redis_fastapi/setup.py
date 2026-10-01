@@ -62,8 +62,8 @@ class FastAPIRedis:
         pools are available for the duration of the app (and for any
         other lifespan handlers already registered).
 
-        Supports both standalone and OSS Cluster modes based on
-        ``get_settings().cluster``.
+        Supports standalone, OSS Cluster and Sentinel modes based on
+        ``get_settings().cluster`` and ``get_settings().sentinel``.
 
         Calling this method more than once on the same app is a no-op.
         """
