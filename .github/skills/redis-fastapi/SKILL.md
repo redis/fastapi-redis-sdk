@@ -176,6 +176,11 @@ All settings via env vars prefixed `REDIS_` or `.env` file.
 Key vars: `REDIS_URL`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`,
 `REDIS_SSL`, `REDIS_CLUSTER`, `REDIS_PREFIX`, `REDIS_DEFAULT_TTL`.
 
+Sentinel mode: `REDIS_SENTINEL=true`, `REDIS_SENTINEL_NODES` (comma-separated
+`host:port`), `REDIS_SENTINEL_MASTER_NAME`. The primary's pool is a
+`SentinelConnectionPool` in `_PoolState.async_pool`; `_PoolState.async_sentinel`
+holds the Sentinel clients, which the lifespan closes.
+
 ## Code style
 
 - **ruff** for linting + formatting (line-length 88).

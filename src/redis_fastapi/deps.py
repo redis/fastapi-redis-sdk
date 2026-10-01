@@ -17,6 +17,8 @@ from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+from redis.asyncio.sentinel import Sentinel as AsyncSentinel
+from redis.asyncio.sentinel import SentinelConnectionPool as AsyncSentinelPool
 
 from redis_fastapi.config import get_settings
 
@@ -37,6 +39,7 @@ class _PoolState:
 
     async_pool: AsyncConnectionPool | None = None
     async_cluster: AsyncRedisCluster | None = None
+    async_sentinel: AsyncSentinel | None = None
     _async_client: AsyncRedis | None = None
 
     # Shared, pool-lifetime rate-limit capability cache (INCREX / EVAL support
@@ -68,6 +71,25 @@ class _PoolState:
         if url is not None:
             return AsyncRedisCluster.from_url(url, **kw)
         return AsyncRedisCluster(**kw)
+
+    @staticmethod
+    def build_async_sentinel() -> tuple[AsyncSentinel, AsyncSentinelPool]:
+        """Create a ``Sentinel`` and a pool of connections to its primary.
+
+        The pool asks the Sentinels for the primary's address on every new
+        connection, so clients follow a failover without a restart.
+        """
+        settings = get_settings()
+        sentinel = AsyncSentinel(  # type: ignore[no-untyped-call]
+            settings.sentinel_addresses(),
+            sentinel_kwargs=settings.sentinel_kwargs(),
+        )
+        pool = AsyncSentinelPool(  # type: ignore[no-untyped-call]
+            settings.sentinel_master_name,
+            sentinel,
+            **settings.sentinel_connection_kwargs(),
+        )
+        return sentinel, pool
 
     # -- client accessors ---------------------------------------------------
 
@@ -123,7 +145,8 @@ async def get_async_redis(request: Request) -> AsyncClient:
     Returns a cached client instance - the same wrapper is reused
     across calls to avoid per-request overhead.
 
-    In cluster mode returns an ``AsyncRedisCluster`` instance.
+    In cluster mode returns an ``AsyncRedisCluster`` instance.  In sentinel
+    mode returns an ``AsyncRedis`` connected to the current primary.
 
     Raises:
         RuntimeError: If no lifespan has initialized the pool.

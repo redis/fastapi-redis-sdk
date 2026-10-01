@@ -9,10 +9,10 @@ from __future__ import annotations
 import warnings
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import SSLConnection
 from redis.driver_info import DriverInfo
 
@@ -24,6 +24,7 @@ except PackageNotFoundError:
     from redis_fastapi import __version__ as LIB_VERSION
 DRIVER_INFO: DriverInfo = DriverInfo().add_upstream_driver(LIB_NAME, LIB_VERSION)
 CACHE_STATUS_HEADER: str = "X-Redis-Cache"
+DEFAULT_SENTINEL_PORT: int = 26379
 
 
 class RedisSettings(BaseSettings):
@@ -35,6 +36,11 @@ class RedisSettings(BaseSettings):
     2. **KV mode**: set ``host``, ``port``, ``db``, ``password``, etc.
 
     When ``url`` is provided it takes precedence over KV fields.
+
+    Set ``cluster`` for an OSS Cluster, or ``sentinel`` to find the primary
+    through Redis Sentinel.  Sentinel mode uses KV mode for the primary's
+    ``db``, ``username`` and ``password``, and ``sentinel_nodes`` in place of
+    ``host`` and ``port``.
 
     All settings can be configured via environment variables with the ``REDIS_`` prefix.
     For example: ``REDIS_URL``, ``REDIS_HOST``, ``REDIS_PORT``, etc.
@@ -118,6 +124,33 @@ class RedisSettings(BaseSettings):
         description="Enable Redis Cluster mode",
     )
 
+    # -- Sentinel --------------------------------------------------------------
+    sentinel: bool = Field(
+        default=False,
+        description="Find the primary through Redis Sentinel",
+    )
+    sentinel_master_name: str = Field(
+        default="mymaster",
+        min_length=1,
+        description="Name of the primary that the Sentinels monitor",
+    )
+    # NoDecode: read REDIS_SENTINEL_NODES as "host:port,host:port", not JSON.
+    sentinel_nodes: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Sentinel addresses as host:port, comma-separated in the "
+            f"environment.  The port defaults to {DEFAULT_SENTINEL_PORT}."
+        ),
+    )
+    sentinel_username: str | None = Field(
+        default=None,
+        description="Username for the Sentinel nodes, if they require auth",
+    )
+    sentinel_password: SecretStr | None = Field(
+        default=None,
+        description="Password for the Sentinel nodes, if they require auth",
+    )
+
     # -- Prefix ----------------------------------------------------------------
     prefix: str = Field(
         default="redis:fastapi",
@@ -189,6 +222,31 @@ class RedisSettings(BaseSettings):
         {"host", "port", "db", "username", "password"}
     )
 
+    @field_validator("sentinel_nodes", mode="before")
+    @classmethod
+    def _split_sentinel_nodes(cls, value: Any) -> Any:
+        """Accept a comma-separated string as well as a list."""
+        if isinstance(value, str):
+            return [node.strip() for node in value.split(",") if node.strip()]
+        return value
+
+    @model_validator(mode="after")
+    def _check_sentinel(self) -> RedisSettings:
+        """Reject Sentinel settings that cannot work together."""
+        if not self.sentinel:
+            return self
+        if self.cluster:
+            raise ValueError("'sentinel' and 'cluster' are mutually exclusive.")
+        if self.url is not None:
+            raise ValueError(
+                "'url' is not supported in sentinel mode.  Set 'sentinel_nodes' "
+                "and use 'db', 'username' and 'password' for the primary."
+            )
+        if not self.sentinel_nodes:
+            raise ValueError("Sentinel mode needs at least one 'sentinel_nodes' entry.")
+        self.sentinel_addresses()  # raises ValueError on a malformed node
+        return self
+
     @model_validator(mode="after")
     def _warn_url_with_kv(self) -> RedisSettings:
         """Emit a warning when ``url`` is set alongside KV fields."""
@@ -238,6 +296,16 @@ class RedisSettings(BaseSettings):
         kw.update(self._tls_kwargs())
         return kw
 
+    def _auth_kwargs(self) -> dict[str, Any]:
+        """Build the KV-mode ``db``, ``username`` and ``password`` kwargs."""
+        kw: dict[str, Any] = {"db": self.db}
+        if self.username is not None:
+            kw["username"] = self.username
+        if self.password is not None:
+            # Extract the secret value from SecretStr
+            kw["password"] = self.password.get_secret_value()
+        return kw
+
     def connection_kwargs(self) -> dict[str, Any]:
         """Return the full set of kwargs for pool/client construction.
 
@@ -250,12 +318,68 @@ class RedisSettings(BaseSettings):
         else:
             kw["host"] = self.host
             kw["port"] = self.port
-            kw["db"] = self.db
-            if self.username is not None:
-                kw["username"] = self.username
-            if self.password is not None:
-                # Extract the secret value from SecretStr
-                kw["password"] = self.password.get_secret_value()
+            kw.update(self._auth_kwargs())
+        return kw
+
+    def sentinel_addresses(self) -> list[tuple[str, int]]:
+        """Parse ``sentinel_nodes`` into ``(host, port)`` pairs.
+
+        Raises:
+            ValueError: If a node has an empty host or a port that is not
+                a number from 1 to 65535.
+        """
+        addresses: list[tuple[str, int]] = []
+        for node in self.sentinel_nodes:
+            host, sep, port_text = node.rpartition(":")
+            if not sep:
+                host, port_text = node, str(DEFAULT_SENTINEL_PORT)
+            port = int(port_text) if port_text.isdigit() else 0
+            if not host or not 1 <= port <= 65535:
+                raise ValueError(
+                    f"Invalid sentinel node {node!r}; expected host or host:port."
+                )
+            addresses.append((host, port))
+        return addresses
+
+    def sentinel_kwargs(self) -> dict[str, Any]:
+        """Return the kwargs for connections to the Sentinel nodes.
+
+        Sentinels share the socket timeouts and TLS settings of the primary,
+        but have their own credentials.
+        """
+        kw: dict[str, Any] = {"driver_info": DRIVER_INFO}
+        if self.socket_timeout is not None:
+            kw["socket_timeout"] = self.socket_timeout
+        if self.socket_connect_timeout is not None:
+            kw["socket_connect_timeout"] = self.socket_connect_timeout
+        kw.update(self._sentinel_tls_kwargs())
+        if self.sentinel_username is not None:
+            kw["username"] = self.sentinel_username
+        if self.sentinel_password is not None:
+            kw["password"] = self.sentinel_password.get_secret_value()
+        return kw
+
+    def sentinel_connection_kwargs(self) -> dict[str, Any]:
+        """Return the kwargs for the pool of connections to the primary.
+
+        Like :meth:`connection_kwargs` without ``host`` and ``port``: the
+        Sentinels supply the primary's address on every connect.
+        """
+        kw = self._pool_kwargs()
+        kw.pop("connection_class", None)
+        kw.update(self._sentinel_tls_kwargs())
+        kw.update(self._auth_kwargs())
+        return kw
+
+    def _sentinel_tls_kwargs(self) -> dict[str, Any]:
+        """Express the TLS settings as ``ssl=True`` rather than a class.
+
+        A ``connection_class`` would replace the Sentinel-managed connection
+        that follows the primary across failovers.
+        """
+        kw = self._tls_kwargs()
+        if kw.pop("connection_class", None) is not None:
+            kw["ssl"] = True
         return kw
 
     def pattern_prefix(self, pattern: str) -> str:
