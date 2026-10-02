@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-redis-sdk"
-version = "0.1.0"
+version = "0.8.1"
 description = "The official Redis integration with FastAPI"
 readme = "README.md"
 requires-python = ">=3.10"
