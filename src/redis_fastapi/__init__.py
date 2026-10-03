@@ -1,6 +1,6 @@
 """fastapi-redis-sdk - The official Redis integration with FastAPI."""
 
-__version__ = "0.1.0"
+__version__ = "0.8.1"
 
 from redis_fastapi.cache import (
     CacheHitException,
