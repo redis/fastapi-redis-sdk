@@ -529,8 +529,10 @@ class TestEncryptionSeam:
         store = RedisSessionStore(fake_async_redis, encryptor=Exploding())
         sid = store.new_id()
         await store.create(sid, store.new_record({"user_id": 42}))
-        with pytest.raises(SessionStoreError, match="Unreadable session record"):
-            await store.load(sid)
+        # A failed load, not a missing session - and the record is kept, so
+        # restoring the right key brings the session back.
+        assert await store.load_with_status(sid) == (None, True)
+        assert await fake_async_redis.exists(store.session_key(sid)) == 1
 
 
 class TestCookieMaxAgeInEveryBranch:

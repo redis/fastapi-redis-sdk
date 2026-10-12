@@ -211,17 +211,37 @@ class TestUnexpectedStates:
         assert await store.load(sid) is None
         assert await fake_async_redis.exists(key) == 0
 
-    async def test_a_corrupt_record_raises_rather_than_signing_the_user_out(
-        self, fake_async_redis
-    ) -> None:
-        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+    @staticmethod
+    async def _corrupt_session(redis) -> tuple[RedisSessionStore, str]:
+        get_settings.cache_clear()
+        store = RedisSessionStore(redis, idle_ttl=60, absolute_ttl=600)
         sid = store.new_id()
         await store.create(sid, store.new_record({"user_id": 42}))
-        await fake_async_redis.execute_command(
+        await redis.execute_command(
             "HSETEX", store.session_key(sid), "KEEPTTL", "FIELDS", 1, "d", "{not json"
         )
-        with pytest.raises(SessionStoreError, match="Unreadable session record"):
-            await store.load(sid)
+        return store, sid
+
+    async def test_a_corrupt_record_reads_as_a_failed_load_and_is_kept(
+        self, fake_async_redis
+    ) -> None:
+        """Kept, so a mistaken encryption key can be fixed without losing every
+        session; the failure flag lets the gate say "unavailable"."""
+        store, sid = await self._corrupt_session(fake_async_redis)
+
+        assert await store.load_with_status(sid) == (None, True)
+        assert await fake_async_redis.exists(store.session_key(sid)) == 1
+
+    async def test_a_corrupt_record_raises_when_reads_fail_closed(
+        self, fake_async_redis, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("REDIS_SESSION_FAIL_CLOSED", "true")
+        store, sid = await self._corrupt_session(fake_async_redis)
+        try:
+            with pytest.raises(SessionStoreError, match="Unreadable session record"):
+                await store.load(sid)
+        finally:
+            get_settings.cache_clear()
 
 
 class TestOsErrorsCountToo:

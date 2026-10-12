@@ -524,6 +524,25 @@ def _cached_app(store: RedisSessionStore, fake_async_redis: Any) -> FastAPI:
     async def wrong_order() -> dict:
         return {"items": [1]}
 
+    # A per-user entry served before a recency gate would reach a session the
+    # gate refuses: the step-up page of a session signed in hours ago.
+    @app.get(
+        "/wrong-order-per-user",
+        dependencies=[
+            Depends(cache(ttl=300, vary_on_session=True)),
+            Depends(valid_session(issued_within=600)),
+        ],
+    )
+    async def wrong_order_per_user(session: SessionDep) -> dict:
+        return {"user_id": session.get("user_id")}
+
+    @app.get(
+        "/wrong-order-undeclared",
+        dependencies=[Depends(cache(ttl=300)), Depends(valid_session())],
+    )
+    async def wrong_order_undeclared() -> dict:
+        return {"items": [1]}
+
     @app.get(
         "/right-order",
         dependencies=[
@@ -577,15 +596,20 @@ async def _cache_keys(redis: Any) -> list[bytes]:
 
 
 class TestTheGateAndCache:
+    @pytest.mark.parametrize(
+        "path",
+        ["/wrong-order", "/wrong-order-per-user", "/wrong-order-undeclared"],
+    )
     def test_the_wrong_order_raises_and_stores_nothing(
-        self, store, fake_async_redis
+        self, store, fake_async_redis, path: str
     ) -> None:
+        """Whatever ``vary_on_session`` says, a hit would skip the gate."""
         with TestClient(_cached_app(store, fake_async_redis)) as client:
             client.post("/login")
             with pytest.raises(SessionConfigurationError, match="must come before"):
-                client.get("/wrong-order")
+                client.get(path)
             with pytest.raises(SessionConfigurationError):
-                client.get("/wrong-order")
+                client.get(path)
         assert asyncio.run(_cache_keys(fake_async_redis)) == [], (
             "a misordered route stored a response a later hit could serve"
         )

@@ -242,7 +242,7 @@ async def basket(session: SessionDep) -> dict: ...
 |---|---|
 | `"missing"` | No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied |
 | `"expired"` | A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart. |
-| `"unavailable"` | Redis could not be read, and the request continued without a session. Answer `503`, not a sign-in page. |
+| `"unavailable"` | Redis could not be read, or the record could not be decoded, and the request continued without a session. Answer `503`, not a sign-in page. |
 
 `on_reject` may be sync or async. It **returns** the response instead of
 raising it, so a callback that forgets to return fails with a `500` instead of
@@ -369,6 +369,18 @@ Set `session_fail_closed=True` to turn the failed read into an error too, for a
 deployment that prefers a
 [503](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503)
 to an anonymous page. Writes raise either way.
+
+A record that cannot be decoded - corrupted, or encrypted with another key - is
+handled like a failed read. The record is kept, so fixing a wrong key brings
+the sessions back. Signing out still works: `store.revoke()` or emptying the
+session deletes the record and clears the cookie.
+
+!!! warning "With `session_fail_closed=True`, users cannot sign out of an unreadable session"
+    The request fails before your handler runs, so a sign-out route fails too.
+    Every request that carries the cookie fails until the record reaches its
+    absolute deadline, or the user deletes the cookie. One corrupted record
+    locks out one user; a wrong encryption key locks out everyone. To recover,
+    fix the key, or delete the affected records in Redis.
 
 ---
 
@@ -770,10 +782,13 @@ in your codebase is a smaller liability for everyone than a cryptographic
 primitive maintained here - and it means a key rotation is your decision, on
 your schedule.
 
-Two things to know before you turn it on. A record that will not decrypt raises
-`SessionStoreError` rather than looking like an empty session, so rotating a key
-without a re-encryption pass signs everybody out loudly rather than silently.
-And the index descriptor is **not** encrypted - it holds only what your
+Two things to know before you turn it on. A record that will not decrypt is
+handled like a failed read and kept, not deleted: rotating a key without a
+re-encryption pass signs everybody out, and restoring the old key brings them
+back. By default that happens quietly, with a warning in the log; set
+`session_fail_closed=True` to make it fail every request instead, sign-outs
+included (see [When Redis is unreachable](#when-redis-is-unreachable)). And the index
+descriptor is **not** encrypted - it holds only what your
 `descriptor_of` returns, so do not put anything sensitive there.
 
 ---
@@ -925,7 +940,7 @@ Every setting is an environment variable prefixed `REDIS_`, so
 | `session_absolute_ttl` | `28800` | `0` disables the absolute clock |
 | `session_gc_ttl` | `2592000` | Backstop so Redis can always collect an abandoned key |
 | `session_refresh_on_load` | `True` | `False`: only a request that *used* the session counts as activity |
-| `session_fail_closed` | `False` | Read behaviour when Redis is down |
+| `session_fail_closed` | `False` | Read behaviour when Redis is down or a record is unreadable |
 | `session_always_save` | `False` | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt |
 | `session_principal_keys` | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role` |
 | `session_events_enabled` | `False` | Opt in to real-time events |
