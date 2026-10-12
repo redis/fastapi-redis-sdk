@@ -1862,7 +1862,7 @@ receives the request and a reason, and returns the response:</p>
 </tr>
 <tr>
 <td><code>"unavailable"</code></td>
-<td>Redis could not be read, and the request continued without a session. Answer <code>503</code>, not a sign-in page.</td>
+<td>Redis could not be read, or the record could not be decoded, and the request continued without a session. Answer <code>503</code>, not a sign-in page.</td>
 </tr>
 </tbody>
 </table>
@@ -1977,6 +1977,18 @@ continue" banner, <code>store.session_age(state)</code> returns the age in secon
 deployment that prefers a
 <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503</a>
 to an anonymous page. Writes raise either way.</p>
+<p>A record that cannot be decoded - corrupted, or encrypted with another key - is
+handled like a failed read. The record is kept, so fixing a wrong key brings
+the sessions back. Signing out still works: <code>store.revoke()</code> or emptying the
+session deletes the record and clears the cookie.</p>
+<div class="admonition warning">
+<p class="admonition-title">With <code>session_fail_closed=True</code>, users cannot sign out of an unreadable session</p>
+<p>The request fails before your handler runs, so a sign-out route fails too.
+Every request that carries the cookie fails until the record reaches its
+absolute deadline, or the user deletes the cookie. One corrupted record
+locks out one user; a wrong encryption key locks out everyone. To recover,
+fix the key, or delete the affected records in Redis.</p>
+</div>
 <hr />
 <h2 id="nested-changes-are-invisible">Nested changes are invisible<a class="headerlink" href="#nested-changes-are-invisible" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">session</span><span class="p">[</span><span class="s2">&quot;prefs&quot;</span><span class="p">][</span><span class="s2">&quot;theme&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;dark&quot;</span>     <span class="c1"># NOT saved</span>
@@ -2339,10 +2351,13 @@ handed ciphertext.</p>
 in your codebase is a smaller liability for everyone than a cryptographic
 primitive maintained here - and it means a key rotation is your decision, on
 your schedule.</p>
-<p>Two things to know before you turn it on. A record that will not decrypt raises
-<code>SessionStoreError</code> rather than looking like an empty session, so rotating a key
-without a re-encryption pass signs everybody out loudly rather than silently.
-And the index descriptor is <strong>not</strong> encrypted - it holds only what your
+<p>Two things to know before you turn it on. A record that will not decrypt is
+handled like a failed read and kept, not deleted: rotating a key without a
+re-encryption pass signs everybody out, and restoring the old key brings them
+back. By default that happens quietly, with a warning in the log; set
+<code>session_fail_closed=True</code> to make it fail every request instead, sign-outs
+included (see <a href="#when-redis-is-unreachable">When Redis is unreachable</a>). And the index
+descriptor is <strong>not</strong> encrypted - it holds only what your
 <code>descriptor_of</code> returns, so do not put anything sensitive there.</p>
 <hr />
 <h2 id="migrating-from-something-else">Migrating from something else<a class="headerlink" href="#migrating-from-something-else" title="Permanent link">&para;</a></h2>
@@ -2548,7 +2563,7 @@ reaches the middleware as well as your handlers, so one override covers the whol
 <tr>
 <td><code>session_fail_closed</code></td>
 <td><code>False</code></td>
-<td>Read behaviour when Redis is down</td>
+<td>Read behaviour when Redis is down or a record is unreadable</td>
 </tr>
 <tr>
 <td><code>session_always_save</code></td>
@@ -2618,7 +2633,7 @@ reaches the middleware as well as your handlers, so one override covers the whol
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="September 30, 2026 16:15:51 UTC">September 30, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 12, 2026 10:33:23 UTC">October 12, 2026</span>
   </span>
 
     
