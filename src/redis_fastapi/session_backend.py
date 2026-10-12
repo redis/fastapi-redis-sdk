@@ -590,8 +590,9 @@ class SessionStore(ABC):
     ) -> tuple[LoadedSession | None, bool]:
         """:meth:`load`, plus whether the read itself failed.
 
-        The second value is ``True`` only when Redis could not be read and
-        ``session_fail_closed`` let the request continue.  Without it, an
+        The second value is ``True`` only when Redis could not be read, or the
+        record could not be decoded, and ``session_fail_closed`` let the request
+        continue.  Without it, an
         outage looks exactly like an unknown identifier, and
         ``valid_session()`` would send users to sign in when it should say
         "try again".
@@ -610,8 +611,8 @@ class SessionStore(ABC):
         deletes it, so the index entry can follow.
 
         Raises:
-            SessionStoreError: If the record exists but cannot be decoded, or
-                if the read failed and ``session_fail_closed`` is set.
+            SessionStoreError: If the read failed, or the record exists but
+                cannot be decoded, and ``session_fail_closed`` is set.
         """
         if not self.is_valid_id(session_id):
             return None, False
@@ -640,9 +641,18 @@ class SessionStore(ABC):
             )
             return None, False
 
+        try:
+            record = self.decode(raw)
+        except SessionStoreError as exc:
+            # Handled like a failed read, and the record is kept: when every
+            # record fails at once - an encryption key rotated or deployed by
+            # mistake - deleting them would make the mistake irreversible.
+            record_session_operation(operation="load", result="error")
+            self._read_failed(exc)
+            return None, True
+
         record_session_operation(operation="load", result="hit")
-        loaded = LoadedSession(record=self.decode(raw), absolute_remaining=alive_until)
-        return loaded, False
+        return LoadedSession(record=record, absolute_remaining=alive_until), False
 
     async def create(self, session_id: str, record: SessionRecord) -> None:
         """Write a session that does not exist yet, starting both clocks.

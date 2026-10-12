@@ -12,6 +12,7 @@ loads and saves it.  The Redis half lives in
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -36,6 +37,7 @@ from redis_fastapi.config import (
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
     SessionRejected,
+    SessionStoreError,
 )
 from redis_fastapi.session_backend import (
     SessionState,
@@ -52,6 +54,8 @@ from redis_fastapi.types import (
     RecencyRejection,
     SessionRejection,
 )
+
+logger = logging.getLogger(__name__)
 
 # Sentinel for ``pop``/``setdefault`` so that ``None`` stays a usable default.
 _MISSING: Any = object()
@@ -469,6 +473,9 @@ class _RequestState:
     # Only for the ``descriptor_of`` seam, which is given the live request.
     request: Request | None = None
     load: _Load = _Load.MISSING
+    # A well-formed cookie whose record did not load: gone, or unreadable.
+    # Kept only so a sign-out can still end it; never a live session.
+    unloaded_id: str | None = None
 
 
 class SessionMiddleware:
@@ -559,6 +566,7 @@ class SessionMiddleware:
         session = Session()
         store_state = SessionState(data=session)
         loaded_id: str | None = None
+        unloaded_id: str | None = None
         load = _Load.MISSING
 
         # Validate before use. This is not cosmetic: the value is written back
@@ -586,6 +594,7 @@ class SessionMiddleware:
                 )
             else:
                 load = _Load.FAILED if failed else _Load.NOT_FOUND
+                unloaded_id = raw_cookie
 
         return _RequestState(
             session=session,
@@ -594,6 +603,7 @@ class SessionMiddleware:
             principal_before=self._snapshot(session),
             request=request,
             load=load,
+            unloaded_id=unloaded_id,
         )
 
     def _snapshot(self, session: Session) -> Any:
@@ -655,6 +665,18 @@ class SessionMiddleware:
                 refresh_on_load=bool(settings.session_refresh_on_load),
             )
         )
+
+        if (
+            state.unloaded_id is not None
+            and store_state.session_id is None
+            and (store_state.revoked or (session.modified and not session))
+        ):
+            # A sign-out - store.revoke() or an emptied session - on a cookie
+            # whose record did not load. Neither reaches the record by itself,
+            # and signing out must always work: otherwise an unreadable record
+            # would come back to life when its encryption key is restored.
+            await self._forget(store, state.unloaded_id)
+            return self._with_cookie(headers, settings, clear=True)
 
         if outcome is Outcome.NOTHING or outcome is Outcome.SUPPRESS:
             return headers
@@ -782,6 +804,18 @@ class SessionMiddleware:
             return self._subject_of(session)
         finally:
             session.accessed, session.modified = accessed, modified
+
+    @staticmethod
+    async def _forget(store: SessionStore, session_id: str) -> None:
+        """Delete a record that did not load; the cookie is cleared regardless.
+
+        A failure is logged, not raised: when Redis is down the record expires
+        on its idle clock, and the sign-out must still clear the cookie.
+        """
+        try:
+            await store.delete(session_id)
+        except SessionStoreError as exc:
+            logger.warning("Could not delete a session on sign-out: %s", exc)
 
     async def _write(
         self, store: SessionStore, state: _RequestState, settings: Any, *, create: bool
@@ -1162,13 +1196,13 @@ def valid_session(
     limit = None if issued_within is None else _seconds(issued_within)
 
     async def _dependency(request: Request) -> None:
-        if request.scope.get(CACHE_SUPPRESS_VARY_SCOPE_KEY):
+        if request.scope.get(CACHE_ROUTE_SCOPE_KEY):
             # cache() already ran, so on a later request its hit would be
             # served before this gate. Refusing here keeps the first response
             # from ever being stored, so no hit can exist.
             raise SessionConfigurationError(
                 f"{request.url.path}: valid_session() must come before "
-                "cache(vary_on_session=False) in dependencies=[...]"
+                "cache() in dependencies=[...]"
             )
         session = session_of(request)
         state = session_state_of(request)

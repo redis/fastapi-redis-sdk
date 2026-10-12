@@ -84,6 +84,11 @@ def app(fake_async_redis, monkeypatch) -> FastAPI:
         await store.revoke(state)
         return {"ok": True}
 
+    @application.post("/clear")
+    async def clear(session: SessionDep) -> dict:
+        session.clear()
+        return {"ok": True}
+
     @application.post("/step-up")
     async def step_up(state: SessionStateDep, store: SessionStoreDep) -> dict:
         return {"sid": await store.rotate(state, subject="42")}
@@ -286,6 +291,64 @@ class TestRevokeClearsTheCookie:
     def test_revoking_an_untouched_session_is_safe(self, client: TestClient) -> None:
         response = client.post("/logout")
         assert response.status_code == 200
+
+
+class TestSigningOutARecordThatDidNotLoad:
+    """Signing out must always work, even when the record cannot be read.
+
+    An unreadable record is kept on a read, so a mistaken encryption key can be
+    fixed. A sign-out must still delete it, or restoring the key would bring
+    the signed-out session back.
+    """
+
+    @staticmethod
+    async def _corrupt(app: FastAPI, client: TestClient, fake_async_redis) -> str:
+        client.post("/login")
+        key = app.state._store.session_key(client.cookies["session"])
+        await fake_async_redis.execute_command(
+            "HSETEX", key, "KEEPTTL", "FIELDS", 1, "d", "{not json"
+        )
+        return key
+
+    async def test_a_read_keeps_the_record_and_the_cookie(
+        self, app: FastAPI, client: TestClient, fake_async_redis
+    ) -> None:
+        key = await self._corrupt(app, client, fake_async_redis)
+        response = client.get("/read")
+        assert response.json() == {"user_id": None}
+        assert "set-cookie" not in response.headers
+        assert await fake_async_redis.exists(key) == 1
+
+    @pytest.mark.parametrize("path", ["/logout", "/clear"])
+    async def test_signing_out_deletes_the_record_and_clears_the_cookie(
+        self, app: FastAPI, client: TestClient, fake_async_redis, path: str
+    ) -> None:
+        key = await self._corrupt(app, client, fake_async_redis)
+        response = client.post(path)
+        assert response.status_code == 200
+        assert _set_cookies(response)["session"]["session"]["max-age"] == "0"
+        assert await fake_async_redis.exists(key) == 0
+
+    async def test_signing_in_again_issues_a_new_session(
+        self, app: FastAPI, client: TestClient, fake_async_redis
+    ) -> None:
+        """The way back for the user: the handler writes a fresh session."""
+        await self._corrupt(app, client, fake_async_redis)
+        old_id = client.cookies["session"]
+        response = client.post("/login")
+        assert response.status_code == 200
+        assert client.cookies["session"] != old_id
+        assert client.get("/read").json() == {"user_id": 42}
+
+    async def test_signing_out_of_an_expired_session_clears_the_cookie(
+        self, app: FastAPI, client: TestClient, fake_async_redis
+    ) -> None:
+        client.post("/login")
+        await fake_async_redis.delete(
+            app.state._store.session_key(client.cookies["session"])
+        )
+        response = client.post("/clear")
+        assert _set_cookies(response)["session"]["session"]["max-age"] == "0"
 
 
 class TestCookieOnlyMode:

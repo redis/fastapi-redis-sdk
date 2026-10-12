@@ -79,7 +79,8 @@ class TestSigningOutWithNoStoredSession:
 
             response = client.post("/logout")
             assert response.request.headers.get("cookie") is not None
-        assert "set-cookie" not in response.headers
+        # The stale cookie is cleared, and no new session is created.
+        assert "max-age=0" in response.headers["set-cookie"].lower()
         assert _session_keys(real_redis, test_prefix) == []
 
 
