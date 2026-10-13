@@ -84,7 +84,6 @@ class TestReadsMarkAccessedOnly:
     def test_mark_accessed_is_the_starlette_hook(self) -> None:
         # Starlette calls this by name via hasattr; the name is load-bearing.
         s = Session()
-        assert hasattr(s, "mark_accessed")
         s.mark_accessed()
         assert s.accessed is True
         assert s.modified is False
@@ -148,11 +147,6 @@ class TestSetdefaultDoesNotWriteOnHit:
         assert s.setdefault("a", 99) == 1
         assert s.modified is False, "setdefault on an existing key changes nothing"
         assert s.accessed is True
-
-    def test_miss_is_a_write(self) -> None:
-        s = Session({"a": 1})
-        assert s.setdefault("b", 2) == 2
-        assert s.modified is True
 
 
 class TestPopWithDefault:

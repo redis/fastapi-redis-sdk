@@ -182,22 +182,16 @@ class TestRow1PerUser:
 
         Without `private` a CDN keeps one copy for everyone and recreates the
         leak the per-user key just closed, one hop further out.
+
+        The hit matters most: it short-circuits before the endpoint runs, so
+        the session middleware contributes nothing and the directive has to
+        come from the route's own declaration.
         """
-        for response in (alice.get("/me"), alice.get("/me")):  # miss, then hit
+        miss, hit = alice.get("/me"), alice.get("/me")
+        assert hit.headers["x-redis-cache"] == "HIT"
+        for response in (miss, hit):
             assert "private" in _directives(response)
             assert "max-age=300" in _directives(response)
-
-    def test_n18_holds_on_the_hit_path_too(self, alice) -> None:
-        """The hit path is where a session-emitted header could not reach.
-
-        A hit short-circuits before the endpoint runs, so the session
-        middleware contributes nothing; the directive has to come from the
-        route's own declaration.
-        """
-        alice.get("/me")
-        hit = alice.get("/me")
-        assert hit.headers["x-redis-cache"] == "HIT"
-        assert "private" in _directives(hit)
 
     def test_f10_vary_is_emitted(self, alice) -> None:
         """`private` stops shared caches; `Vary` stops the browser reusing a
@@ -215,17 +209,23 @@ class TestRow2SharedButSessionReading:
         assert second.headers["x-redis-cache"] == "HIT"
         assert first.json() == second.json()
 
-    def test_n18_public_is_exactly_as_permissive_as_our_own_entry(self, alice) -> None:
+    def test_n18_public_is_exactly_as_permissive_as_our_own_entry(
+        self, alice, bob
+    ) -> None:
         """The invariant must not push us to `private` here.
 
         We keep one shared entry, so a shared cache keeping one is an equal
         permission, not a greater one. A blanket "sessions imply private" rule
         would fail this row and cost hit rate for no safety gain.
+
+        This is also N-10's revision: a session-*bearing* response that is not
+        session-*dependent*, which the original wording forbade.
         """
-        directives = _directives(alice.get("/catalogue"))
-        assert "private" not in directives
-        assert "no-store" not in directives
-        assert "max-age=300" in directives
+        for response in (alice.get("/catalogue"), bob.get("/catalogue")):
+            directives = _directives(response)
+            assert "private" not in directives
+            assert "no-store" not in directives
+            assert "max-age=300" in directives
 
     def test_f10_vary_is_suppressed(self, alice) -> None:
         """The session was read, so the middleware would add `Vary: Cookie`.
@@ -235,17 +235,6 @@ class TestRow2SharedButSessionReading:
         declaration exists to avoid.
         """
         assert "Cookie" not in alice.get("/catalogue").headers.get("vary", "")
-
-    def test_n10_revised_this_row_is_deliberately_out_of_scope(
-        self, alice, bob
-    ) -> None:
-        """A session-*bearing* response that is not session-*dependent*.
-
-        Under N-10's original wording this row was forbidden. The revision is
-        what allows it, and this is the test that pins the distinction.
-        """
-        assert alice.get("/catalogue").json() == bob.get("/catalogue").json()
-        assert "no-store" not in _directives(bob.get("/catalogue"))
 
 
 class TestRow2BehindValidSession:
@@ -279,7 +268,7 @@ class TestRow2BehindValidSession:
 
 
 class TestRow3NoSessionAtAll:
-    def test_shared_and_public_as_before(self, alice, bob) -> None:
+    def test_one_shared_entry_as_before(self, alice, bob) -> None:
         assert alice.get("/status").headers["x-redis-cache"] == "MISS"
         assert bob.get("/status").headers["x-redis-cache"] == "HIT"
 
@@ -288,15 +277,6 @@ class TestRow3NoSessionAtAll:
         response = alice.get("/status")
         assert "Cookie" not in response.headers.get("vary", "")
         assert "private" not in _directives(response)
-
-    def test_declaring_nothing_is_the_same_declaration_as_row_four(self, alice) -> None:
-        """Rows 3 and 4 omit the parameter; the runtime tells them apart.
-
-        The difference is not configuration, it is whether the endpoint turned
-        out to read the session.
-        """
-        assert alice.get("/status").headers["x-redis-cache"] == "MISS"
-        assert "x-redis-cache" not in alice.get("/undeclared").headers
 
 
 class TestRow4UndeclaredIsNotStored:
@@ -312,9 +292,11 @@ class TestRow4UndeclaredIsNotStored:
         assert bob.get("/undeclared").json() == {"user_id": 2}
 
     def test_nothing_is_stored(self, alice) -> None:
+        """Like row 3, the route declares nothing; the runtime tells them
+        apart by whether the endpoint read the session."""
         alice.get("/undeclared")
         second = alice.get("/undeclared")
-        assert second.headers.get("x-redis-cache") != "HIT"
+        assert "x-redis-cache" not in second.headers
         assert "etag" not in second.headers
 
     def test_the_entry_never_reaches_redis(

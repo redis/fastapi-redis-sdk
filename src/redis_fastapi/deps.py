@@ -15,7 +15,6 @@ if TYPE_CHECKING:
         SyncRateLimitBackend,
         _BackendCapabilities,
     )
-    from redis_fastapi.session_backend import _StoreCapabilities
 
 from fastapi import Depends, FastAPI, Request
 from redis.asyncio import ConnectionPool as AsyncConnectionPool
@@ -38,8 +37,9 @@ from redis_fastapi.session_backend import (
     SessionState,
     SessionStore,
     SyncSessionStore,
+    _StoreCapabilities,
 )
-from redis_fastapi.sessions import Session
+from redis_fastapi.sessions import Session, session_of, session_state_of
 
 logger = logging.getLogger(__name__)
 
@@ -245,8 +245,6 @@ async def get_session_store(request: Request) -> SessionStore:
             built = options.store_factory(request)
             return cast("SessionStore", await built if isawaitable(built) else built)
 
-    from redis_fastapi.session_backend import _StoreCapabilities
-
     state = _get_pool_state(request.app)
     if state.session_capabilities is None:
         state.session_capabilities = _StoreCapabilities()
@@ -278,8 +276,6 @@ async def get_sync_session_store(request: Request) -> SyncSessionStore:
     The underlying async store is resolved on the event loop; the returned
     wrapper bridges each call back via :func:`anyio.from_thread.run`.
     """
-    from redis_fastapi.session_backend import SyncSessionStore
-
     store = await get_session_store(request)
     return SyncSessionStore(store)
 
@@ -292,8 +288,6 @@ async def get_session_state(request: Request) -> SessionState:
         async def logout(state: SessionStateDep, store: SessionStoreDep):
             await store.revoke(state)
     """
-    from redis_fastapi.sessions import session_state_of
-
     return session_state_of(request)
 
 
@@ -303,8 +297,6 @@ async def get_session(request: Request) -> Session:
     Performs no I/O.  The read happened before the application ran, because
     ``request.session`` is a synchronous property and cannot await.
     """
-    from redis_fastapi.sessions import session_of
-
     return session_of(request)
 
 

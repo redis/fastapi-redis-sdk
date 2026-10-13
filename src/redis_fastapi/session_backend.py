@@ -7,8 +7,9 @@ Two keys, both hashes::
     redis:fastapi:sessions-of:<subject>  field <sid> = <descriptor>
                                                                 TTL = absolute
 
-Each clock has its own TTL, and Redis enforces both: this module computes
-neither.  At the absolute deadline Redis deletes the whole key, so no reader
+Each clock has its own TTL.  This module sets both TTLs and Redis enforces
+them: no code here reads a timestamp to decide whether a session has
+expired.  At the absolute deadline Redis deletes the whole key, so no reader
 can serve a session past it, whatever it asks for.  Writing the payload
 touches field ``d`` alone, so no number of writes can extend the key's TTL.
 
@@ -132,13 +133,13 @@ class SessionMetadata:
 
     ``starsessions`` stores its metadata under a ``__metadata__`` key *inside*
     the session, so it shows up in the application's own ``request.session``.
-    We keep it in a sibling slot of the envelope instead.  The three names
-    match theirs, so their accessors port across as a rename.
+    We keep it in a sibling slot of the envelope instead.  Both names match
+    theirs.  Their third field, ``lifetime``, is not stored: it is the store's
+    own ``absolute_seconds``, the same for every session.
     """
 
     created: float
     last_access: float
-    lifetime: int
 
 
 @dataclass(frozen=True)
@@ -484,7 +485,6 @@ class SessionStore(ABC):
                 "m": {
                     "created": record.metadata.created,
                     "last_access": record.metadata.last_access,
-                    "lifetime": record.metadata.lifetime,
                 },
                 "d": record.data,
             }
@@ -516,7 +516,6 @@ class SessionStore(ABC):
                 metadata=SessionMetadata(
                     created=float(meta["created"]),
                     last_access=float(meta["last_access"]),
-                    lifetime=int(meta["lifetime"]),
                 ),
             )
         except Exception as exc:
@@ -533,10 +532,6 @@ class SessionStore(ABC):
         every subsequent write.  Without it ``created`` silently becomes "time
         of last write", and a device listing reports every active session as
         having been signed in seconds ago.
-
-        ``lifetime`` records the deadline actually in force, so a session with
-        the absolute clock disabled reports the ``gc_ttl`` backstop rather
-        than a misleading zero.
         """
         now = time.time()
         return SessionRecord(
@@ -544,7 +539,6 @@ class SessionStore(ABC):
             metadata=SessionMetadata(
                 created=created if created is not None else now,
                 last_access=now,
-                lifetime=self.absolute_seconds,
             ),
         )
 
@@ -937,8 +931,8 @@ class SessionStore(ABC):
     async def revoke_all(self, subject: str) -> int:
         """End every session belonging to *subject*.
 
-        Two round trips whatever the session count: one to read the index,
-        one pipeline that deletes every key and then drops the index itself.
+        Three round trips whatever the session count: one to read the index,
+        one pipeline that deletes every key, and one to drop the index.
 
         Returns:
             How many session **keys** were removed, counted from the server's

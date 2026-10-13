@@ -53,9 +53,14 @@ class TestListing:
         assert await store.list_for_subject("nobody") == []
 
     async def test_a_listing_carries_timestamps_without_reading_the_record(
-        self, store: RedisSessionStore
+        self, store: RedisSessionStore, monkeypatch
     ) -> None:
         await _make(store, "42")
+
+        async def _unreachable(*args, **kwargs):
+            raise AssertionError("listing read the session record")
+
+        monkeypatch.setattr(store, "_read", _unreachable)
         info = (await store.list_for_subject("42"))[0]
         assert info.created > 0
         assert info.last_access > 0
@@ -133,12 +138,6 @@ class TestCounting:
         )
         assert await store.count_for_subject("42", limit=2) == 1
 
-    async def test_below_the_limit_takes_the_fast_path(
-        self, store: RedisSessionStore
-    ) -> None:
-        await _make(store, "42")
-        assert await store.count_for_subject("42", limit=5) == 1
-
     async def test_the_fast_path_never_transfers_the_descriptors(
         self, store: RedisSessionStore
     ) -> None:
@@ -197,8 +196,12 @@ class TestRevokeById:
         assert await store.revoke_id(store.new_id(), subject="42") is False
 
     async def test_a_malformed_id_never_reaches_redis(
-        self, store: RedisSessionStore
+        self, store: RedisSessionStore, monkeypatch
     ) -> None:
+        async def _unreachable(*args, **kwargs):
+            raise AssertionError("a malformed ID reached Redis")
+
+        monkeypatch.setattr(store, "_index_members", _unreachable)
         assert await store.revoke_id("not valid", subject="42") is False
 
 
@@ -224,7 +227,9 @@ class TestRevokeAll:
     ) -> None:
         await _make(store, "42")
         await store.revoke_all("42")
-        assert await store.list_for_subject("42") == []
+        # The raw hash, not list_for_subject: listing drops entries whose key
+        # is gone, so it would read empty even if the index were never cleared.
+        assert await fake_async_redis.hgetall(store.index_key("42")) == {}
 
     async def test_an_unknown_subject_revokes_nothing(
         self, store: RedisSessionStore

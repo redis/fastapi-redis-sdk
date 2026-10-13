@@ -40,8 +40,12 @@ async def search():
   11th gets `429 Too Many Requests` with a `Retry-After` header. Counts are
   kept in Redis, so the limit holds across every worker and pod.
 
-Read more in the [Caching](../guide/caching.md) and
-[Rate Limiting](../guide/rate-limiting.md) guides.
+For server-side sessions, add `.sessions()` to the chain and take a
+`SessionDep` parameter in your endpoints.
+
+Read more in the [Caching](../guide/caching.md),
+[Rate Limiting](../guide/rate-limiting.md) and [Sessions](../guide/sessions.md)
+guides.
 
 ## Configure Redis
 

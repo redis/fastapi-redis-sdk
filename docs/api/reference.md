@@ -518,7 +518,7 @@ one without inheritance.
 | `Session` | `dict` subclass with `accessed` / `modified` flags and `raw()`. Nothing else. |
 | `SessionState` | `data`, `session_id`, `subject`, `created`, `absolute_remaining`, `revoked`, `rotated`. |
 | `SessionRecord` | `data` plus `SessionMetadata`. |
-| `SessionMetadata` | `created`, `last_access`, `lifetime`. |
+| `SessionMetadata` | `created`, `last_access`. |
 | `SessionInfo` | One listing row: `session_id`, `created`, `last_access`, `descriptor`. |
 | `LoadedSession` | `record` plus `absolute_remaining`, returned by `load()`. |
 | `CookieSpec` | Cookie attributes; `cleared()` returns the deletion form. |
@@ -542,30 +542,3 @@ returns its response.
 A failed **read** yields an empty session unless `session_fail_closed` is set.
 A failed **write** always raises. `count_for_subject` always raises, because
 there the store is the authorization answer.
-
----
-
-## `SessionEvents`
-
-```python
-events = SessionEvents(redis, key_prefix="redis:fastapi", db=0)
-
-@events.on_session_end
-async def _(session_id: str, cause: Cause) -> None: ...
-```
-
-| Type | Values |
-|---|---|
-| `Cause` | `"idle"`, `"absolute"`. No third member — a revocation is a `DEL`, whose event an idle expiry also sends, so it is not observed. |
-| `Tier` | `"key"`, `"none"`. |
-| `Handler` | `Callable[[str, Cause], Awaitable[None]]`, for annotating what you register. |
-
-Started and stopped by the lifespan when `session_events_enabled` is set.
-`events.tier` is `"key"` when the server can deliver events and `"none"`
-otherwise — in which case handlers never fire. It is also `"none"` while a
-lost subscription is being restored: the subscriber tries again every second
-unless `session_events_reconnect` is off, or `SessionEvents(...,
-reconnect=False)` was used. Requires
-`notify-keyspace-events` including `Ehx` — `E` for the `__keyevent@`
-channels, `h` for hash events and `x` for expiry events. `A` covers `h` and
-`x`. An idle timeout arrives as `hexpired`, an absolute timeout as `expired`.

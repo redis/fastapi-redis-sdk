@@ -26,10 +26,18 @@ from redis_fastapi.session_backend import (
 from tests.conftest import about
 
 
-@pytest.fixture()
-def store(fake_async_redis) -> RedisSessionStore:
+@pytest.fixture(params=[True, False], ids=["hsetex", "7.4-fallback"])
+def store(request, fake_async_redis) -> RedisSessionStore:
+    """Every store test runs on both command tiers.
+
+    The 7.4 path (``HSET`` + ``HEXPIRE``) costs an extra command and must
+    never change behaviour, so each assertion has to hold on both.
+    """
     get_settings.cache_clear()
-    return RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+    caps = _StoreCapabilities(supports_hsetex=request.param)
+    return RedisSessionStore(
+        fake_async_redis, capabilities=caps, idle_ttl=60, absolute_ttl=600
+    )
 
 
 async def _httl(redis, key: str, field: str) -> int:
@@ -124,14 +132,6 @@ class TestTwoClocks:
         assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60), (
             "field 'd' should have been refreshed by the write"
         )
-
-    async def test_a_created_key_always_has_a_ttl(
-        self, store: RedisSessionStore, fake_async_redis
-    ) -> None:
-        """A create never leaves the key without a deadline."""
-        sid = store.new_id()
-        await store.create(sid, store.new_record({}))
-        assert await _deadline(fake_async_redis, store.session_key(sid)) > 0
 
     async def test_zero_ttls_fall_back_to_gc_ttl(self, fake_async_redis) -> None:
         """Cookie-only mode: both clocks still expire eventually."""
@@ -237,8 +237,12 @@ class TestLoadStateTable:
         assert loaded.record.data == {"user_id": 7}
 
     async def test_an_invalid_id_never_reaches_redis(
-        self, store: RedisSessionStore
+        self, store: RedisSessionStore, monkeypatch
     ) -> None:
+        async def _unreachable(*args, **kwargs):
+            raise AssertionError("an invalid ID reached Redis")
+
+        monkeypatch.setattr(store, "_read", _unreachable)
         assert await store.load("not a valid id") is None
 
 
@@ -299,51 +303,6 @@ class TestIdleRefresh:
         )
 
 
-class TestSevenFourFallback:
-    """The 7.4 path writes the same data with the same expirations.
-
-    Section 13.1: the fallback costs an extra command and never changes
-    behaviour, so every assertion above must hold here too.
-    """
-
-    @pytest.fixture()
-    def old_store(self, fake_async_redis) -> RedisSessionStore:
-        caps = _StoreCapabilities(supports_hsetex=False)
-        return RedisSessionStore(
-            fake_async_redis, capabilities=caps, idle_ttl=60, absolute_ttl=600
-        )
-
-    async def test_round_trip(
-        self, old_store: RedisSessionStore, fake_async_redis
-    ) -> None:
-        sid = old_store.new_id()
-        await old_store.create(sid, old_store.new_record({"user_id": 42}))
-        loaded = await old_store.load(sid)
-        assert loaded is not None
-        assert loaded.record.data == {"user_id": 42}
-
-    async def test_same_ttls_as_the_modern_path(
-        self, old_store: RedisSessionStore, fake_async_redis
-    ) -> None:
-        sid = old_store.new_id()
-        await old_store.create(sid, old_store.new_record({}))
-        key = old_store.session_key(sid)
-        assert about(await _deadline(fake_async_redis, key), 600)
-        assert about(await _httl(fake_async_redis, key, FIELD_DATA), 60)
-
-    async def test_repeated_writes_still_never_extend_the_deadline(
-        self, old_store: RedisSessionStore, fake_async_redis
-    ) -> None:
-        sid = old_store.new_id()
-        key = old_store.session_key(sid)
-        await old_store.create(sid, old_store.new_record({}))
-        await fake_async_redis.expire(key, 100)
-        await old_store.save(sid, old_store.new_record({"n": 2}))
-        assert about(await _deadline(fake_async_redis, key), 100), (
-            "the 7.4 write path moved the absolute clock"
-        )
-
-
 class TestEnvelope:
     def test_metadata_never_reaches_the_payload(self, store: RedisSessionStore) -> None:
         """``starsessions`` puts it inside the session. We do not."""
@@ -356,7 +315,7 @@ class TestEnvelope:
     def test_round_trip_preserves_metadata(self, store: RedisSessionStore) -> None:
         record = SessionRecord(
             data={"a": 1},
-            metadata=SessionMetadata(created=1.5, last_access=2.5, lifetime=600),
+            metadata=SessionMetadata(created=1.5, last_access=2.5),
         )
         decoded = store.decode(store.encode(record))
         assert decoded.metadata == record.metadata

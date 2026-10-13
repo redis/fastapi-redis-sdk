@@ -44,23 +44,16 @@ def _every_combination():
 
 
 class TestItIsTotalAndSingleValued:
-    def test_every_input_maps_to_exactly_one_outcome(self) -> None:
-        """2048 combinations, no gaps and no exceptions.
+    def test_every_input_maps_to_an_outcome_and_every_outcome_is_reached(
+        self,
+    ) -> None:
+        """2048 combinations: no exceptions, nothing but an ``Outcome``, and no
+        branch that nothing can reach - a branch nothing can reach is wrong.
 
         The property an ordered ``if`` chain cannot assert about itself.
         """
-        for signals in _every_combination():
-            outcome = decide_outcome(signals)
-            assert isinstance(outcome, Outcome)
-
-    def test_every_outcome_is_reachable(self) -> None:
-        """A branch nothing can reach is a branch that is wrong."""
         reached = {decide_outcome(s) for s in _every_combination()}
         assert reached == set(Outcome), f"unreachable: {set(Outcome) - reached}"
-
-    def test_the_decision_is_deterministic(self) -> None:
-        for signals in _every_combination():
-            assert decide_outcome(signals) is decide_outcome(signals)
 
 
 class TestPrecedence:

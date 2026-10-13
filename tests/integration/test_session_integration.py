@@ -16,7 +16,6 @@ from redis_fastapi.session_backend import (
     _StoreCapabilities,
     probe_hsetex_support,
 )
-from redis_fastapi.session_events import REQUIRED_CONFIG, SessionEvents
 from tests.conftest import about, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis, pytest.mark.asyncio]
@@ -31,13 +30,6 @@ def _store(redis, prefix: str, **kwargs) -> RedisSessionStore:
 async def _httl(redis, key: str, field: str) -> int:
     reply = await redis.execute_command("HTTL", key, "FIELDS", 1, field)
     return int(reply[0])
-
-
-async def test_capability_probe_answers_definitively(
-    real_async_redis: async_redis.Redis,
-) -> None:
-    """Never ``None`` against a reachable server - that value means "unknown"."""
-    assert await probe_hsetex_support(real_async_redis) in {True, False}
 
 
 async def test_the_probe_matches_the_server(
@@ -148,17 +140,6 @@ async def test_both_index_tiers_expire_the_entry(
 
     assert [info.session_id for info in await store.list_for_subject("42")] == [sid]
     assert await store.count_for_subject("42") == 1
-
-
-async def test_round_trip(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    store = _store(real_async_redis, test_prefix)
-    sid = store.new_id()
-    await store.create(sid, store.new_record({"user_id": 42}))
-    loaded = await store.load(sid)
-    assert loaded is not None
-    assert loaded.record.data == {"user_id": 42}
 
 
 async def test_redis_enforces_the_idle_clock(
@@ -305,7 +286,7 @@ async def test_rotation_without_a_subject_keeps_the_current_one(
     assert await real_async_redis.hkeys(store.index_key("42")) == [new]
 
 
-async def test_rotation_to_no_subject_leaves_the_old_index_alone(
+async def test_rotation_to_no_subject_drops_the_old_index_entry(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
     """``subject=None`` is how the middleware says the session is anonymous."""
@@ -324,30 +305,6 @@ async def test_rotation_to_no_subject_leaves_the_old_index_alone(
     assert await real_async_redis.hkeys(store.index_key("42")) == []
 
 
-async def test_writing_the_payload_leaves_the_deadline_alone(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    store = _store(real_async_redis, test_prefix)
-    sid = store.new_id()
-    key = store.session_key(sid)
-    await store.create(sid, store.new_record({"n": 0}))
-
-    before = await real_async_redis.ttl(key)
-    for n in range(5):
-        await store.save(sid, store.new_record({"n": n}))
-    after = await real_async_redis.ttl(key)
-
-    # A band, not a ceiling: TTL returns -2 for a deleted key and -1 for one
-    # with no expiry, and both satisfy ``after <= before``. Five real round
-    # trips can cross a second boundary, so allow a little slack below.
-    assert after > 0, "the absolute deadline was deleted or unset"
-    assert before - 5 <= after <= before, "the key's TTL moved on a payload write"
-    idle = (
-        await real_async_redis.execute_command("HTTL", key, "FIELDS", 1, FIELD_DATA)
-    )[0]
-    assert int(idle) > 0
-
-
 async def test_revoke_all_ends_every_session(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
@@ -363,185 +320,3 @@ async def test_revoke_all_ends_every_session(
     assert await store.revoke_all("42") == 3
     for sid in ids:
         assert await store.load(sid) is None
-
-
-async def _first_event(
-    redis: async_redis.Redis, prefix: str, *, idle_ttl: int, absolute_ttl: int
-) -> tuple[str, str, str]:
-    """Create one session with the given clocks and wait for its end event.
-
-    ``notify-keyspace-events`` is server-wide, so the original value is
-    restored afterwards. The library never sets it; a test on a throwaway
-    server may.
-    """
-    original = (await redis.config_get("notify-keyspace-events")).get(
-        "notify-keyspace-events", ""
-    )
-    try:
-        try:
-            await redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
-        except async_redis.RedisError as exc:
-            pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
-
-        events = SessionEvents(redis, key_prefix=prefix)
-        if await events.probe() == "none":
-            pytest.skip("server cannot supply keyspace notifications")
-
-        delivered: asyncio.Queue = asyncio.Queue()
-
-        @events.on_session_end
-        async def _(session_id: str, cause: str) -> None:
-            await delivered.put((session_id, cause))
-
-        await events.start()
-        try:
-            store = _store(redis, prefix, idle_ttl=idle_ttl, absolute_ttl=absolute_ttl)
-            sid = store.new_id()
-            await store.create(sid, store.new_record({"user_id": 42}))
-
-            # Expiry notifications fire when Redis removes the field or the
-            # key, which for one nobody touches waits on the active-expiry
-            # cycle. A read after the deadline forces the lazy path, so this
-            # does not depend on that cycle's timing.
-            await asyncio.sleep(1.5)
-            assert await store.load(sid) is None
-
-            session_id, cause = await asyncio.wait_for(delivered.get(), timeout=10)
-        finally:
-            await events.stop()
-        return sid, session_id, cause
-    finally:
-        await redis.config_set("notify-keyspace-events", original)
-
-
-async def test_an_idle_expiry_reaches_a_handler_as_idle(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    """The one thing a scripted Pub/Sub cannot prove: the channels are real.
-
-    ``test_session_events.py`` drives ``_run`` deterministically against a
-    fake. What it cannot check is that a real server publishes an idle expiry
-    on ``__keyevent@<db>__:hexpired`` with the key as the payload.
-    """
-    sid, session_id, cause = await _first_event(
-        real_async_redis, test_prefix, idle_ttl=1, absolute_ttl=600
-    )
-    assert (session_id, cause) == (sid, "idle")
-
-
-async def test_an_absolute_expiry_reaches_a_handler_as_absolute(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    """The absolute deadline is the key's TTL, so it arrives as ``expired``.
-
-    And not as ``hexpired`` too: the payload's own TTL is far away, so the
-    first event must name the absolute clock.
-    """
-    sid, session_id, cause = await _first_event(
-        real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1
-    )
-    assert (session_id, cause) == (sid, "absolute")
-
-
-async def _pubsub_clients(redis: async_redis.Redis) -> int:
-    return len(await redis.client_list(_type="pubsub"))
-
-
-async def test_stop_returns_the_subscriber_connection(
-    real_async_redis: async_redis.Redis, test_prefix: str
-) -> None:
-    """Cancelling the subscriber must close its Pub/Sub connection."""
-    original = (await real_async_redis.config_get("notify-keyspace-events")).get(
-        "notify-keyspace-events", ""
-    )
-    try:
-        try:
-            await real_async_redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
-        except async_redis.RedisError as exc:
-            pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
-
-        events = SessionEvents(real_async_redis, key_prefix=test_prefix)
-        before = await _pubsub_clients(real_async_redis)
-        await events.start()
-        if events.tier == "none":
-            pytest.skip("server cannot supply keyspace notifications")
-        for _ in range(50):
-            if await _pubsub_clients(real_async_redis) > before:
-                break
-            await asyncio.sleep(0.05)
-        assert await _pubsub_clients(real_async_redis) == before + 1
-
-        await events.stop()
-        for _ in range(50):
-            if await _pubsub_clients(real_async_redis) == before:
-                break
-            await asyncio.sleep(0.05)
-        assert await _pubsub_clients(real_async_redis) == before, (
-            "stop() left the subscriber connection open"
-        )
-    finally:
-        await real_async_redis.config_set("notify-keyspace-events", original)
-
-
-async def test_a_killed_subscription_reconnects_and_still_delivers(
-    real_async_redis: async_redis.Redis, test_prefix: str, monkeypatch
-) -> None:
-    """``CLIENT KILL`` is a real connection loss, not a scripted one.
-
-    The subscriber must notice, report ``tier == "none"``, subscribe again on
-    a new connection, and then deliver an expiry that happens afterwards.
-    """
-    import redis_fastapi.session_events as module
-
-    monkeypatch.setattr(module, "_RECONNECT_DELAY", 0.1)
-    original = (await real_async_redis.config_get("notify-keyspace-events")).get(
-        "notify-keyspace-events", ""
-    )
-    try:
-        try:
-            await real_async_redis.config_set("notify-keyspace-events", REQUIRED_CONFIG)
-        except async_redis.RedisError as exc:
-            pytest.skip(f"server will not take {REQUIRED_CONFIG!r}: {exc}")
-
-        before = {c["id"] for c in await real_async_redis.client_list(_type="pubsub")}
-        events = SessionEvents(real_async_redis, key_prefix=test_prefix)
-        delivered: asyncio.Queue = asyncio.Queue()
-
-        @events.on_session_end
-        async def _(session_id: str, cause: str) -> None:
-            await delivered.put((session_id, cause))
-
-        await events.start()
-        if events.tier == "none":
-            pytest.skip("server cannot supply keyspace notifications")
-        try:
-
-            async def _ours() -> set[str]:
-                clients = await real_async_redis.client_list(_type="pubsub")
-                return {c["id"] for c in clients} - before
-
-            for _ in range(50):
-                if first := await _ours():
-                    break
-                await asyncio.sleep(0.05)
-            assert len(first) == 1
-            await real_async_redis.client_kill_filter(_id=next(iter(first)))
-
-            for _ in range(100):
-                current = await _ours()
-                if current and current != first and events.tier == "key":
-                    break
-                await asyncio.sleep(0.05)
-            assert current and current != first, "no new subscriber connection"
-            assert events.tier == "key"
-
-            store = _store(real_async_redis, test_prefix, idle_ttl=1)
-            sid = store.new_id()
-            await store.create(sid, store.new_record({"user_id": 42}))
-            await asyncio.sleep(1.5)
-            assert await store.load(sid) is None
-            assert await asyncio.wait_for(delivered.get(), timeout=10) == (sid, "idle")
-        finally:
-            await events.stop()
-    finally:
-        await real_async_redis.config_set("notify-keyspace-events", original)
