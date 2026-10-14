@@ -125,7 +125,7 @@ An entry stores the response's own header fields and replays them on a hit, so `
 | `cache_prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
 | `key_builder` | `KeyBuilder \| None` | `default_key_builder` | Custom key builder |
 | `private` | `bool` | `False` | Emit `Cache-Control: private`. Added automatically when `valid_session()` gated the request |
-| `vary_on_session` | `bool \| None` | `None` | `True`: one entry per user, `private`. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
+| `vary_on_session` | `bool \| None` | `None` | `True`: one entry per user, `private` and `Vary: Cookie` on the miss and the hit. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
 | `no_store` | `bool` | `False` | Emit `Cache-Control: no-store` on the miss and every hit; the entry is still kept in Redis. Added automatically under `valid_session(issued_within=...)` |
 
 ### `cache_evict()`

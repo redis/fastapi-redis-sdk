@@ -445,10 +445,17 @@ the session ID, so it survives a rotation (a privilege change does not throw
 the entry away) and is shared across that user's devices.
 
 The response carries
-[`Cache-Control: private, max-age=300`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private).
+[`Cache-Control: private, max-age=300`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private)
+and `Vary: Cookie`, on the hit as well as the miss.
 The `private` is not optional and is added for you: our entry is per user, so a
 CDN told it may keep one copy for everyone would recreate the leak one hop
-further out.
+further out. The `Vary` stops the browser showing one user's copy to the next
+person who signs in on it.
+
+A caller with no session at all has no subject either. Every such caller
+shares one entry, computed with no user - which gives nothing away. Put
+[`valid_session()`](#requiring-a-valid-session) in front, first in
+`dependencies=[...]`, to refuse them instead.
 
 ### `vary_on_session=False` - reads the session, but cache is shared
 
@@ -509,7 +516,7 @@ A hand-written gate like `require_user` gets neither. List it before `cache()`
 yourself, and pass `cache(..., private=True)` when the route sits behind a CDN
 or another shared cache.
 
-### Saying nothing
+### Not setting the `vary_on_session` at all
 
 If the endpoint never touches the session, say nothing - there is nothing to
 declare and caching behaves exactly as it always has.
@@ -536,14 +543,29 @@ depends on it.
 
 ### At a glance
 
-| Your endpoint | Declaration | Cached as | Response headers |
-|---|---|---|---|
-| Body depends on the user | `vary_on_session=True` | one entry per user | `private, max-age=N` + `Vary: Cookie` |
-| Reads the session, body identical | `vary_on_session=False` | one shared entry | `max-age=N`, no `Vary` |
-| Gated by `valid_session()`, body identical | `vary_on_session=False` | one shared entry | `private, max-age=N`, no `Vary` |
-| Gated by `valid_session(issued_within=...)` | any | as declared | `no-store` |
-| Never touches the session | *(nothing)* | one shared entry | `max-age=N` |
-| Touches it, nothing declared | *(nothing)* | **not cached** | `private, no-store` + `Vary: Cookie` |
+| Your endpoint                                        | Declaration             | Cached as          | A caller with no session                      | Response headers                         |
+|------------------------------------------------------|-------------------------|--------------------|-----------------------------------------------|------------------------------------------|
+| Body depends on the user                             | `vary_on_session=True`  | one entry per user | shares one entry with every other such caller | `private, max-age=N` + `Vary: Cookie`    |
+| Gated by `valid_session()`, body depends on the user | `vary_on_session=True`  | one entry per user | 401                                           | `private, max-age=N` + `Vary: Cookie`    |
+| Reads the session, body identical                    | `vary_on_session=False` | one shared entry   | the shared entry                              | `max-age=N`, no `Vary`                   |
+| Gated by `valid_session()`, body identical           | `vary_on_session=False` | one shared entry   | 401                                           | `private, max-age=N`, no `Vary`          |
+| Gated by `valid_session(issued_within=...)`          | either                  | as declared        | 401                                           | `no-store`, + `Vary: Cookie` when `True` |
+| Never touches the session                            | *(nothing)*             | one shared entry   | the shared entry                              | `max-age=N`                              |
+| Touches it, nothing declared                         | *(nothing)*             | **not cached**     | not cached                                    | `private, no-store` + `Vary: Cookie`     |
+
+Reading the table:
+
+- **A hit sends the same headers as the miss.** The only difference is
+  `max-age`, which on a hit is the time left on the entry. The browser keeps
+  whichever response it saw last, so the two must agree.
+- **A gate changes who reaches the entry, not how it is keyed.** Each gated
+  row behaves like the row above it, except that a caller with no session gets
+  a 401. The 401 says `private` (`no-store` under `issued_within`) and
+  `Vary: Cookie`, so no cache replays it after the user signs in.
+- **"Per user" means per subject.** An anonymous session that holds data - a
+  basket, say - has no subject, so its entry is keyed by the session ID.
+  `valid_session()` lets it through: the gate checks that the session is live,
+  not who it belongs to.
 
 The rule underneath every row: **what a response tells other caches they may do
 is never more permissive than what this library does itself.** If we key per
@@ -659,6 +681,12 @@ The session is the natural place to keep the token - this is OWASP's
 import secrets
 from fastapi import HTTPException
 
+@app.post("/login")
+async def login(session: SessionDep) -> dict:
+    session["user_id"] = 42
+    session.pop("csrf", None)    # a fresh token for this sign-in
+    return {}
+
 @app.get("/form")
 async def form(session: SessionDep) -> dict:
     token = session.setdefault("csrf", secrets.token_urlsafe(32))
@@ -675,8 +703,11 @@ async def transfer(session: SessionDep, csrf_token: str = Form(...)) -> dict:
 [`secrets.compare_digest`](https://docs.python.org/3/library/secrets.html#secrets.compare_digest)
 rather than `==`, and
 [`secrets.token_urlsafe`](https://docs.python.org/3/library/secrets.html#secrets.token_urlsafe)
-for the token itself. The token rotates with the session - a sign-in issues a
-new session ID, so the next `setdefault` mints a fresh token.
+for the token itself. A sign-in rotates the session ID but carries the data
+across, the token included, so drop the token when you sign the user in: the
+next `setdefault` then mints a fresh one.
+
+A runnable version is in [`examples/sessions/csrf.py`](https://github.com/redis/fastapi-redis-sdk/blob/main/examples/sessions/csrf.py).
 
 ---
 
@@ -707,7 +738,10 @@ class AesGcmEncryptor:
 
 Encryption **wraps** serialization, never the reverse: the coder turns your
 value into text, and only then does the encryptor see it. A coder is never
-handed ciphertext.
+handed ciphertext. The store keeps the ciphertext as base64, so it reads back
+the same whichever way the Redis client decodes responses.
+
+A runnable version is in [`examples/sessions/encryption.py`](https://github.com/redis/fastapi-redis-sdk/blob/main/examples/sessions/encryption.py).
 
 This package ships the seam and not the implementation, deliberately.
 [AES-GCM](https://csrc.nist.gov/pubs/sp/800/38/d/final), via
@@ -744,14 +778,14 @@ app.add_middleware(SessionMiddleware, secret_key="…")
 FastAPIRedis(app).lifespan().sessions()
 ```
 
-| Their behaviour | Here |
-|---|---|
-| `request.session["user_id"] = 42` | unchanged - and it now rotates the ID |
-| `request.session.clear()` | unchanged - and it now deletes the record too |
-| payload capped at ~4 KB by the cookie | no cap; the cookie carries an ID |
-| data signed but readable by the client | never leaves the server |
-| `max_age` | `session_idle_ttl` plus `session_absolute_ttl` |
-| no revocation | `revoke`, `revoke_id`, `revoke_all` |
+| Their behaviour                        | Here                                           |
+|----------------------------------------|------------------------------------------------|
+| `request.session["user_id"] = 42`      | unchanged - and it now rotates the ID          |
+| `request.session.clear()`              | unchanged - and it now deletes the record too  |
+| payload capped at ~4 KB by the cookie  | no cap; the cookie carries an ID               |
+| data signed but readable by the client | never leaves the server                        |
+| `max_age`                              | `session_idle_ttl` plus `session_absolute_ttl` |
+| no revocation                          | `revoke`, `revoke_id`, `revoke_all`            |
 
 Handler code does not change. `secret_key` has no equivalent because nothing is
 signed: the cookie is an opaque 256-bit identifier, well past OWASP's
@@ -759,15 +793,15 @@ signed: the cookie is an opaque 256-bit identifier, well past OWASP's
 
 ### From [`starsessions`](https://github.com/alex-oleshkevich/starsessions)
 
-| Theirs | Here |
-|---|---|
-| `lifetime=N, rolling=True` | `session_idle_ttl=N` |
-| `lifetime=N, rolling=False` | `session_absolute_ttl=N` |
-| both behaviours at once | not expressible for them; set both settings here |
-| `load_session(request)` | nothing - the load is automatic and eager |
-| `regenerate_session_id(request)` | delete the call; writing the identity rotates |
-| `get_session_metadata(request)` | `created` and `last_access` from `store.list_for_subject()`; `lifetime` is `store.absolute_seconds` |
-| `RedisStore(...)` | `FastAPIRedis(app).lifespan().sessions()` |
+| Theirs                           | Here                                                                                                |
+|----------------------------------|-----------------------------------------------------------------------------------------------------|
+| `lifetime=N, rolling=True`       | `session_idle_ttl=N`                                                                                |
+| `lifetime=N, rolling=False`      | `session_absolute_ttl=N`                                                                            |
+| both behaviours at once          | not expressible for them; set both settings here                                                    |
+| `load_session(request)`          | nothing - the load is automatic and eager                                                           |
+| `regenerate_session_id(request)` | delete the call; writing the identity rotates                                                       |
+| `get_session_metadata(request)`  | `created` and `last_access` from `store.list_for_subject()`; `lifetime` is `store.absolute_seconds` |
+| `RedisStore(...)`                | `FastAPIRedis(app).lifespan().sessions()`                                                           |
 
 Their `lifetime` accepts a `timedelta`; so does this store's constructor.
 
@@ -867,18 +901,18 @@ Every setting is an environment variable prefixed `REDIS_`, so
 `session_idle_ttl` is `REDIS_SESSION_IDLE_TTL`. See
 [Configuration](configuration.md) for how these are loaded.
 
-| Setting | Default | Notes |
-|---|---|---|
-| `session_cookie_name` | `session` | Matches Starlette and `starsessions` |
-| `session_cookie_https_only` | `True` | Adds [`Secure`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#secure). Turn it off for local HTTP only |
-| `session_cookie_same_site` | `lax` | [`none`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value) requires `https_only=True` |
-| `session_idle_ttl` | `1800` | `0` disables the idle clock |
-| `session_absolute_ttl` | `28800` | `0` disables the absolute clock |
-| `session_gc_ttl` | `2592000` | Backstop so Redis can always collect an abandoned key |
-| `session_refresh_on_load` | `True` | `False`: only a request that *used* the session counts as activity |
-| `session_fail_closed` | `False` | Read behaviour when Redis is down or a record is unreadable |
-| `session_always_save` | `False` | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt |
-| `session_principal_keys` | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role` |
+| Setting                     | Default       | Notes                                                                                                                                      |
+|-----------------------------|---------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| `session_cookie_name`       | `session`     | Matches Starlette and `starsessions`                                                                                                       |
+| `session_cookie_https_only` | `True`        | Adds [`Secure`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#secure). Turn it off for local HTTP only    |
+| `session_cookie_same_site`  | `lax`         | [`none`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value) requires `https_only=True` |
+| `session_idle_ttl`          | `1800`        | `0` disables the idle clock                                                                                                                |
+| `session_absolute_ttl`      | `28800`       | `0` disables the absolute clock                                                                                                            |
+| `session_gc_ttl`            | `2592000`     | Backstop so Redis can always collect an abandoned key                                                                                      |
+| `session_refresh_on_load`   | `True`        | `False`: only a request that *used* the session counts as activity                                                                         |
+| `session_fail_closed`       | `False`       | Read behaviour when Redis is down or a record is unreadable                                                                                |
+| `session_always_save`       | `False`       | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt                            |
+| `session_principal_keys`    | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`                           |
 
 ---
 

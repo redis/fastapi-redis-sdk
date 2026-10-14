@@ -443,9 +443,9 @@ For sensitive values use the `--secret` flag:
 fastapi cloud env set --secret REDIS_PASSWORD your_password
 ```
 !!! note "Demo App"
-    The repository includes a ready-to-deploy demo app at `examples/main.py`
-    with endpoints for health checks, Redis `PING`, cached responses, and
-    `CacheBackend` usage. The entrypoint is already configured in `pyproject.toml`
+    The repository includes a ready-to-deploy demo app at `examples/main.py`:
+    a health check, a Redis `PING`, a cached product catalogue and a
+    rate-limited public API. The entrypoint is already configured in `pyproject.toml`
     (`[tool.fastapi] entrypoint`), so FastAPI Cloud picks it up automatically.
 
 See the [FastAPI Cloud environment variables docs](https://fastapicloud.com/docs/builds-and-deployments/environment-variables/)
