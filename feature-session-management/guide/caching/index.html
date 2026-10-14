@@ -2032,16 +2032,6 @@ Redis.</p>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">my_profile</span><span class="p">(</span><span class="n">user</span><span class="p">:</span> <span class="n">User</span> <span class="o">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_current_user</span><span class="p">)):</span>
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="k">return</span> <span class="n">user</span><span class="o">.</span><span class="n">profile</span>
 </code></pre></div>
-<div class="admonition info">
-<p class="admonition-title">Session cookies and cached responses</p>
-<p>A response that only reads the session carries no <code>Set-Cookie</code> header, so a
-cache that stores it cannot hand one user's session cookie to another. The
-session cookie's <code>Max-Age</code> therefore follows the absolute lifetime, not the
-idle timeout, so reads never need to resend the cookie to keep it valid
-(<a href="../sessions/#session-clocks">Session clocks</a>). Redis still
-enforces the idle timeout, so a cookie that outlives an idle session grants
-nothing.</p>
-</div>
 <h3 id="cache-scope">Cache scope<a class="headerlink" href="#cache-scope" title="Permanent link">&para;</a></h3>
 <p><code>cache()</code> stores <strong>text representations</strong> only — JSON, plain text, HTML, CSV,
 XML, JavaScript. It refuses anything else, including all binary, and a refusal
@@ -2198,6 +2188,16 @@ emit <code>Age</code> as <code>stored_ttl - remaining_ttl</code>. A hit then car
 <code>max-age=300</code> with <code>Age: 180</code>, which leaves the same 120 seconds, and
 replaying <code>Date</code> becomes safe as well.</p>
 <p>Half of that change is worse than none of it.</p>
+</div>
+<div class="admonition info">
+<p class="admonition-title">Session cookies and cached responses</p>
+<p>A response that only reads the session carries no <code>Set-Cookie</code> header, so a
+cache that stores it cannot hand one user's session cookie to another. The
+session cookie's <code>Max-Age</code> therefore follows the absolute lifetime, not the
+idle timeout, so reads never need to resend the cookie to keep it valid
+(<a href="../sessions/#session-clocks">Session clocks</a>). Redis still
+enforces the idle timeout, so a cookie that outlives an idle session grants
+nothing.</p>
 </div>
 <h3 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h3>
 <p>The DI factories integrate with FastAPI's <code>dependency_overrides</code>, so
