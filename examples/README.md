@@ -1,159 +1,58 @@
-# fastapi-redis-sdk demo app
+# fastapi-redis-sdk examples
 
-Minimal FastAPI application that showcases every caching pattern provided by
-`fastapi-redis-sdk`. Designed for one-click deployment to
-[FastAPI Cloud](https://fastapicloud.com/).
+Each example is a small, complete app built around one real use case. Every
+module docstring explains what the app does and lists the `curl` steps to try
+it.
 
 ## Prerequisites
 
 - Python 3.10+
 - A Redis 7.4+ server (local or [Redis Cloud](https://redis.io/cloud/))
-- [uv](https://docs.astral.sh/uv/) package manager
-- (optional) [FastAPI Cloud CLI](https://fastapicloud.com/docs/fastapi-cloud-cli/) for cloud deployment
-
-## Run locally
+- [uv](https://docs.astral.sh/uv/)
 
 ```bash
 # from the repository root
 uv sync --all-groups
 export REDIS_URL=redis://localhost:6379/0
-uv run fastapi dev examples/main.py
 ```
 
-The app is served at `http://localhost:8000`.
+## The examples
 
-## Deploy to FastAPI Cloud
+| Feature | Example | What it shows | Run |
+|---|---|---|---|
+| Caching | [`caching/catalogue.py`](caching/catalogue.py) | A product catalogue: a cached listing with `ETag`s, product pages cached only once published, and an edit that evicts the catalogue | `uv run --with "fastapi[standard]" fastapi dev examples/caching/catalogue.py` |
+| Rate limiting | [`rate_limiting/public_api.py`](rate_limiting/public_api.py) | A public API: search and autocomplete sharing one budget, a sign-in that locks out password guessing, and an endpoint metered by tokens | `uv run --with "fastapi[standard]" fastapi dev examples/rate_limiting/public_api.py` |
+| Sessions | [`sessions/oauth_challenge.py`](sessions/oauth_challenge.py) | Sign-in with [Authlib](https://docs.authlib.org/) against a mock provider, and the `WWW-Authenticate` header an OAuth client reads on a refusal - including step-up with `max_age` | `uv run --with "fastapi[standard]" --with authlib fastapi dev examples/sessions/oauth_challenge.py` |
+| Sessions | [`sessions/csrf.py`](sessions/csrf.py) | CSRF protection with a token kept in the session, replaced at sign-in | `uv run --with "fastapi[standard]" --with python-multipart fastapi dev examples/sessions/csrf.py` |
+| Sessions | [`sessions/encryption.py`](sessions/encryption.py) | The session payload encrypted at rest with AES-GCM | `uv run --with "fastapi[standard]" --with cryptography fastapi dev examples/sessions/encryption.py` |
+| Observability | [`observability/`](observability/) | Traces and metrics in Grafana, with Docker Compose | see its [README](observability/README.md) |
+
+The session examples run over plain HTTP, so set
+`REDIS_SESSION_COOKIE_HTTPS_ONLY=false` for them; the encryption example also
+needs a `SESSION_KEY`. Their docstrings give the exact commands.
+
+## The deployable demo
+
+[`main.py`](main.py) combines the catalogue and the public API in one app,
+with a health check (`GET /`) and a Redis `PING` (`GET /ping`). It is the app
+FastAPI Cloud deploys:
+
+```bash
+uv run --with "fastapi[standard]" fastapi dev examples/main.py
+```
+
+To deploy it to [FastAPI Cloud](https://fastapicloud.com/):
 
 1. Push the repo to GitHub.
-2. Link the repo in the FastAPI Cloud dashboard (or `fastapi cloud deploy`).
-3. Go to your app's **Storage** tab and connect a Redis Cloud database.
-   FastAPI Cloud injects `REDIS_URL` automatically — no extra config needed.
+2. Link the repo in the FastAPI Cloud dashboard (or run `fastapi cloud deploy`).
+3. In the app's **Storage** tab, connect a Redis Cloud database. FastAPI Cloud
+   sets `REDIS_URL` for you.
 4. The `[tool.fastapi] entrypoint` in `pyproject.toml` points to
-   `examples.main:app`, so the app is discovered on deploy.
+   `examples.main:app`, so the app is found on deploy.
 
-Optionally set additional env vars:
+Optionally set more variables:
 
 ```bash
 fastapi cloud env set REDIS_PREFIX myapp
 fastapi cloud env set REDIS_DEFAULT_TTL 300
-```
-
-## Endpoints
-
-| Method   | Path              | Description                                      |
-|----------|-------------------|--------------------------------------------------|
-| `GET`    | `/`               | Health check (no Redis required)                 |
-| `GET`    | `/ping`           | Redis `PING` — verify connectivity               |
-| `GET`    | `/config`         | Non-sensitive connection settings                |
-| `GET`    | `/cache-demo`     | DI-based cached response (30 s TTL)              |
-| `DELETE` | `/cache-demo`     | Evict the `/cache-demo` cache entry              |
-| `GET`    | `/items/{item_id}`| Conditional caching via `CacheBackend`           |
-| `DELETE` | `/items/{item_id}`| Evict a single item from the cache               |
-
-## Test scenarios
-
-Replace `BASE` with your deployment URL or `http://localhost:8000`.
-
-```bash
-BASE=https://fastapi-redis-sdk-4eb7c8a2.fastapicloud.dev
-```
-
-### 1. Health check
-
-```bash
-curl $BASE/
-# {"status":"ok","library":"fastapi-redis-sdk"}
-```
-
-### 2. Redis connectivity
-
-```bash
-curl $BASE/ping
-# {"ping":"True"}
-```
-
-### 3. Configuration
-
-```bash
-curl $BASE/config
-# {"host":"...","port":6379,"db":0,"cluster":false,"prefix":"redis:fastapi","default_ttl":0}
-```
-
-### 4. DI-based caching (`cache()` / `cache_evict()`)
-
-```bash
-# First request — MISS, response is computed and stored
-curl -v $BASE/cache-demo 2>&1 | grep -E "x-redis-cache|generated_at"
-# x-redis-cache: MISS
-# {"generated_at":"2026-05-19T16:43:44.027887+00:00"}
-
-# Second request within 30 s — HIT, same timestamp
-curl -v $BASE/cache-demo 2>&1 | grep -E "x-redis-cache|generated_at"
-# x-redis-cache: HIT
-# {"generated_at":"2026-05-19T16:43:44.027887+00:00"}
-
-# Evict the entry
-curl -X DELETE $BASE/cache-demo
-# {"evicted":"demo"}
-
-# Next request — MISS again, new timestamp
-curl -v $BASE/cache-demo 2>&1 | grep -E "x-redis-cache|generated_at"
-# x-redis-cache: MISS
-```
-
-### 5. Conditional caching (`CacheBackend`)
-
-Even IDs are "published" (cached for 60 s). Odd IDs are "draft" (never cached).
-
-```bash
-# Published item (even ID) — first call computes
-curl $BASE/items/2
-# {"id":2,"status":"published","fetched_at":"...","source":"computed"}
-
-# Same call — served from cache (same fetched_at timestamp)
-curl $BASE/items/2
-# {"id":2,"status":"published","fetched_at":"...","source":"cache"}
-
-# Draft item (odd ID) — never cached
-curl $BASE/items/3
-# {"id":3,"status":"draft","fetched_at":"...","source":"computed"}
-
-# Call again — still computed (different fetched_at timestamp)
-curl $BASE/items/3
-# {"id":3,"status":"draft","fetched_at":"...","source":"computed"}
-
-# Evict the published item
-curl -X DELETE $BASE/items/2
-# {"id":2,"deleted":true}
-
-# Published item is recomputed after eviction
-curl $BASE/items/2
-# {"id":2,"status":"published","fetched_at":"...","source":"computed"}
-```
-
-### 6. HTTP cache headers
-
-```bash
-# Inspect all cache-related headers
-curl -s -D - $BASE/cache-demo -o /dev/null | grep -iE "cache-control|etag|x-redis-cache"
-# cache-control: max-age=30
-# etag: W/"..."
-# x-redis-cache: MISS
-
-# Second request — note max-age decreases as TTL counts down
-curl -s -D - $BASE/cache-demo -o /dev/null | grep -iE "cache-control|etag|x-redis-cache"
-# cache-control: max-age=27
-# etag: W/"..."
-# x-redis-cache: HIT
-```
-
-### 7. 304 Not Modified (ETag)
-
-```bash
-# Get the ETag from a first request
-ETAG=$(curl -s -D - $BASE/cache-demo -o /dev/null | grep -i etag | tr -d '\r' | awk '{print $2}')
-
-# Send If-None-Match — server returns 304 with no body
-curl -v -H "If-None-Match: $ETAG" $BASE/cache-demo 2>&1 | grep "< HTTP"
-# < HTTP/2 304
 ```

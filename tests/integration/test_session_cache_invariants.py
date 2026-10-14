@@ -193,10 +193,18 @@ class TestRow1PerUser:
             assert "private" in _directives(response)
             assert "max-age=300" in _directives(response)
 
-    def test_f10_vary_is_emitted(self, alice) -> None:
+    def test_f10_vary_is_emitted_on_the_miss_and_the_hit(self, alice) -> None:
         """`private` stops shared caches; `Vary` stops the browser reusing a
-        previous user's copy across a sign-out and sign-in."""
-        assert "Cookie" in alice.get("/me").headers.get("vary", "")
+        previous user's copy across a sign-out and sign-in.
+
+        The hit matters as much as the miss: the browser stores whichever one
+        it last received.  The endpoint does not run on a hit, so nothing in it
+        marks the session as read - the per-user key lookup has to.
+        """
+        miss, hit = alice.get("/me"), alice.get("/me")
+        assert hit.headers["x-redis-cache"] == "HIT"
+        for response in (miss, hit):
+            assert "Cookie" in response.headers.get("vary", "")
 
 
 class TestRow2SharedButSessionReading:

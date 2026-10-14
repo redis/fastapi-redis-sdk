@@ -706,8 +706,7 @@ async def cache_hit_exception_handler(request: Request, exc: Exception) -> Respo
 _SESSION_SCOPE_KEY = "session"
 _SESSION_STATE_SCOPE_KEY = "redis_session_state"
 
-# Routes already warned about, so the safety net says it once rather than once
-# per request.
+# Avoid warning about the same route a second time
 _WARNED_ROUTES: set[str] = set()
 
 
@@ -723,6 +722,13 @@ def _session_subject(request: Request) -> str | None:
     if state is None:
         return None
     return getattr(state, "subject", None) or getattr(state, "session_id", None)
+
+
+def _mark_session_read(request: Request) -> None:
+    """Mark the session as read, when there is a session middleware at all."""
+    mark = getattr(request.scope.get(_SESSION_SCOPE_KEY), "mark_accessed", None)
+    if mark is not None:
+        mark()
 
 
 def _session_was_read(request: Request) -> bool:
@@ -935,6 +941,12 @@ def cache(
             subject = _session_subject(request)
             if subject is not None:
                 cache_key = f"{cache_key}:u:{subject}"
+            # The key is a read of the session, so mark it as one.  On a hit
+            # the endpoint never runs, and without this the middleware sends
+            # no ``Vary: Cookie``: a browser could then reuse one user's copy
+            # after another signs in.  Marked even with no session, because
+            # the "nobody" entry is just as wrong for a user who signs in.
+            _mark_session_read(request)
 
         with cache_span(
             "cache.get",

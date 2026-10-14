@@ -18,6 +18,7 @@ See ``docs/specs/session-design.md`` Sections 3 and 4.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import secrets
@@ -490,7 +491,11 @@ class SessionStore(ABC):
             }
         )
         if self._encryptor is not None:
-            return self._encryptor.encrypt(encoded.encode()).decode("latin-1")
+            # Base64, because ciphertext is arbitrary bytes and the field is
+            # text to redis-py: written as UTF-8, read back as bytes or as text
+            # depending on the client.  ASCII is the same in all three.
+            ciphertext = self._encryptor.encrypt(encoded.encode())
+            return base64.b64encode(ciphertext).decode("ascii")
         return encoded
 
     def decode(self, raw: str | bytes) -> SessionRecord:
@@ -501,9 +506,10 @@ class SessionStore(ABC):
         whether to sign the user out or to fail the request.
         """
         if self._encryptor is not None:
-            blob = raw.encode("latin-1") if isinstance(raw, str) else raw
             try:
-                text = self._encryptor.decrypt(blob).decode()
+                blob = raw.encode("ascii") if isinstance(raw, str) else raw
+                ciphertext = base64.b64decode(blob, validate=True)
+                text = self._encryptor.decrypt(ciphertext).decode()
             except Exception as exc:
                 raise SessionStoreError(f"Unreadable session record: {exc}") from exc
         else:

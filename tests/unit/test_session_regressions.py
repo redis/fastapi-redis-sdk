@@ -518,6 +518,38 @@ class TestEncryptionSeam:
         assert loaded is not None
         assert loaded.record.data == {"user_id": 42}
 
+    @pytest.mark.parametrize("decode_responses", [False, True])
+    async def test_ciphertext_with_high_bytes_round_trips(
+        self, decode_responses: bool
+    ) -> None:
+        """A real cipher emits every byte value, not only ASCII.
+
+        The XOR above stays below 0x80, so it could not catch ciphertext being
+        turned into text one way and back another.  Inverting every byte puts
+        most of them at 0x80 or above, as AES-GCM does.  Both client modes
+        matter: the shared pool returns bytes, a caller's own client may not.
+        """
+        import fakeredis.aioredis
+
+        class Invert:
+            def encrypt(self, data: bytes) -> bytes:
+                return bytes(b ^ 0xFF for b in data)
+
+            def decrypt(self, data: bytes) -> bytes:
+                return bytes(b ^ 0xFF for b in data)
+
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=decode_responses)
+        store = RedisSessionStore(
+            redis, encryptor=Invert(), idle_ttl=60, absolute_ttl=600
+        )
+        sid = store.new_id()
+        await store.create(sid, store.new_record({"user_id": "alice"}))
+
+        loaded, failed = await store.load_with_status(sid)
+        assert failed is False, "the store could not decrypt its own record"
+        assert loaded is not None
+        assert loaded.record.data == {"user_id": "alice"}
+
     async def test_a_record_that_will_not_decrypt_is_unreadable_not_empty(
         self, fake_async_redis
     ) -> None:
