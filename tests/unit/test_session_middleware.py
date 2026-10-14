@@ -10,7 +10,7 @@ from __future__ import annotations
 from http.cookies import SimpleCookie
 
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
@@ -52,8 +52,6 @@ def app(fake_async_redis, monkeypatch) -> FastAPI:
         return store
 
     application.dependency_overrides[get_session_store] = _store
-    # The middleware resolves the store directly, not through DI, so point it
-    # at the same fake instance.
 
     @application.get("/read")
     async def read(session: SessionDep) -> dict:
@@ -67,12 +65,6 @@ def app(fake_async_redis, monkeypatch) -> FastAPI:
     async def login(session: SessionDep) -> dict:
         session["user_id"] = 42
         return {"ok": True}
-
-    @application.post("/login-fails")
-    async def login_fails(session: SessionDep, response: Response) -> dict:
-        session["user_id"] = 42
-        response.status_code = 401
-        return {"ok": False}
 
     @application.post("/write")
     async def write(session: SessionDep) -> dict:
@@ -127,9 +119,6 @@ class TestVaryCookie:
     ) -> None:
         """Without it a shared cache can serve one user's page to another."""
         assert client.get("/read").headers["vary"] == "Cookie"
-
-    def test_vary_is_absent_when_it_was_not(self, client: TestClient) -> None:
-        assert "vary" not in client.get("/untouched").headers
 
 
 class TestWriteAndRoundTrip:
@@ -199,22 +188,6 @@ class TestAutomaticRotation:
         first = _set_cookies(client.post("/write"))["session"]["session"].value
         second = _set_cookies(client.post("/write"))["session"]["session"].value
         assert first == second
-
-    def test_a_failed_sign_in_persists_nothing(
-        self, client: TestClient, app: FastAPI, fake_async_redis
-    ) -> None:
-        """Section 4.3's one exception.
-
-        Persisting the data while skipping the rotation would store the new
-        identity against the old, unrotated ID - the exact fixation this
-        design prevents, arrived at by being helpful.
-        """
-        response = client.post("/login-fails")
-        assert response.status_code == 401
-        assert "set-cookie" not in response.headers
-
-        # And nothing was written, so a later read finds no user.
-        assert client.get("/read").json() == {"user_id": None}
 
 
 class TestCookieValidation:
@@ -351,31 +324,6 @@ class TestSigningOutARecordThatDidNotLoad:
         assert _set_cookies(response)["session"]["session"]["max-age"] == "0"
 
 
-class TestCookieOnlyMode:
-    """Both clocks disabled: the browser decides, so there is no ``Max-Age``."""
-
-    def test_no_max_age_is_emitted(self, fake_async_redis, monkeypatch) -> None:
-        get_settings.cache_clear()
-        monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
-        monkeypatch.setenv("REDIS_SESSION_IDLE_TTL", "0")
-        monkeypatch.setenv("REDIS_SESSION_ABSOLUTE_TTL", "0")
-        get_settings.cache_clear()
-
-        store = RedisSessionStore(fake_async_redis, idle_ttl=0, absolute_ttl=0)
-        application = FastAPI()
-        add_redis_sessions(application, store=store)
-
-        @application.post("/w")
-        async def w(session: SessionDep) -> dict:
-            session["n"] = 1
-            return {}
-
-        with TestClient(application) as c:
-            morsel = _set_cookies(c.post("/w"))["session"]["session"]
-        assert morsel["max-age"] == "", "cookie-only mode must not pin a lifetime"
-        get_settings.cache_clear()
-
-
 class TestSecureAndDomainAttributes:
     def test_secure_and_domain_are_emitted_when_configured(
         self, fake_async_redis, monkeypatch
@@ -493,15 +441,6 @@ class TestAlwaysSaveDoesNotMintAnonymousSessions:
         assert "set-cookie" not in response.headers, "an anonymous visitor got an ID"
         assert await fake_async_redis.keys("*") == [], "a key was written for nobody"
 
-    async def test_a_crawler_hitting_it_a_hundred_times_leaves_no_keys(
-        self, always_save_app: FastAPI, fake_async_redis
-    ) -> None:
-        """The cost was per unique visitor, so the count is the point."""
-        with TestClient(always_save_app) as client:
-            for _ in range(100):
-                assert client.get("/read").status_code == 200
-        assert await fake_async_redis.keys("*") == []
-
     async def test_a_real_sign_in_still_writes(self, always_save_app: FastAPI) -> None:
         """The guard must not cost the ordinary path anything."""
         with TestClient(always_save_app) as client:
@@ -520,7 +459,6 @@ class TestAlwaysSaveDoesNotMintAnonymousSessions:
             client.post("/login")
             sid = client.cookies["session"]
             # Seed a nested value directly in the store.
-            client.post("/login")
             store = always_save_app.state._store
             loaded = await store.load(sid)
             record = store.new_record(

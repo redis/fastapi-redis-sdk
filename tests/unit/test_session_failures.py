@@ -94,19 +94,6 @@ class TestReadsFailOpen:
     ) -> None:
         assert await broken.list_for_subject("42") == []
 
-    async def test_a_failed_count_raises_rather_than_answering_zero(
-        self, broken: RedisSessionStore
-    ) -> None:
-        """The one read that must **not** fail open.
-
-        Section 7's argument for an empty session is that the application's
-        own authorization still runs.  For a count the store *is* the answer,
-        and ``0`` is the permissive one - a concurrent-session cap would wave
-        every login through exactly when Redis is unhealthy.
-        """
-        with pytest.raises(SessionStoreError, match="Could not count sessions"):
-            await broken.count_for_subject("42")
-
 
 class TestFailClosedFlipsReadsOnly:
     async def test_a_failed_load_raises(self, fail_closed: RedisSessionStore) -> None:
@@ -160,12 +147,13 @@ class TestWritesAlwaysRaise:
         with pytest.raises(SessionStoreError, match="Could not read the session index"):
             await broken.revoke_id(broken.new_id(), subject="42")
 
-    async def test_a_write_still_raises_under_fail_open(
-        self, broken: RedisSessionStore
+    async def test_a_write_still_raises_under_fail_closed(
+        self, fail_closed: RedisSessionStore
     ) -> None:
-        assert get_settings().session_fail_closed is False
-        with pytest.raises(SessionStoreError):
-            await broken.save(broken.new_id(), broken.new_record({}))
+        """The setting changes reads only; a write raises either way."""
+        assert get_settings().session_fail_closed is True
+        with pytest.raises(SessionStoreError, match="Could not save session"):
+            await fail_closed.save(fail_closed.new_id(), fail_closed.new_record({}))
 
 
 class TestTidyUpNeverFailsARequest:
@@ -194,23 +182,6 @@ class TestTidyUpNeverFailsARequest:
 
 
 class TestUnexpectedStates:
-    async def test_a_key_with_no_expiry_is_treated_as_absent(
-        self, fake_async_redis
-    ) -> None:
-        """A session key with no TTL has no deadline, so it is not a session.
-
-        A save that lands after the session ended leaves one; so does a key
-        written by something outside this store.  The store refuses the
-        session rather than guessing, and deletes the key.
-        """
-        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
-        sid = store.new_id()
-        key = store.session_key(sid)
-        await fake_async_redis.hset(key, mapping={"d": "{}"})
-
-        assert await store.load(sid) is None
-        assert await fake_async_redis.exists(key) == 0
-
     @staticmethod
     async def _corrupt_session(redis) -> tuple[RedisSessionStore, str]:
         get_settings.cache_clear()

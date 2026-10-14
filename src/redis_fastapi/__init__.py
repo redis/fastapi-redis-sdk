@@ -63,7 +63,6 @@ from redis_fastapi.session_backend import (
     SessionStoreProtocol,
     SyncSessionStore,
 )
-from redis_fastapi.session_events import Cause, Handler, SessionEvents, Tier
 from redis_fastapi.sessions import (
     CookieSpec,
     Outcome,
@@ -93,13 +92,11 @@ __all__ = [
     "CacheBackendDep",
     "CacheHitException",
     "CannotIdentifyClient",
-    "Cause",
     "Challenge",
     "Coder",
     "CookieSpec",
     "Encryptor",
     "FastAPIRedis",
-    "Handler",
     "Identifier",
     "JsonCoder",
     "KeyBuilder",
@@ -119,7 +116,6 @@ __all__ = [
     "SessionConfigurationError",
     "SessionDep",
     "SessionError",
-    "SessionEvents",
     "SessionInfo",
     "SessionMetadata",
     "SessionMiddleware",
@@ -137,7 +133,6 @@ __all__ = [
     "SyncRateLimitBackendDep",
     "SyncSessionStore",
     "SyncSessionStoreDep",
-    "Tier",
     "add_redis_caching",
     "add_redis_rate_limiting",
     "add_redis_sessions",

@@ -29,21 +29,21 @@ item is excluded. Each row carries an ID so a commit, a test or a review comment
 | F-11 | API            | One call enables the feature. A dict-like dependency needs no load or save, and `request.session` behaves as before, so existing code and Authlib run unchanged.                                                                                           |
 | F-12 | API            | The store exposes rotate, revoke, revoke-by-ID, revoke-all, list and count. Both dependencies resolve through `Depends`, so `dependency_overrides` works.                                                                                                  |
 | F-13 | API            | Every part of the feature works from a `def` endpoint as well as an `async def` one, with no second pattern to learn.                                                                                                                                      |
-| F-14 | Data           | `created`, `last_access` and `lifetime` are readable under those names(to preserve compatibility withother frameworks), stored alongside your data rather than mixed into it.                                                                              |
+| F-14 | Data           | `created` and `last_access` are readable under those names, to keep migrations from other frameworks a rename, and are stored alongside your data rather than mixed into it.                                                                               |
 | F-15 | Data           | The payload is serialized through a replaceable coder, and optionally encrypted                                                                                                                                                                            |
 | F-16 | Data           | Mutation is detected for `popitem()`, `\|=` and `pop()`. Nested mutation, which no `dict` subclass can see, has a documented escape route.                                                                                                                 |
 | F-17 | Extensibility  | Coder, encryptor, store, key prefix, ID factory, subject resolver and cookie builder are all replaceable. A supplied ID factory is validated on every call.                                                                                                |
 | F-18 | Observability  | Spans and metrics for every store operation, following the pattern the package already uses.                                                                                                                                                               |
 | F-19 | Errors         | One exception base, with configuration and store errors beneath it; no driver error reaches the caller. A failed read yields an empty session by default, and a failed write always raises.                                                                |
 | F-20 | Migration      | A documented path from each of four starting points: an in-process store, the Starlette signed cookie, `starsessions` with Redis, and the `fastapi-users` Redis strategy.                                                                                  |
-| F-21 | Events         | **Opt-in real-time session events.** When the server supports and is configured for them, Redis notifications drive application callbacks on session death. When it does not, the feature turns itself off and the application is unaffected. Section 13.4.                                    |
+| F-21 | Events         | **Deferred.** Real-time session events were removed before the first release; they return with WebSocket session support. Section 13.4.                                                                                                                                                        |
 
 ### 0.2 Non-functional requirements
 
 | ID   | Category        | Requirement                                                                                                                                                                                 |
 |------|-----------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | N-1  | Performance     | A request with no session cookie costs zero Redis calls. A read-only request with one costs a single pipelined round trip. An unchanged payload is never re-serialized or re-written.       |
-| N-2  | Performance     | List and revoke-all cost two round trips regardless of session count. A count below the configured limit is `O(1)` with no verification.                                                    |
+| N-2  | Performance     | Listing costs two round trips and revoke-all three, regardless of session count. A count below the configured limit is `O(1)` with no verification.                                         |
 | N-3  | Compatibility   | Redis 7.4 and later — the floor this package already declares — with no rise in the FastAPI floor.                                                                                          |
 | N-4  | Compatibility   | Correct on standalone and on Cluster, with no behavioural difference between them.                                                                                                          |
 | N-5  | Compatibility   | No new required runtime dependency. A newer server lowers cost with no code change and no configuration.                                                                                    |
@@ -133,7 +133,6 @@ Two new files, following the split that `cache.py` / `cache_backend.py` and
 | File                                   | Contents                                                                                                                                          |
 |----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | `src/redis_fastapi/session_backend.py` | `SessionStore` (ABC, owns the lifecycle), `RedisSessionStore`, **`SyncSessionStore`**, `SessionStoreProtocol`, `SessionMetadata`, `SessionRecord` |
-| `src/redis_fastapi/session_events.py`  | `SessionEvents`, the tier probe, and the per-node subscriber task. Separate because it owns a background task and a Pub/Sub connection, which neither of the other two files does. Section 13.4 |
 | `src/redis_fastapi/sessions.py`        | `Session`, `SessionMiddleware`, the `valid_session()` dependency factory and its `issued_within` parameter (see `session-di-factory-research.md`), `add_redis_sessions()`, the cookie builder, the exceptions |
 
 Changes to some of the existing files include :
@@ -144,7 +143,6 @@ Changes to some of the existing files include :
 | `src/redis_fastapi/deps.py`       | `get_session_store`, `SessionStoreDep`, `SessionDep`, plus `get_sync_session_store` and `SyncSessionStoreDep`, beside the matching rate-limit pair |
 | `src/redis_fastapi/config.py`     | `session_*` fields on `RedisSettings`, beside the `rate_limit_*` fields                                                                            |
 | `src/redis_fastapi/telemetry.py`  | `session_*` instruments, following the existing pattern exactly                                                                                    |
-| `src/redis_fastapi/lifespan.py`   | Start and stop the `SessionEvents` subscriber, and run its tier probe once per process, beside `probe_increx_support`                              |
 | `src/redis_fastapi/__init__.py`   | the new public names in `__all__`                                                                                                                  |
 
 Reused, not rewritten:
@@ -527,14 +525,16 @@ Field `d` holds an envelope:
 
 ```json
 {
-  "m": {"created": 1756000000.0, "last_access": 1756000042.0, "lifetime": 3600},
+  "m": {"created": 1756000000.0, "last_access": 1756000042.0},
   "d": {"user_id": 42, "cart_id": "c_8fA2", "flash": "Settings saved."}
 }
 ```
 
 `request.session` then holds the inner `d` alone, and contains only what the application
-put there. The three field names in `m` are the three that `starsessions` uses, so its
-`get_session_metadata()` accessors port across as a rename and not a redesign.
+put there. The two field names in `m` are the ones `starsessions` uses, so its
+`get_session_metadata()` accessors port across as a rename and not a redesign. Its third
+field, `lifetime`, is not stored: it is the store's `absolute_seconds`, the same for every
+session, and a copy in each record would only go stale when the setting changes.
 
 The envelope is serialized by the configured `Coder`, then passed through the configured
 `Encryptor` if one is set. Encryption wraps serialization, never the reverse: the `Coder`
@@ -1438,7 +1438,6 @@ Fields on `RedisSettings`, beside the existing `rate_limit_*` ones and following
 | `session_fail_closed`       | `bool`                        | `False`             | Behaviour when Redis is unreachable **on read**. `False` yields an empty session, so the caller looks anonymous and the application's own authorization rejects them. `True` raises `SessionStoreError` instead, for a deployment that prefers a 503 to an anonymous page. **Writes always raise, whatever this is set to** — Section 7 explains the asymmetry. |
 | `session_always_save`       | `bool`                        | `False`             | Write the payload on every request that touched the session, even when no mutation was detected. The escape route for the one fault no `dict` subclass can see: a change inside a nested value, `session["a"]["b"] = 1` (Section 8). Costs a write on every request that **read** the session - `accessed` is set by reading - so prefer reassigning the top-level key. **An empty session is exempt**: `WRITE` requires `not empty`, because without it every anonymous visitor to a session-touching route would be minted an identifier, a key and a cookie. Nothing is lost, since a nested mutation implies a top-level key already holding the value. |
 | `session_principal_keys` | `list[str]` | `["user_id"]` | Session keys the rotation trigger watches. A change to any of them on a successful response rotates the ID. Add `"role"` or `"scopes"` for OWASP's privilege-change rotation. **Comma-separated from the environment** — `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`; a JSON array is also accepted. Section 5.1; use `principal_of` when a list of keys cannot express it. |
-| `session_events_enabled`    | `bool`                        | `False`             | Subscribe to Redis notifications and call registered handlers when a session ends (Section 13.4, F-21). **Best-effort.** On a server where `notify-keyspace-events` lacks `Ehx` (`A` counts as `hx`), or where `CONFIG GET` is unavailable, the store logs one warning at startup and the handlers never fire. Never enable the server setting on the operator's behalf.                                              |
 | `session_key_prefix`        | `str \| None`                 | `None`              | Overrides the key namespace. `None` uses `settings.pattern_prefix()`, giving `redis:fastapi:session:` and `redis:fastapi:sessions-of:`. A callable prefix is a constructor argument rather than a setting, since an environment variable cannot carry one (Section 9, extension points).                                                                        |
 
 #### Three things the §5 list in `session-mgmt.md` names that are deliberately not settings
@@ -1645,9 +1644,6 @@ redundant:
 - **The index prunes itself with no help from us**: add a session, let its absolute TTL
   pass, then confirm `HGETALL` omits it and `HLEN` has dropped — without any prune call.
   Then remove the last field and confirm Redis deleted the key.
-- **Session events on a real server**: with `notify-keyspace-events Ehx`, an idle expiry
-  reaches a handler as `idle` and an absolute expiry as `absolute` - and not as `idle`
-  too. This needs no Redis 8.8, so it runs on every leg of the matrix.
 - `list_for_subject` answers in one round trip and returns the descriptor for each
   session.
 - `revoke_all` ends every session for one subject and leaves another subject untouched.
@@ -1685,10 +1681,7 @@ Run `nox`: lint, mypy, bandit and coverage all gate.
    plus the ordering test. **The OWASP core is complete here.**
 6. The subject index: `HSETEX`/`HDEL`, `list_for_subject`, `revoke_all`.
 7. Telemetry, the exceptions, the extension points.
-8. `SessionEvents`: the tier probe, the subscriber, the silent fallback. **Last, and
-   separable.** It is the only step whose omission changes nothing else — N-17 says every
-   guarantee holds without it — so it is the first thing to cut if the release is tight.
-9. Documentation and the recipes.
+8. Documentation and the recipes.
 
 Steps 1 to 5 are P0 in Section 8.5 of `session-mgmt.md`. Step 6 is P1, but its **key
 schema must be settled in step 2**: Section 8.4 of `session-mgmt.md` explains that an
@@ -1705,8 +1698,8 @@ Memcached store could not copy.
 Three features carry that weight and all three sit inside the 7.4 floor this package
 already declares, so version 1 depends on nothing newer. Section 13.2 then lists what a
 later server adds for free, Section 13.3 gives the operational advice that comes with
-running the server rather than only calling it, Section 13.4 designs the one opt-in feature
-that a newer server unlocks, and Section 13.5 records what we looked at and left out.
+running the server rather than only calling it, Section 13.4 records why real-time session
+events were deferred, and Section 13.5 records what we looked at and left out.
 
 ### 13.1 What we use, at the 7.4 floor
 
@@ -1789,8 +1782,8 @@ ever qualify for one, and a short name is fewer bytes on the wire meanwhile.
 
 **Hash subkey notifications (8.8) name the field that expired.** An earlier design kept
 both clocks in fields and needed them to tell an idle death from an absolute one. With the
-absolute deadline on the key, key-level events already tell them apart on 7.4 (Section
-13.4), so this row gives the session store nothing it lacks.
+absolute deadline on the key, key-level events already tell them apart on 7.4, so this
+row gives the session store nothing it lacks.
 
 ### 13.3 Operational guidance that only a Redis vendor will write
 
@@ -1826,130 +1819,25 @@ This is the one place where the query engine would be strictly better, since it 
 per-subject key to contend on. Section 3.3 records why version 1 does not use it, and what
 would change that.
 
-### 13.4 Real-time session events
+### 13.4 Real-time session events: deferred
 
-A session store knows when a session dies. Every competing store discovers it on the next
-request, because a row that expired quietly tells nobody. Redis can tell us, and F-21 turns
-that into an opt-in feature: **the store subscribes to Redis notifications and calls the
-application back when a session ends.** Closing a WebSocket the moment a user is signed out
-is the case that pays for it.
+F-21 was built and then removed before the first release. It subscribed to keyspace
+notifications - `hexpired` for the idle clock, `expired` for the absolute one - and called
+the application back when a session died. Its main use was closing a WebSocket when a session
+ends, and it could not do that job:
 
-The feature is off by default, degrades to nothing on a server that cannot supply it, and
-carries no guarantee. The rest of this section says exactly what that means.
+- **It saw expiry only.** Sign-out, `revoke_id`, `revoke_all` and rotation all end a session
+  with a `DEL`, and Redis publishes the same `del` event when an idle expiry empties the key,
+  so the subscriber could not observe them. These are the endings that matter most for an
+  open socket.
+- **WebSockets have no session in this release** (see the sessions guide), so the one
+  consumer it existed for had to load the session by hand at the handshake.
+- **It needed server configuration** (`notify-keyspace-events Ehx`) that managed Redis often
+  forbids, and on a Cluster one subscriber per node.
 
-#### Two key-level events name the two clocks
-
-Field `d` is the only field of a session key with a TTL, and the absolute deadline is the
-key's own TTL. So each clock has its own key-level event, and both exist from Redis 7.4:
-
-| Event | Channel | On a session key it means |
-|---|---|---|
-| `hexpired` | `__keyevent@<db>__:hexpired` | field `d` expired: the **idle** clock |
-| `expired` | `__keyevent@<db>__:expired` | the key expired: the **absolute** clock |
-
-The payload of both is the key name, so the session ID is the key minus the prefix.
-**Neither fires for the other clock**, checked against Redis 8.7: an idle expiry publishes
-`hexpired` and then `del`, because the hash is now empty, and no `expired`; an absolute
-expiry publishes `expired` and no `hexpired`. The subscriber ignores `del`, which a
-revocation also publishes.
-
-An earlier design kept the absolute deadline in a second field. Both clocks were then
-field expiries, a key-level `hexpired` could not say which field expired, and telling them
-apart needed Redis 8.8's subkey notifications with the `T` flag. Moving the deadline to
-the key removed that requirement.
-
-The tiers are therefore two: `key` when the server delivers these events, `none` when it
-cannot.
-
-#### Probe, and never configure
-
-Two different questions, and the code must ask both:
-
-1. **Can the server do it?** Read `redis_version` from `INFO server`. Hash-field expiry,
-   and with it `hexpired`, arrived in 7.4, which is also this package's floor.
-2. **Is it switched on?** Read `notify-keyspace-events` with `CONFIG GET` and look for `E`
-   - the `__keyevent@` channels - together with `h` and `x`, the hash and expiry classes.
-
-**`A` counts as `h` and `x`.** `A` is Redis's alias for every event class, and `CONFIG GET`
-reports it in place of the classes it covers: a server set to `KEA` answers `AKE`, with no
-literal `h` or `x`. A probe that looked for the letters would refuse the commonest
-configuration there is.
-
-**Both probes can fail, and failure is an answer.** Managed Redis often restricts, renames
-or forbids `CONFIG`, and an ACL that omits `@admin` does the same. Treat any failure as
-tier `none`. Follow the shape `probe_increx_support` already uses at
-`ratelimit_backend.py:67`: probe once per process from the lifespan, return `None` when the
-question could not be answered, and never cache a guess.
-
-**Never call `CONFIG SET`.** `notify-keyspace-events` is server-wide. Setting it changes
-behaviour for every other application on that instance and costs CPU on every write. A
-library must not make that decision for an operator. Document the flag string, and put it
-beside the `maxmemory-policy` advice in Section 13.3, which has the same shape.
-
-#### The fallback is silence, and the guide must say so plainly
-
-When the tier is `none`, the store registers the handlers, logs **one** warning at startup,
-and the handlers never run. Startup still succeeds and every request still works.
-
-This is the deliberate choice, and it has a sharp edge worth naming rather than hiding: a
-revocation handler that never fires looks exactly like one that works. An application that
-closes WebSockets on this signal and nothing else will hold them open after a sign-out, on
-a server where the feature is unavailable. **So the guide must state that the callback is
-best-effort, and that any application relying on prompt closure needs its own periodic
-check as well.** One warning line at startup is the only thing the library will do about
-it.
-
-#### What a subscriber costs
-
-- **On Cluster, keyspace events are node-local and are not broadcast.** A subscriber must
-  connect to every node to see every event. This is a per-node fan-out, not one connection,
-  and it is the largest implementation cost in the feature.
-- **Every worker receives every event.** A deployment with eight uvicorn workers gets eight
-  deliveries of each session death. That is correct for closing a WebSocket, because only
-  the worker holding the socket acts. It is wrong for anything that writes, so an audit log
-  driven this way needs deduplication or a single designated subscriber.
-- **Pub/Sub is fire-and-forget.** Events sent while no subscriber is connected are lost, and
-  the connection has to be re-established after a disconnect with no replay.
-- **Expiry events fire when Redis removes the field or the key, not when the TTL reaches
-  zero.** With many keys carrying a TTL, the lag can be significant.
-
-#### The rule that does not move
-
-**N-17: no correctness claim rests on a notification.** The index keeps pruning itself
-through field expiry (Section 3.3), and the load-time state table (Section 4.1) stays the
-authority on whether a session is alive. Notifications are a reaction channel and strictly
-additive. Nothing in Sections 3 to 8 changes because this feature exists, and every test in
-Section 11 must pass with it switched off.
-
-#### Shape
-
-A `SessionEvents` object built in the lifespan, holding one subscriber task per node:
-
-```python
-events = store.events()                       # tier probed once, at startup
-
-@events.on_session_end
-async def _(sid: str, cause: Cause) -> None:        # Literal["idle", "absolute"]
-    await close_sockets_for(sid)
-
-print(events.tier)        # "key" or "none"
-```
-
-The channel an event arrives on gives the `cause`. At tier `none` the handler is held and
-never called.
-
-**`Cause` has two members and must not have three.** A revocation is a `DEL`, which
-publishes `del` - the same event an idle expiry publishes when it empties the key. A `del`
-cannot say which of the two happened, so the subscriber does not listen for it. An earlier
-draft included `"revoked"`. A `Literal` in a public callback signature is a promise about
-the inhabited set, so a member nothing can produce leaves a caller's exhaustive `match`
-with an arm that never runs and that a type checker will not let them delete. If a
-revocation event is ever needed, widening the union then is the ordinary cost of widening
-any union.
-
-`Cause`, `Tier` and `Handler` are all exported. `Handler` in particular, because a caller
-under `mypy --strict` has to be able to name the type of the callable `on_session_end`
-requires.
+It returns together with WebSocket session support, redesigned: the store publishes on
+revoke, `revoke_all` and rotation, each socket keeps a local timer for the absolute
+deadline, and a periodic re-check covers a lost message. N-17 still applies to that design.
 
 ### 13.5 Considered, and not in version 1
 
@@ -2085,8 +1973,7 @@ let the feature settle before this package leans on it.
 requirement to log the session lifecycle, using a salted hash of the session ID. `XADD`
 with `MAXLEN` gives a bounded, ordered, replica-safe log that any instance can read, and
 8.6's idempotent production (`XADD ... IDMP`) means a producer that retries after a crash
-cannot double-write an audit entry. Pair it with the session events in Section 13.4:
-the notification is the trigger, the stream is the record. This belongs in the recipe list
+cannot double-write an audit entry. This belongs in the recipe list
 in Section 9.6 of `session-mgmt.md` rather than in the store.
 
 ---

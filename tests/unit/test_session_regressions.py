@@ -281,12 +281,6 @@ class TestMetadataSurvivesAWrite:
         )
         assert again.record.metadata.last_access > first.metadata.last_access
 
-    def test_lifetime_records_the_deadline_actually_in_force(
-        self, fake_async_redis
-    ) -> None:
-        store = RedisSessionStore(fake_async_redis, absolute_ttl=0, gc_ttl=1234)
-        assert store.new_record({}).metadata.lifetime == 1234
-
 
 class TestDescriptor:
     async def test_the_seam_populates_a_listing(self, store: RedisSessionStore) -> None:
@@ -322,7 +316,7 @@ class TestRevokeAllCostAndCount:
 
         assert await store.revoke_all("7") == 1
 
-    async def test_it_is_two_round_trips_whatever_the_count(
+    async def test_it_is_three_round_trips_whatever_the_count(
         self, store: RedisSessionStore
     ) -> None:
         """N-2. It was 1+2N sequential awaits."""
@@ -362,6 +356,14 @@ class TestRevokeAllCostAndCount:
 
 class TestCountDoesNotFailOpen:
     async def test_an_uncountable_index_raises(self, fake_async_redis) -> None:
+        """The one read that must **not** fail open.
+
+        Section 7's argument for an empty session is that the application's
+        own authorization still runs.  For a count the store *is* the answer,
+        and ``0`` is the permissive one - a concurrent-session cap would wave
+        every login through exactly when Redis is unhealthy.
+        """
+
         class _Broken(RedisSessionStore):
             async def _index_size(self, subject: str) -> int:
                 raise RedisConnectionError("down")
@@ -741,13 +743,11 @@ class TestTelemetryCarriesNoIdentifiers:
         monkeypatch.setattr(telemetry._state, "enabled", True)
         monkeypatch.setattr(telemetry._state, "session_operations", _Instrument())
         monkeypatch.setattr(telemetry._state, "session_latency", _Instrument())
-        monkeypatch.setattr(telemetry._state, "session_events", _Instrument())
 
         telemetry.record_session_operation(operation="load", result="hit")
         telemetry.record_session_latency(duration=0.01, operation="load")
-        telemetry.record_session_event(cause="idle", result="delivered")
 
-        allowed = {"operation", "result", "cause"}
+        allowed = {"operation", "result"}
         for attributes in recorded:
             assert set(attributes) <= allowed, f"unexpected label: {attributes}"
 

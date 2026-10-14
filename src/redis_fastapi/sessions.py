@@ -296,7 +296,6 @@ def build_cookie(spec: CookieSpec) -> str:
 
 SCOPE_KEY = "session"
 STATE_SCOPE_KEY = "redis_session_state"
-_STATE_ATTR = "_redis_session"
 # How the load went, and the store it used - both for valid_session(), which
 # runs after the middleware and must judge the request by what it recorded.
 _LOAD_SCOPE_KEY = "redis_session_load"
@@ -470,8 +469,9 @@ class _RequestState:
     store_state: SessionState
     loaded_id: str | None
     principal_before: Any
-    # Only for the ``descriptor_of`` seam, which is given the live request.
-    request: Request | None = None
+    # For the ``descriptor_of`` seam, and for the scope flags other features
+    # set on this request.
+    request: Request
     load: _Load = _Load.MISSING
     # A well-formed cookie whose record did not load: gone, or unreadable.
     # Kept only so a sign-out can still end it; never a live session.
@@ -539,7 +539,6 @@ class SessionMiddleware:
         state = await self._load(request, store, settings)
         scope[_LOAD_SCOPE_KEY] = state.load
         scope[SCOPE_KEY] = state.session
-        setattr(request.state, _STATE_ATTR, state)
         scope[STATE_SCOPE_KEY] = state.store_state
 
         started = False
@@ -641,7 +640,7 @@ class SessionMiddleware:
         store_state = state.store_state
 
         if session.accessed:
-            self._apply_cache_headers(scope_of(state), headers)
+            self._apply_cache_headers(state.request.scope, headers)
 
         # ``principal_of`` is user code and must not mark the session, so the
         # snapshot is shielded. It is the one signal that costs anything.
@@ -692,7 +691,7 @@ class SessionMiddleware:
             # Any payload change the handler made *after* its rotate call is
             # not in the record ``rotate`` wrote, so catch it here.
             if session.modified:
-                await self._write(store, state, settings, create=False)
+                await self._write(store, state)
             return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.ROTATE:
@@ -704,9 +703,7 @@ class SessionMiddleware:
             return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.WRITE:
-            await self._write(
-                store, state, settings, create=store_state.session_id is None
-            )
+            await self._write(store, state)
             return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.TOUCH:
@@ -788,7 +785,7 @@ class SessionMiddleware:
 
     def _descriptor(self, state: _RequestState) -> dict[str, Any] | None:
         """Evaluate the ``descriptor_of`` seam, if one was supplied."""
-        if self._descriptor_of is None or state.request is None:
+        if self._descriptor_of is None:
             return None
         return self._descriptor_of(state.request, state.session)
 
@@ -817,16 +814,18 @@ class SessionMiddleware:
         except SessionStoreError as exc:
             logger.warning("Could not delete a session on sign-out: %s", exc)
 
-    async def _write(
-        self, store: SessionStore, state: _RequestState, settings: Any, *, create: bool
-    ) -> None:
-        """Persist the payload, and re-assert the index entry beside it."""
+    async def _write(self, store: SessionStore, state: _RequestState) -> None:
+        """Persist the payload, and re-assert the index entry beside it.
+
+        Creates the session when it has no identifier yet, and saves it
+        otherwise.
+        """
         session = state.session
         store_state = state.store_state
+        create = store_state.session_id is None
         if store_state.session_id is None:
             store_state.session_id = store.new_id()
             store_state.absolute_remaining = store.absolute_seconds
-            create = True
         record = store.new_record(session.raw(), created=store_state.created)
         if create:
             await store.create(store_state.session_id, record)
@@ -1009,14 +1008,7 @@ def add_redis_sessions(
             values = tuple(dict.get(session, key) for key in watched)
             return values if any(v is not None for v in values) else None
 
-    from redis_fastapi.deps import get_session_store
-
-    # Tells the lifespan that a session-event subscriber may be worth starting;
-    # cache-only apps never set it. Safe before startup: the builder runs at
-    # app-construction time and the lifespan reads it later.
-    app.state._redis_sessions = True
-
-    from redis_fastapi.deps import _SessionStoreOptions
+    from redis_fastapi.deps import _SessionStoreOptions, get_session_store
 
     kwargs: dict[str, Any] = {
         name: value
@@ -1124,11 +1116,6 @@ def _merge_header(
         headers[index] = (existing_name, b", ".join([*parts, value]))
         return
     headers.append((name, value))
-
-
-def scope_of(state: _RequestState) -> MutableMapping[str, Any]:
-    """The ASGI scope behind a request state, for reading cross-feature flags."""
-    return state.request.scope if state.request is not None else {}
 
 
 # ---------------------------------------------------------------------------
@@ -1260,9 +1247,7 @@ def _age_of(request: Request, state: SessionState) -> int | None:
     """Seconds since the session's ID was issued, measured with the store the
     middleware loaded it with - the one whose ``absolute_seconds`` sized the
     key's TTL."""
-    store = request.scope.get(_STORE_SCOPE_KEY)
-    if store is None:
-        return None
+    store = request.scope[_STORE_SCOPE_KEY]
     return issued_ago(store.absolute_seconds, state)
 
 

@@ -335,23 +335,6 @@ class RedisSettings(BaseSettings):
             "user_id,role.  A JSON array is still accepted."
         ),
     )
-    session_events_enabled: bool = Field(
-        default=False,
-        description=(
-            "Subscribe to Redis notifications and call registered handlers "
-            "when a session ends.  Best-effort: on a server that cannot "
-            "supply them the store logs one warning at startup and the "
-            "handlers never fire."
-        ),
-    )
-    session_events_reconnect: bool = Field(
-        default=True,
-        description=(
-            "Subscribe again, every second and with no limit, when the "
-            "session-event subscription is lost.  False: stop at the first "
-            "loss, and the handlers stay silent until the process restarts."
-        ),
-    )
 
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(

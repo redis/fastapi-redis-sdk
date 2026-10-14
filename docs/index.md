@@ -46,6 +46,9 @@ get OpenTelemetry instrumentation out of the box. Install with
 - [**Rate Limiting**](guide/rate-limiting.md) - distributed per-client limits:
   the per-route dependency and global limiter, the fluent rate language,
   identifiers, and `X-RateLimit-*` / `Retry-After` headers.
+- [**Sessions**](guide/sessions.md) - server-side sessions stored in Redis:
+  automatic ID rotation on sign-in, idle and absolute timeouts enforced by
+  Redis, sign-out everywhere, and `request.session` compatibility.
 - [**Observability**](guide/observability.md) - OpenTelemetry spans and metrics
   for cache and rate-limit operations, and how to enable each layer.
 - [**Configuration**](guide/configuration.md) - Pydantic-Settings configuration

@@ -1,8 +1,8 @@
 # Sessions
 
-Server-side sessions for FastAPI. The cookie carries an opaque identifier and
-nothing else; the record lives in Redis, where the server enforces both of its
-deadlines.
+The SDK also provides server-side sessions for FastAPI. The cookie carries an 
+opaque identifier and nothing else; the record lives in Redis, where the server
+enforces both of its deadlines.
 
 ```python
 from fastapi import FastAPI
@@ -27,12 +27,12 @@ unchanged.
 
 ---
 
-## When changes reach Redis
+## Session change
 
-A write to the session changes a `dict` in memory and nothing else. The
-middleware loads the session before your endpoint runs. It saves, rotates or
-deletes the session after the endpoint returns, just before it sends the
-response headers. While your endpoint runs:
+Writing to the session dictionary remains an in-memory change until the endpoint 
+completes its work. The middleware loads the session before your endpoint runs.
+It saves, rotates or deletes the session after the endpoint returns, just before
+it sends the response headers. While your endpoint runs:
 
 - Reads in the same request see your writes.
 - Redis still holds the old record, and `store.session_id(state)` returns the
@@ -68,7 +68,7 @@ shows the full sequence.
 
 ---
 
-## Rotation is automatic
+## Automatic rotation
 
 Writing the identity rotates the session ID. There is no `rotate()` to call and
 therefore none to forget, which matters because forgetting it is the one
@@ -115,20 +115,23 @@ request and the two results are compared by value - and it must return a
 
 ---
 
-## Two clocks, both enforced by Redis
+## Session clocks
 
-| Setting | Default | What it bounds |
-|---|---|---|
-| `session_idle_ttl` | 30 min | Time since the last request carrying the cookie |
-| `session_absolute_ttl` | 8 h | Time since the session was created, however active the user |
+| Setting                | Default | What it bounds                                              |
+|------------------------|---------|-------------------------------------------------------------|
+| `session_idle_ttl`     | 30 min  | Time since the last request carrying the cookie             |
+| `session_absolute_ttl` | 8 h     | Time since the session was created, however active the user |
 
 The idle clock is the [expiration](https://redis.io/docs/latest/commands/hexpire/)
 of the hash field that holds the payload, and the absolute clock is the
 [expiration](https://redis.io/docs/latest/commands/expire/) of the session key
-itself. So **Redis enforces both and this library computes neither**. At the
-absolute deadline Redis deletes the whole key, however recently the payload
-was refreshed. Writing the payload never touches the key's expiration, so no
-number of writes can extend the absolute deadline.
+itself. The library sets each TTL, and **Redis enforces both**: no code in this
+library reads a timestamp to decide whether a session has expired. The key's
+TTL is set once, when the session is created; the field's TTL is reset on
+every request that carries the cookie. At the absolute deadline Redis deletes
+the whole key, however recently the payload was refreshed. Writing the payload
+never touches the key's expiration, so no number of writes can extend the
+absolute deadline.
 
 The absolute clock is the one that matters against a stolen session. An
 [idle timeout](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#idle-timeout)
@@ -153,7 +156,7 @@ session, and the next request with it gets an empty session.
 
 ---
 
-## Signing out, everywhere
+## Signing out
 
 ```python
 from redis_fastapi import SessionStateDep, SessionStoreDep
@@ -238,10 +241,10 @@ def start_over(request: Request, reason: SessionRejection) -> Response:
 async def basket(session: SessionDep) -> dict: ...
 ```
 
-| Reason | What happened |
-|---|---|
-| `"missing"` | No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied |
-| `"expired"` | A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart. |
+| Reason          | What happened                                                                                                                               |
+|-----------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `"missing"`     | No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied                                   |
+| `"expired"`     | A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart. |
 | `"unavailable"` | Redis could not be read, or the record could not be decoded, and the request continued without a session. Answer `503`, not a sign-in page. |
 
 `on_reject` may be sync or async. It **returns** the response instead of
@@ -406,75 +409,6 @@ request that touched the session.
     crawler, health check and preflight - would be minted an identifier, a
     Redis key and a cookie. Nothing the setting exists for is lost, because a
     nested mutation needs a top-level key already holding the nested value.
-
----
-
-## Real-time session events (optional)
-
-Close a WebSocket the moment a session ends, instead of finding out on the next
-HTTP request:
-
-```python
-from redis_fastapi import Cause, SessionEvents
-
-events = SessionEvents(redis, key_prefix="redis:fastapi")
-
-@events.on_session_end
-async def _(session_id: str, cause: Cause) -> None:   # "idle" or "absolute"
-    await close_sockets_for(session_id)
-
-await events.start()
-```
-
-`Cause` has exactly those two members, so an exhaustive `match` over it stays
-exhaustive. A revocation is not among them: it is a `DEL`, and Redis publishes
-the same `del` event when an idle expiry empties the key, so the two cannot be
-told apart. Sign a user out through `revoke()` and you already know it
-happened - the event stream is for the deaths nobody asked for. `Handler` is
-exported too, for annotating the callable you register.
-
-This uses
-[keyspace notifications](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/),
-which work on every supported Redis version, and it needs the server
-configured for them with
-[`CONFIG SET`](https://redis.io/docs/latest/commands/config-set/):
-
-```
-CONFIG SET notify-keyspace-events Ehx
-```
-
-`E` enables the `__keyevent@` channels, `h` the hash events and `x` the
-expiry events. An idle timeout arrives as `hexpired` - the payload field
-expired - and an absolute timeout as `expired` - the key expired. `A` covers
-both `h` and `x`, so a server already set to `KEA` needs nothing more.
-This library will never set the option for you: it is server-wide and affects
-every other application on the instance.
-
-!!! danger "The callback is best-effort, and silence is a possible outcome"
-    On a server without the flags, or one where
-    [`CONFIG GET`](https://redis.io/docs/latest/commands/config-get/) is
-    unavailable - which is common on managed Redis - `events.tier` is `"none"`,
-    one warning is logged at startup, and **your handlers never run**. Startup
-    still succeeds and every request still works. If the subscription is lost
-    later, for example on a network error, `events.tier` changes to `"none"`
-    and one warning is logged. The subscriber tries again every second, with
-    no limit, and `events.tier` returns to `"key"` once it is back. Set
-    `session_events_reconnect=False` to stop at the first loss instead.
-
-    A revocation handler that never fires looks exactly like one that works. If
-    prompt closure matters, check `events.tier` and add a periodic sweep as
-    well. [Redis Pub/Sub](https://redis.io/docs/latest/develop/pubsub/) is
-    fire-and-forget: events sent while no subscriber is connected are lost, and
-    an [expiry event](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#timing-of-expired-events)
-    fires when Redis removes the field or the key rather than when the
-    deadline passed.
-
-    Nothing else depends on this. Expiry, revocation and the index all work
-    identically with events switched off.
-
-On a [cluster](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#events-in-a-cluster),
-keyspace events are node-local and are not broadcast, so seeing every event
-needs one subscriber per node.
 
 ---
 
@@ -680,10 +614,10 @@ async def ws(websocket: WebSocket) -> None:
     ...
 ```
 
-Load once at accept time and hold the identity for the connection. If you need
-the socket to close when the session ends, pair it with
-[real-time session events](#real-time-session-events-optional-redis-88) - that
-is the case those exist for.
+Load once at accept time and hold the identity for the connection. Nothing
+closes the socket when the session ends - by sign-out, revocation or expiry -
+so a socket that must not outlive its session has to check it again itself,
+for example with `store.load(raw, refresh=False)` on a timer.
 
 ---
 
@@ -832,7 +766,7 @@ signed: the cookie is an opaque 256-bit identifier, well past OWASP's
 | both behaviours at once | not expressible for them; set both settings here |
 | `load_session(request)` | nothing - the load is automatic and eager |
 | `regenerate_session_id(request)` | delete the call; writing the identity rotates |
-| `get_session_metadata(request)` | `store.list_for_subject()` for the fields |
+| `get_session_metadata(request)` | `created` and `last_access` from `store.list_for_subject()`; `lifetime` is `store.absolute_seconds` |
 | `RedisStore(...)` | `FastAPIRedis(app).lifespan().sessions()` |
 
 Their `lifetime` accepts a `timedelta`; so does this store's constructor.
@@ -897,12 +831,14 @@ FastAPIRedis(app).lifespan().sessions(
     encryptor=AesGcmEncryptor(key),          # encryption at rest
     id_factory=my_id_factory,                # identifier generation (validated)
     key_prefix="myapp",                      # key namespace
-    idle_ttl=timedelta(minutes=15),          # the two clocks
-    absolute_ttl=timedelta(hours=8),
+    idle_ttl=timedelta(minutes=15),          # idle clock
+    absolute_ttl=timedelta(hours=8),         # absolute clock
+    # what a device listing shows for the session (stored unencrypted)
     descriptor_of=lambda req, s: {"ip": req.client.host},
     principal_keys=["user_id", "role"],      # what rotates the ID
     subject_of=lambda s: s.get("tenant_id"), # what the index is keyed on
     cookie_builder=my_cookie_builder,        # Set-Cookie rendering
+    # requests that get no session and make no Redis calls
     skip=lambda req: req.url.path.startswith("/health"),
 )
 ```
@@ -943,8 +879,6 @@ Every setting is an environment variable prefixed `REDIS_`, so
 | `session_fail_closed` | `False` | Read behaviour when Redis is down or a record is unreadable |
 | `session_always_save` | `False` | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt |
 | `session_principal_keys` | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role` |
-| `session_events_enabled` | `False` | Opt in to real-time events |
-| `session_events_reconnect` | `True` | Subscribe again every second after a lost subscription. `False` stops at the first loss |
 
 ---
 
@@ -966,8 +900,6 @@ The standards and specifications this design follows:
   - what `private`, `no-store` and `Vary` mean to a shared cache
 - [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/)
   - why `maxmemory-policy` decides whether sessions survive
-- [Redis keyspace notifications](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/)
-  - the delivery guarantees behind `SessionEvents`
 - [Redis key expiration](https://redis.io/docs/latest/commands/expire/) and
   [hash field expiration](https://redis.io/docs/latest/commands/hexpire/)
   - the mechanisms the two clocks are built on

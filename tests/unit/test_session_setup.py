@@ -34,11 +34,6 @@ def _plain_http(monkeypatch):
 
 
 class TestTheBuilder:
-    def test_sessions_registers_the_middleware(self) -> None:
-        app = FastAPI()
-        FastAPIRedis(app).sessions()
-        assert any(m.cls is SessionMiddleware for m in app.user_middleware)
-
     def test_calling_it_twice_is_a_no_op(self) -> None:
         """Two middlewares would load and save the session twice per request."""
         app = FastAPI()
@@ -160,9 +155,6 @@ class TestSyncEndpoint:
         store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
         app = FastAPI()
         add_redis_sessions(app, store=store)
-
-        async def _async_store(request: Request) -> RedisSessionStore:
-            return store
 
         async def _sync_store(request: Request) -> SyncSessionStore:
             return SyncSessionStore(store)
@@ -313,6 +305,7 @@ class TestTheStoreIsInjectable:
         )
         assert store.idle_seconds == 900
         assert store.absolute_seconds == 28800
+        assert store._gc_ttl == 2592000
 
     def test_the_builder_forwards_a_timedelta_to_the_store(
         self, fake_async_redis

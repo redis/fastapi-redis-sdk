@@ -55,7 +55,6 @@ class _OTelState:
     # Session metric instruments
     session_operations: Any = None
     session_latency: Any = None
-    session_events: Any = None
 
 
 _state = _OTelState()
@@ -129,11 +128,6 @@ def enable_telemetry() -> None:
         name="redis_fastapi.sessions.latency",
         description="Session store operation latency",
         unit="s",
-    )
-    _state.session_events = _state.meter.create_counter(
-        name="redis_fastapi.sessions.events",
-        description="Session-end notifications delivered to handlers",
-        unit="1",
     )
     _state.ratelimit_latency = _state.meter.create_histogram(
         name="redis_fastapi.ratelimit.latency",
@@ -383,23 +377,6 @@ def record_session_latency(*, duration: float, operation: str) -> None:
         _state.session_latency.record(duration, {"operation": operation})
     except Exception:
         logger.debug("Error recording session latency metric", exc_info=True)
-
-
-def record_session_event(*, cause: str, result: str) -> None:
-    """Count a session-end notification.
-
-    Args:
-        cause: ``idle`` or ``absolute``.  There is no third value: a
-            revocation is a ``DEL``, which the session-event subscriber does
-            not observe, so no handler is ever called with one.
-        result: delivered or dropped.
-    """
-    if not _state.enabled or _state.session_events is None:
-        return
-    try:
-        _state.session_events.add(1, {"cause": cause, "result": result})
-    except Exception:
-        logger.debug("Error recording session event metric", exc_info=True)
 
 
 @contextlib.contextmanager
