@@ -13,7 +13,6 @@ expired.  At the absolute deadline Redis deletes the whole key, so no reader
 can serve a session past it, whatever it asks for.  Writing the payload
 touches field ``d`` alone, so no number of writes can extend the key's TTL.
 
-See ``docs/specs/session-design.md`` Sections 3 and 4.
 """
 
 from __future__ import annotations
@@ -120,8 +119,8 @@ _UNSET: Any = object()
 def _seconds(value: int | timedelta) -> int:
     """Normalise a TTL setting to whole seconds.
 
-    Accepts ``timedelta`` because ``cache()`` already does, and Section 9.4 of
-    ``session-mgmt.md`` requires it for the ``starsessions`` migration.
+    Accepts ``timedelta`` because ``cache()`` already does, and other session
+    libraries accept it too, which eases migration.
     """
     if isinstance(value, timedelta):
         return int(value.total_seconds())
@@ -132,11 +131,11 @@ def _seconds(value: int | timedelta) -> int:
 class SessionMetadata:
     """Timestamps kept beside the payload, never mixed into it.
 
-    ``starsessions`` stores its metadata under a ``__metadata__`` key *inside*
-    the session, so it shows up in the application's own ``request.session``.
-    We keep it in a sibling slot of the envelope instead.  Both names match
-    theirs.  Their third field, ``lifetime``, is not stored: it is the store's
-    own ``absolute_seconds``, the same for every session.
+    Some session libraries store their metadata under a ``__metadata__`` key
+    *inside* the session, so it shows up in the application's own
+    ``request.session``.  We keep it in a sibling slot of the envelope instead.
+    A third field, ``lifetime``, is not stored: it is the store's own
+    ``absolute_seconds``, the same for every session.
     """
 
     created: float
@@ -361,8 +360,8 @@ class SessionStore(ABC):
     a documented, supported product surface, so the published guide does not
     describe it and no compatibility promise attaches to it.
 
-    Section 7 of ``session-mgmt.md`` gives the reason this is an abstract base
-    class and not a bare protocol.  ``SessionStoreProtocol`` describes the much
+    This is an abstract base class, not a bare protocol, so subclasses share
+    the envelope and key handling.  ``SessionStoreProtocol`` describes the much
     smaller surface the middleware calls, for a caller who wants no
     inheritance.
     """

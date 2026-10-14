@@ -305,7 +305,7 @@ class TestIdleRefresh:
 
 class TestEnvelope:
     def test_metadata_never_reaches_the_payload(self, store: RedisSessionStore) -> None:
-        """``starsessions`` puts it inside the session. We do not."""
+        """Some libraries put it inside the session. We do not."""
         record = store.new_record({"user_id": 42})
         decoded = store.decode(store.encode(record))
         assert decoded.data == {"user_id": 42}

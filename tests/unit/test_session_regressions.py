@@ -577,8 +577,8 @@ class TestCookieMaxAgeInEveryBranch:
 
     The value is the absolute remainder, never the idle clock.  The idle clock
     slides on every request, but read-only responses send no cookie, so a
-    cookie sized by it expired while the record was alive (§6 of
-    ``session-design.md``).
+    cookie sized by it expired while the record was alive (see "Session
+    clocks" in the sessions guide).
     """
 
     @pytest.mark.parametrize(

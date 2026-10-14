@@ -201,8 +201,8 @@ class RedisSettings(BaseSettings):
     session_cookie_name: str = Field(
         default="session",
         description=(
-            "Name of the session cookie.  Matches Starlette's and "
-            "starsessions' default so a migration keeps existing cookie names."
+            "Name of the session cookie.  Matches the default of Starlette and "
+            "other session libraries, so a migration keeps existing cookie names."
         ),
     )
     session_cookie_domain: str | None = Field(

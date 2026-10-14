@@ -1,9 +1,6 @@
 """Unit tests for the :class:`Session` mapping.
 
-Every test here corresponds to a row of the table in Section 8 of
-``docs/specs/session-design.md``.  The last four rows exist because the
-upstream Starlette session gets them wrong, so each one fails against that
-implementation and passes against ours.
+Every test here corresponds to a feature of the session module.
 """
 
 from __future__ import annotations
