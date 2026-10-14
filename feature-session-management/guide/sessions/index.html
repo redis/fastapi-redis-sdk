@@ -842,10 +842,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#saying-nothing" class="md-nav__link">
+  <a href="#not-setting-the-vary_on_session-at-all" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Saying nothing
+        Not setting the vary_on_session at all
       
     </span>
   </a>
@@ -1411,10 +1411,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#saying-nothing" class="md-nav__link">
+  <a href="#not-setting-the-vary_on_session-at-all" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Saying nothing
+        Not setting the vary_on_session at all
       
     </span>
   </a>
@@ -2014,10 +2014,16 @@ request is a <code>HIT</code> on Alice's copy. The key is built from the <strong
 the session ID, so it survives a rotation (a privilege change does not throw
 the entry away) and is shared across that user's devices.</p>
 <p>The response carries
-<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private"><code>Cache-Control: private, max-age=300</code></a>.
+<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control#private"><code>Cache-Control: private, max-age=300</code></a>
+and <code>Vary: Cookie</code>, on the hit as well as the miss.
 The <code>private</code> is not optional and is added for you: our entry is per user, so a
 CDN told it may keep one copy for everyone would recreate the leak one hop
-further out.</p>
+further out. The <code>Vary</code> stops the browser showing one user's copy to the next
+person who signs in on it.</p>
+<p>A caller with no session at all has no subject either. Every such caller
+shares one entry, computed with no user - which gives nothing away. Put
+<a href="#requiring-a-valid-session"><code>valid_session()</code></a> in front, first in
+<code>dependencies=[...]</code>, to refuse them instead.</p>
 <h3 id="vary_on_sessionfalse-reads-the-session-but-cache-is-shared"><code>vary_on_session=False</code> - reads the session, but cache is shared<a class="headerlink" href="#vary_on_sessionfalse-reads-the-session-but-cache-is-shared" title="Permanent link">&para;</a></h3>
 <p>Use it when an auth dependency reads the session but the payload does not
 depend on who asked.</p>
@@ -2068,7 +2074,7 @@ change:</p>
 <p>A hand-written gate like <code>require_user</code> gets neither. List it before <code>cache()</code>
 yourself, and pass <code>cache(..., private=True)</code> when the route sits behind a CDN
 or another shared cache.</p>
-<h3 id="saying-nothing">Saying nothing<a class="headerlink" href="#saying-nothing" title="Permanent link">&para;</a></h3>
+<h3 id="not-setting-the-vary_on_session-at-all">Not setting the <code>vary_on_session</code> at all<a class="headerlink" href="#not-setting-the-vary_on_session-at-all" title="Permanent link">&para;</a></h3>
 <p>If the endpoint never touches the session, say nothing - there is nothing to
 declare and caching behaves exactly as it always has.</p>
 <p>If it <em>does</em> touch the session and you have not declared anything, the response
@@ -2093,6 +2099,7 @@ depends on it.</p>
 <th>Your endpoint</th>
 <th>Declaration</th>
 <th>Cached as</th>
+<th>A caller with no session</th>
 <th>Response headers</th>
 </tr>
 </thead>
@@ -2101,40 +2108,67 @@ depends on it.</p>
 <td>Body depends on the user</td>
 <td><code>vary_on_session=True</code></td>
 <td>one entry per user</td>
+<td>shares one entry with every other such caller</td>
+<td><code>private, max-age=N</code> + <code>Vary: Cookie</code></td>
+</tr>
+<tr>
+<td>Gated by <code>valid_session()</code>, body depends on the user</td>
+<td><code>vary_on_session=True</code></td>
+<td>one entry per user</td>
+<td>401</td>
 <td><code>private, max-age=N</code> + <code>Vary: Cookie</code></td>
 </tr>
 <tr>
 <td>Reads the session, body identical</td>
 <td><code>vary_on_session=False</code></td>
 <td>one shared entry</td>
+<td>the shared entry</td>
 <td><code>max-age=N</code>, no <code>Vary</code></td>
 </tr>
 <tr>
 <td>Gated by <code>valid_session()</code>, body identical</td>
 <td><code>vary_on_session=False</code></td>
 <td>one shared entry</td>
+<td>401</td>
 <td><code>private, max-age=N</code>, no <code>Vary</code></td>
 </tr>
 <tr>
 <td>Gated by <code>valid_session(issued_within=...)</code></td>
-<td>any</td>
+<td>either</td>
 <td>as declared</td>
-<td><code>no-store</code></td>
+<td>401</td>
+<td><code>no-store</code>, + <code>Vary: Cookie</code> when <code>True</code></td>
 </tr>
 <tr>
 <td>Never touches the session</td>
 <td><em>(nothing)</em></td>
 <td>one shared entry</td>
+<td>the shared entry</td>
 <td><code>max-age=N</code></td>
 </tr>
 <tr>
 <td>Touches it, nothing declared</td>
 <td><em>(nothing)</em></td>
 <td><strong>not cached</strong></td>
+<td>not cached</td>
 <td><code>private, no-store</code> + <code>Vary: Cookie</code></td>
 </tr>
 </tbody>
 </table>
+<p>Reading the table:</p>
+<ul>
+<li><strong>A hit sends the same headers as the miss.</strong> The only difference is
+  <code>max-age</code>, which on a hit is the time left on the entry. The browser keeps
+  whichever response it saw last, so the two must agree.</li>
+<li><strong>A gate changes who reaches the entry, not how it is keyed.</strong> Each gated
+  row behaves like the row above it, except that a caller with no session gets
+  a 401. The 401 says <code>private</code> (<code>no-store</code> under <code>issued_within</code>) and
+  <code>Vary: Cookie</code>, so no cache replays it after the user signs in.</li>
+<li><strong>"Per user" means per subject.</strong> An anonymous session that holds data - a
+  basket, say - has no subject, so its entry is keyed by the session ID.
+  <code>valid_session()</code> lets it through: the gate checks that the session is live,
+  not who it belongs to.</li>
+</ul>
 <p>The rule underneath every row: <strong>what a response tells other caches they may do
 is never more permissive than what this library does itself.</strong> If we key per
 user, or serve our entry only to callers who pass the gate, we say
@@ -2227,23 +2261,31 @@ it on a cross-site top-level <code>GET</code>, so:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">secrets</span>
 <a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">HTTPException</span>
 <a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>
-<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/form&quot;</span><span class="p">)</span>
-<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">form</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="n">token</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">,</span> <span class="n">secrets</span><span class="o">.</span><span class="n">token_urlsafe</span><span class="p">(</span><span class="mi">32</span><span class="p">))</span>
-<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;csrf_token&quot;</span><span class="p">:</span> <span class="n">token</span><span class="p">}</span>
-<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>
-<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/transfer&quot;</span><span class="p">)</span>
-<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">transfer</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">csrf_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Form</span><span class="p">(</span><span class="o">...</span><span class="p">))</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-<a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>    <span class="n">expected</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">)</span>
-<a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">expected</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">secrets</span><span class="o">.</span><span class="n">compare_digest</span><span class="p">(</span><span class="n">csrf_token</span><span class="p">,</span> <span class="n">expected</span><span class="p">):</span>
-<a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">403</span><span class="p">,</span> <span class="s2">&quot;CSRF token mismatch&quot;</span><span class="p">)</span>
-<a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a>    <span class="o">...</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/login&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">login</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="n">session</span><span class="p">[</span><span class="s2">&quot;user_id&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">42</span>
+<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>    <span class="n">session</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>    <span class="c1"># a fresh token for this sign-in</span>
+<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>    <span class="k">return</span> <span class="p">{}</span>
+<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>
+<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/form&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">form</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>    <span class="n">token</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">,</span> <span class="n">secrets</span><span class="o">.</span><span class="n">token_urlsafe</span><span class="p">(</span><span class="mi">32</span><span class="p">))</span>
+<a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;csrf_token&quot;</span><span class="p">:</span> <span class="n">token</span><span class="p">}</span>
+<a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a>
+<a id="__codelineno-20-15" name="__codelineno-20-15" href="#__codelineno-20-15"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/transfer&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-16" name="__codelineno-20-16" href="#__codelineno-20-16"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">transfer</span><span class="p">(</span><span class="n">session</span><span class="p">:</span> <span class="n">SessionDep</span><span class="p">,</span> <span class="n">csrf_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Form</span><span class="p">(</span><span class="o">...</span><span class="p">))</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-20-17" name="__codelineno-20-17" href="#__codelineno-20-17"></a>    <span class="n">expected</span> <span class="o">=</span> <span class="n">session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;csrf&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-18" name="__codelineno-20-18" href="#__codelineno-20-18"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">expected</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">secrets</span><span class="o">.</span><span class="n">compare_digest</span><span class="p">(</span><span class="n">csrf_token</span><span class="p">,</span> <span class="n">expected</span><span class="p">):</span>
+<a id="__codelineno-20-19" name="__codelineno-20-19" href="#__codelineno-20-19"></a>        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">403</span><span class="p">,</span> <span class="s2">&quot;CSRF token mismatch&quot;</span><span class="p">)</span>
+<a id="__codelineno-20-20" name="__codelineno-20-20" href="#__codelineno-20-20"></a>    <span class="o">...</span>
 </code></pre></div>
 <p><a href="https://docs.python.org/3/library/secrets.html#secrets.compare_digest"><code>secrets.compare_digest</code></a>
 rather than <code>==</code>, and
 <a href="https://docs.python.org/3/library/secrets.html#secrets.token_urlsafe"><code>secrets.token_urlsafe</code></a>
-for the token itself. The token rotates with the session - a sign-in issues a
-new session ID, so the next <code>setdefault</code> mints a fresh token.</p>
+for the token itself. A sign-in rotates the session ID but carries the data
+across, the token included, so drop the token when you sign the user in: the
+next <code>setdefault</code> then mints a fresh one.</p>
+<p>A runnable version is in <a href="https://github.com/redis/fastapi-redis-sdk/blob/main/examples/sessions/csrf.py"><code>examples/sessions/csrf.py</code></a>.</p>
 <hr />
 <h2 id="encrypting-the-payload-at-rest">Encrypting the payload at rest<a class="headerlink" href="#encrypting-the-payload-at-rest" title="Permanent link">&para;</a></h2>
 <p>Anyone with <a href="https://redis.io/docs/latest/develop/tools/cli/"><code>redis-cli</code></a>
@@ -2268,7 +2310,9 @@ something sensitive, supply an <code>Encryptor</code>:</p>
 </code></pre></div>
 <p>Encryption <strong>wraps</strong> serialization, never the reverse: the coder turns your
 value into text, and only then does the encryptor see it. A coder is never
-handed ciphertext.</p>
+handed ciphertext. The store keeps the ciphertext as base64, so it reads back
+the same whichever way the Redis client decodes responses.</p>
+<p>A runnable version is in <a href="https://github.com/redis/fastapi-redis-sdk/blob/main/examples/sessions/encryption.py"><code>examples/sessions/encryption.py</code></a>.</p>
 <p>This package ships the seam and not the implementation, deliberately.
 <a href="https://csrc.nist.gov/pubs/sp/800/38/d/final">AES-GCM</a>, via
 <a href="https://cryptography.io/en/latest/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM"><code>AESGCM</code></a>,
@@ -2547,7 +2591,7 @@ reaches the middleware as well as your handlers, so one override covers the whol
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 14, 2026 06:23:05 UTC">October 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 14, 2026 14:49:21 UTC">October 14, 2026</span>
   </span>
 
     
