@@ -1,7 +1,7 @@
 """Server-side sessions for FastAPI and Starlette.
 
 The session record lives in Redis; the cookie carries an opaque identifier and
-nothing else.  See ``docs/specs/session-design.md`` for the full design.
+nothing else.
 
 This module holds the request-facing half of the feature: the :class:`Session`
 mapping the application sees as ``request.session`` and the middleware that
@@ -237,8 +237,7 @@ class CookieSpec:
 
     Passed to a ``cookie_builder`` seam so an application can add attributes
     this package does not know about.  Starlette's own middleware cannot emit
-    ``Partitioned`` and cannot use a ``__Host-`` prefix, and Section 9.1 of
-    ``session-mgmt.md`` records that as a common reason people abandon it.
+    ``Partitioned`` and cannot use a ``__Host-`` prefix, which is a common reason people abandon it.
 
     ``max_age`` of ``None`` means a session cookie: no ``Max-Age``, and the
     browser drops it when it closes.

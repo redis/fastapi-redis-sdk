@@ -791,7 +791,10 @@ Handler code does not change. `secret_key` has no equivalent because nothing is
 signed: the cookie is an opaque 256-bit identifier, well past OWASP's
 [64-bit entropy floor](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#session-id-entropy).
 
-### From [`starsessions`](https://github.com/alex-oleshkevich/starsessions)
+### From other session libraries
+
+Many Starlette-compatible libraries offer `lifetime` and `rolling` options and
+a `load_session` call. The table maps those to this package.
 
 | Theirs                           | Here                                                                                                |
 |----------------------------------|-----------------------------------------------------------------------------------------------------|
@@ -903,7 +906,7 @@ Every setting is an environment variable prefixed `REDIS_`, so
 
 | Setting                     | Default       | Notes                                                                                                                                      |
 |-----------------------------|---------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| `session_cookie_name`       | `session`     | Matches Starlette and `starsessions`                                                                                                       |
+| `session_cookie_name`       | `session`     | Matches Starlette and other libraries                                                                                                      |
 | `session_cookie_https_only` | `True`        | Adds [`Secure`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#secure). Turn it off for local HTTP only    |
 | `session_cookie_same_site`  | `lax`         | [`none`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#samesitesamesite-value) requires `https_only=True` |
 | `session_idle_ttl`          | `1800`        | `0` disables the idle clock                                                                                                                |

@@ -1,6 +1,6 @@
 """The cookie must not expire before its record, against a real server.
 
-§6 of ``session-design.md``: the load refreshes the idle clock in Redis on
+See "Session clocks" in ``docs/guide/sessions.md``: the load refreshes the idle clock in Redis on
 every request, but the cookie is sent only on writes. When the cookie's
 ``Max-Age`` followed the idle clock, a user who only read lost the cookie while
 the record was alive. ``Max-Age`` now follows the absolute clock,
