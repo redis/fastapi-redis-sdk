@@ -11,11 +11,12 @@ from datetime import timedelta
 
 import pytest
 import redis as sync_redis
+import redis.asyncio as async_redis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from redis_fastapi import CacheBackendDep, FastAPIRedis
+from redis_fastapi import CacheBackend, CacheBackendDep, FastAPIRedis
 from redis_fastapi.deps import SyncCacheBackendDep
 from tests.conftest import requires_redis
 
@@ -283,6 +284,21 @@ class TestNamespaceOperations:
         """Deleting an eviction group with no keys returns 0."""
         r = client.delete("/cache/nonexistent")
         assert r.json()["deleted"] == 0
+
+    @pytest.mark.parametrize("group", ["?", "a*", "*", "[", "a[b]", "a\\"])
+    async def test_delete_group_escapes_glob_characters(
+        self, real_async_redis: async_redis.Redis, group: str
+    ) -> None:
+        """Glob characters in a group name match only that group."""
+        backend = CacheBackend(real_async_redis)
+        others = ["a", "ab", "admin", "b"]
+        for grp in [*others, group]:
+            await backend.set("items", 1, eviction_group=grp)
+
+        assert await backend.delete_group(group) == 1
+        assert not await backend.has("items", eviction_group=group)
+        for grp in others:
+            assert await backend.has("items", eviction_group=grp)
 
     def test_delete_all_without_group(self, client: TestClient) -> None:
         """delete_group() with no eviction group wipes all cache keys."""

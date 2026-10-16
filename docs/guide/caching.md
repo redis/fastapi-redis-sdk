@@ -144,7 +144,7 @@ mode.
 | Request (eviction_group=`products`) | Key |
 |---------|-----|
 | `GET /api/v1/items` | `redis:fastapi:cache:{products}:api:v1:items` |
-| `GET /items?z=2&a=1` | `redis:fastapi:cache:{products}:items:a=1:z=2` |
+| `GET /items?z=2&a=1` | `redis:fastapi:cache:{products}:items:a=1&z=2` |
 
 Without an eviction group, no hash tag is added:
 

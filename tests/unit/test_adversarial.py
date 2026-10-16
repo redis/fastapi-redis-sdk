@@ -192,13 +192,13 @@ class TestKeyBuilderSpecialChars:
 
     def test_query_params_with_colons(self) -> None:
         key = default_key_builder(_make_request("/items", "key=a:b:c"), prefix="pfx")
-        assert "key=a:b:c" in key
+        assert "key=a%3Ab%3Ac" in key
 
     def test_query_params_with_glob(self) -> None:
         key = default_key_builder(
             _make_request("/items", "q=*&sort=name"), prefix="pfx"
         )
-        assert "q=*" in key
+        assert "q=%2A" in key
 
     @pytest.mark.asyncio
     async def test_glob_chars_in_key_name(self) -> None:

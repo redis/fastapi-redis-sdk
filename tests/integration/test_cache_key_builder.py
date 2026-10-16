@@ -2,7 +2,7 @@
 
 Verifies that ``cache()``, ``cache_evict(key_builder=...)``, and
 ``cache_put(key_builder=...)`` share the same Redis key, tested end-to-end
-with real Redis.
+with real Redis.  Also checks that distinct query strings get distinct keys.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections.abc import Generator
 
 import pytest
 import redis as sync_redis
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from redis_fastapi import (
@@ -141,3 +141,38 @@ class TestCachePutKeyBuilder:
         assert r2.headers["X-Redis-Cache"] == "HIT"
         assert r2.json() == {"id": 7, "name": "Updated 7", "v": 0}
         assert _kb_counters["kb-product:7"] == 1
+
+
+def _build_query_app() -> FastAPI:
+    app = FastAPI()
+    FastAPIRedis(app).lifespan().caching()
+
+    @app.get("/search", dependencies=[Depends(cache(ttl=60))])
+    async def search(request: Request) -> dict:
+        return {"params": request.query_params.multi_items()}
+
+    return app
+
+
+@requires_redis
+@pytest.mark.integration
+class TestQueryStringKeys:
+    """Distinct query strings must never share a cache key."""
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("a=1:z=2", "a=1&z=2"),  # ':' in a value
+            ("a=%253A", "a=%3A"),  # literal '%3A' vs ':'
+            ("a%3D1%26z=2", "a=1&z=2"),  # '=' and '&' in a name
+            ("a=1&a=2", "a=2"),  # repeated name
+        ],
+    )
+    def test_distinct_query_strings_get_distinct_keys(
+        self, real_redis: sync_redis.Redis, first: str, second: str
+    ) -> None:
+        with TestClient(_build_query_app()) as client:
+            r1 = client.get(f"/search?{first}")
+            r2 = client.get(f"/search?{second}")
+        assert r1.json() != r2.json()
+        assert r2.headers["X-Redis-Cache"] == "MISS"

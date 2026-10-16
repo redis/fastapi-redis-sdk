@@ -7,6 +7,7 @@ key prefixing, and eviction-group management on top of a Redis client.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -26,6 +27,9 @@ from redis_fastapi.types import Coder, JsonCoder
 _MISSING = object()  # sentinel for distinguishing None from "no default"
 
 logger = logging.getLogger(__name__)
+
+# Characters SCAN MATCH reads as glob syntax.
+_GLOB_CHARS = re.compile(r"([*?\[\]\\])")
 
 # Server-side Lua script: SCAN + UNLINK in a single EVAL round trip.
 # ARGV[1] = glob pattern, ARGV[2] = SCAN COUNT hint.
@@ -113,7 +117,9 @@ class CacheBackend:
         if self._prefix:
             parts.append(self._prefix)
         if grp:
-            parts.append(f"{{{grp}}}")
+            # Escape glob characters so the group matches only itself.
+            escaped = _GLOB_CHARS.sub(r"\\\1", grp)
+            parts.append(f"{{{escaped}}}")
         parts.append("*")
         return ":".join(parts)
 
