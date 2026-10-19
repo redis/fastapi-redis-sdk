@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
 
 from fastapi import Depends, Request
 from redis.exceptions import RedisError
@@ -82,7 +83,8 @@ def default_key_builder(
     """Build a cache key from the request path and query string.
 
     Slashes in the path are replaced with colons.
-    Query params are sorted and appended as ``key=value`` pairs.
+    Query params are sorted by name and URL-encoded, so distinct query
+    strings never share a key.
 
     When an *eviction_group* is provided it is wrapped in Redis hash-tag
     braces (``{eviction_group}``) so that all keys in the same group
@@ -107,7 +109,8 @@ def default_key_builder(
     if path:
         parts.append(path)
     if request.query_params:
-        qs = ":".join(f"{k}={v}" for k, v in sorted(request.query_params.items()))
+        items = sorted(request.query_params.multi_items(), key=lambda kv: kv[0])
+        qs = urlencode(items)
         parts.append(qs)
     return ":".join(parts)
 
