@@ -23,7 +23,7 @@ import logging
 import secrets
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, MutableMapping
+from collections.abc import Callable, Generator, MutableMapping
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum, auto
@@ -550,7 +550,7 @@ class SessionStore(ABC):
     # -- instrumentation ------------------------------------------------------
 
     @contextlib.contextmanager
-    def _observe(self, operation: str) -> Iterator[None]:
+    def _observe(self, operation: str) -> Generator[None, None, None]:
         """Span, latency and the ``error`` count for one store operation.
 
         The outcome count is the caller's, because only the caller knows

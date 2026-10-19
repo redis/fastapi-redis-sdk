@@ -20,7 +20,7 @@ import contextlib
 import dataclasses
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ def is_enabled() -> bool:
 def cache_span(
     name: str,
     attributes: dict[str, Any] | None = None,
-) -> Iterator[Any]:
+) -> Generator[Any, None, None]:
     """Create a span for a cache operation.
 
     Uses ``start_as_current_span`` so that child spans (e.g. from
@@ -252,7 +252,9 @@ def record_cache_latency(
 
 
 @contextlib.contextmanager
-def timed_operation(operation: str, eviction_group: str = "") -> Iterator[None]:
+def timed_operation(
+    operation: str, eviction_group: str = ""
+) -> Generator[None, None, None]:
     """Context manager that records latency for a cache operation."""
     start = time.monotonic()
     try:
@@ -273,7 +275,7 @@ def timed_operation(operation: str, eviction_group: str = "") -> Iterator[None]:
 def ratelimit_span(
     name: str,
     attributes: dict[str, Any] | None = None,
-) -> Iterator[Any]:
+) -> Generator[Any, None, None]:
     """Create a span for a rate-limit operation.  No-op when OTel is disabled."""
     if not _state.enabled or _state.tracer is None:
         yield None
@@ -303,7 +305,7 @@ def record_rate_limit_latency(*, duration: float, scope: str = "") -> None:
 
 
 @contextlib.contextmanager
-def timed_rate_limit(scope: str = "") -> Iterator[None]:
+def timed_rate_limit(scope: str = "") -> Generator[None, None, None]:
     """Context manager that records latency for a rate-limit check."""
     start = time.monotonic()
     try:
@@ -328,7 +330,7 @@ def timed_rate_limit(scope: str = "") -> Iterator[None]:
 def session_span(
     name: str,
     attributes: dict[str, Any] | None = None,
-) -> Iterator[Any]:
+) -> Generator[Any, None, None]:
     """Create a span for a session operation.  No-op when OTel is disabled."""
     if not _state.enabled or _state.tracer is None:
         yield None
@@ -380,7 +382,7 @@ def record_session_latency(*, duration: float, operation: str) -> None:
 
 
 @contextlib.contextmanager
-def timed_session(operation: str) -> Iterator[None]:
+def timed_session(operation: str) -> Generator[None, None, None]:
     """Context manager that records latency for a session operation."""
     start = time.monotonic()
     try:

@@ -16,7 +16,7 @@ their own lifespan logic without conflicting.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -78,7 +78,7 @@ class FastAPIRedis:
         @asynccontextmanager
         async def wrapped(
             app: FastAPI,
-        ) -> AsyncIterator[Mapping[str, Any] | None]:
+        ) -> AsyncGenerator[Mapping[str, Any] | None, None]:
             async with redis_lifespan(app):
                 async with existing(app) as state:
                     yield state

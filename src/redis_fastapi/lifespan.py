@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -167,7 +167,7 @@ async def _check_cache_eviction_safety(ps: _PoolState) -> None:
 
 
 @asynccontextmanager
-async def redis_lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage Redis connection pools across the application lifecycle.
 
     Usage::

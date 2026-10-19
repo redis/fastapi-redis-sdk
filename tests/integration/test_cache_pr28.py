@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -51,7 +51,9 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         results.append(result)
 
     @contextlib.contextmanager
-    def span(name: str, attributes: object = None) -> Iterator[_RecordingSpan]:
+    def span(
+        name: str, attributes: object = None
+    ) -> Generator[_RecordingSpan, None, None]:
         recording = _RecordingSpan()
         if name == "cache.get":
             spans.append(recording)
