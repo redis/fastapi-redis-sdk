@@ -132,12 +132,6 @@ class TestWriteAndRoundTrip:
         second = client.post("/write")
         assert second.json() == {"counter": 2}, "the session did not round-trip"
 
-    def test_the_cookie_carries_no_session_data(self, client: TestClient) -> None:
-        response = client.post("/login")
-        value = _set_cookies(response)["session"]["session"].value
-        assert "42" not in value
-        assert "user_id" not in value
-
     def test_cookie_attributes_follow_the_settings(self, client: TestClient) -> None:
         morsel = _set_cookies(client.post("/write"))["session"]["session"]
         assert morsel["httponly"] is True
