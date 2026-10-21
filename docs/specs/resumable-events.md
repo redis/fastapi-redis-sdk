@@ -202,8 +202,9 @@ Proposed public additions are:
 
 | API | Contract |
 | --- | --- |
+| `StreamSettings(...)` | Validated environment-free prefix/stream configuration for direct backends |
 | `FastAPIRedis(app).streams(...)` | Configure streaming, HTTP error mapping, and lifespan-managed relay resources; repeated identical setup is harmless |
-| `add_redis_streams(app, ...)` | Functional setup equivalent, following the SDK's existing setup helpers |
+| `add_redis_streams(app, backend=None, manage_lifespan=True, ...)` | Functional setup or explicit backend registration with app-scoped DI, errors, and selected lifecycle ownership |
 | `StreamBackend`, `StreamBackendDep`, `get_stream_backend` | Async storage and subscription API, typed dependency alias, and provider |
 | `await backend.create(stream, *, ttl)` | Create a log with an absolute lifetime; return normally for an identical existing configuration without extending its deadline |
 | `await backend.append(stream, *, event, data, producer, idempotency_key)` | Append a JSON event and return its cursor; reject missing, expired, or sealed streams |
@@ -229,6 +230,67 @@ validated streaming settings for use in workers. Worker and gateway settings,
 key layout, and serialization must match. It closes only resources it owns.
 An async context manager starts and stops any owned relay tasks; append-only
 workers need no relay. No synchronous streaming facade is proposed initially.
+
+### Explicit integration and lifecycle ownership
+
+The implementation must separate three responsibilities: an environment-free
+storage backend, relay/subscriber resource management, and FastAPI HTTP/DI setup.
+The backend has no Request, authentication, global configuration, or connection
+factory dependency. Existing fluent setup is a convenience adapter around these
+public integration points, not the only way to use streaming.
+
+Proposed explicit setup:
+
+```python
+from redis_fastapi import StreamBackend, StreamSettings, add_redis_streams
+
+backend = StreamBackend(
+    command_client,
+    blocking_client=relay_client,
+    settings=StreamSettings(prefix="myapp:sse", stream_bucket_count=4),
+)
+add_redis_streams(app, backend=backend)
+```
+
+`command_client`, `relay_client`, and `app` are application-owned resources.
+`StreamSettings` is a validated model with prefix and the same `stream_*` fields
+as the environment adapter. It never reads environment variables, `.env`, or
+cached global settings, and contains no connection or telemetry settings.
+Omitting direct-backend settings uses environment-free defaults. Explicit
+settings are not merged with ambient configuration. RedisSettings may be passed
+as an adapter, with only its resolved prefix/stream values copied into the model.
+Workers and gateways use identical explicit settings and layout.
+
+`add_redis_streams(app, backend=backend)` registers app-scoped dependency access
+and typed HTTP error mapping and composes with the existing application lifespan.
+It starts the backend before entering that lifespan and stops it afterwards;
+the supplied clients must remain usable throughout that entire interval. It never
+creates or closes those clients or initializes/shuts down telemetry. Repeating
+identical setup is harmless; a different backend, lifecycle mode, or environment
+overrides mixed with injection is a configuration conflict.
+
+Applications whose existing lifespan owns the clients instead use
+`add_redis_streams(app, backend=backend, manage_lifespan=False)` and enter the
+backend with `async with backend` inside that lifespan, before yielding. Stop the
+backend before closing either client. This avoids double ownership and makes
+startup/shutdown ordering explicit. The backend rejects concurrent entry and
+cleans up partially started relay resources on startup failure or cancellation.
+Append-only workers use initialize() without starting relay tasks.
+
+Blocking relays require resources independent of command/replay operations.
+Reject using the same client or a shared exposed pool for both. Callers of
+custom clients are responsible for pool independence, matching endpoints,
+credentials/topology, enough relay capacity for each bucket, and compatible
+blocking timeouts. Document this contract rather than treating different client
+object identities as proof of separate resources.
+
+Publish StreamSettings, StreamBackend, StreamEvent, the typed StreamError
+hierarchy, add_redis_streams, StreamBackendDep, get_stream_backend, and
+sse_response as supported public APIs. HTTP preparation/error behavior must be
+the same for an injected backend. Authorization remains application-owned.
+Higher-level libraries, including Redis Iris, can wrap/re-export these APIs
+without monkey-patching, environment mutation, or private pool state. Enabling
+explicit SSE must not implicitly enable unrelated middleware or telemetry.
 
 ### Configuration
 
@@ -653,6 +715,9 @@ guarantees. Required scenarios include:
 | Bucket fairness | A continuously busy log and a slow client do not starve quiet logs or healthy clients in the same bucket; count/size controls, rotating order, and subscriber bounds are exercised |
 | Bucket membership | Joining and leaving during a blocked read applies within the bounded update interval without a second reader, lost events, or leaked connections |
 | Lifecycle | Existing app lifespan composes correctly; repeat setup and shutdown do not leak pools, tasks, or subscriber registrations |
+| Explicit configuration | Conflicting REDIS_* variables, .env files, and cached settings do not affect direct backend construction or injected setup; unknown explicit settings fail |
+| Application isolation | Two apps in one process use independent backend/settings registrations; conflicting repeat registration fails |
+| Resource ownership | Both lifecycle modes preserve external clients; independent command/relay capacity, startup failure, cancellation, shutdown, and repeat entry are exercised without task leaks |
 
 Run the applicable suite against Redis OSS standalone, OSS Cluster with multiple
 primaries, and Redis Enterprise sharded databases through the database endpoint.
