@@ -197,7 +197,7 @@ jobs:
           curl --fail --location --max-time 60 https://github.com/redis/redis/archive/refs/tags/8.10.2.tar.gz --output "$RUNNER_TEMP/redis.tar.gz"
           echo "541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8  $RUNNER_TEMP/redis.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/redis.tar.gz" -C "$RUNNER_TEMP"
-          make -C "$RUNNER_TEMP/redis-8.10.2" -j2 BUILD_TLS=no MALLOC=libc redis-server redis-cli
+          make -C "$RUNNER_TEMP/redis-8.10.2/src" -j2 BUILD_TLS=no MALLOC=libc redis-server redis-cli
       - name: Standalone and three-primary Cluster acceptance
         run: uv run nox -s "streams-${{ matrix.python-version }}"
         env:
