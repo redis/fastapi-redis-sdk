@@ -56,6 +56,86 @@ on that path. The helper returns an `EventSourceResponse` instance with its own
 UTF-8 framing, so use `StreamingResponse` for the route declaration. The explicit
 response content documents SSE in OpenAPI. This corrects the proposal's example.
 
+## Explicit integration for applications and higher-level libraries
+
+Use `StreamSettings` and inject a backend when the application owns configuration
+and Redis connections. `StreamSettings` is a validated, environment-free model:
+it reads neither `REDIS_*` nor `.env`, and has no connection or telemetry settings.
+Direct `StreamBackend` construction defaults to this model, not global settings.
+The fluent `.lifespan().streams()` path remains an optional environment adapter.
+
+```python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from redis.asyncio import Redis
+from redis_fastapi import (
+    StreamBackend, StreamSettings, add_redis_streams,
+)
+
+# The application supplies this URL; no implicit environment lookup is performed.
+redis_url = "redis://localhost:6379/0"
+commands = Redis.from_url(redis_url, max_connections=16)
+relays = Redis.from_url(redis_url, max_connections=4)
+backend = StreamBackend(
+    commands,
+    blocking_client=relays,
+    settings=StreamSettings(prefix="myapp:sse", stream_bucket_count=4),
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        async with backend:
+            yield
+    finally:
+        await relays.aclose()
+        await commands.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
+add_redis_streams(app, backend=backend, manage_lifespan=False)
+```
+
+The existing authorized route above works unchanged with `StreamBackendDep`.
+Registration installs the same typed HTTP error mapping in either setup mode;
+`sse_response()` also accepts an explicitly supplied backend directly.
+
+`manage_lifespan=False` means the application must enter and exit the backend.
+Without that option, `add_redis_streams(app, backend=backend)` wraps the existing
+app lifespan and starts the backend before entering it; it stops the backend
+after that lifespan exits. In this mode the supplied Redis clients must already
+be usable before the original lifespan starts and must remain open until backend
+shutdown finishes. Neither registration mode closes supplied clients. Use the
+caller-managed form above when the original lifespan owns those clients.
+
+Do not call `.lifespan()` merely to register an injected backend: that explicitly
+opts into the separate environment-managed Redis pools and telemetry lifecycle.
+`FastAPIRedis(app).streams(backend=backend)` is the equivalent fluent registration.
+
+Identical registration is a no-op. Changing the backend, lifecycle mode, or
+mixing injected backends with environment overrides raises a configuration error.
+Configuration and dependency registration are app-scoped; two apps can have
+different backends. A backend runtime has one owner and cannot be entered twice
+concurrently. Failed startup cleans up partially started relay tasks.
+
+Command/replay and blocking clients must have independent connection resources,
+point to the same database, and agree on credentials/topology. Two client objects
+sharing one pool are rejected. The backend cannot prove arbitrary custom-client
+pool independence or matching endpoints; the caller must ensure them. Reserve at
+least one relay connection per configured bucket (per-node limits for Cluster),
+keep the command pool independently available, and set blocking socket timeouts
+above `stream_block_ms`. Client ownership does not change the topology qualification
+limits below. No explicit setup path initializes or shuts down global telemetry.
+
+Higher-level libraries such as Redis Iris can re-export `StreamSettings`,
+`StreamBackend`, `StreamBackendDep`, `get_stream_backend`, `add_redis_streams`,
+`sse_response`, `StreamEvent`, and the public `StreamError` hierarchy without
+using private pool state or modifying the process environment. RedisSettings
+remains accepted as an explicit adapter; its resolved streaming values are copied
+into StreamSettings, excluding connection and telemetry fields.
+
 ## Publish and finish
 
 Create the stream in the application's write workflow, before starting work:
@@ -155,7 +235,7 @@ Do not mutate sessions after headers or apply `cache()`/`cache_put()` to SSE rou
 
 ## Resources and settings
 
-All settings use the normal `REDIS_` prefix. `.streams(stream_...=...)` overrides
+The environment-managed setup uses the normal `REDIS_` prefix. `.streams(stream_...=...)` overrides
 stream settings for that application; invalid or conflicting setup fails.
 
 | Setting suffix | Default |

@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from redis.exceptions import RedisError, ResponseError, WatchError
 
-from redis_fastapi.config import RedisSettings, get_settings
+from redis_fastapi.config import RedisSettings, StreamSettings
 from redis_fastapi.telemetry import record_stream
 
 
@@ -136,7 +136,7 @@ class _Batch:
 
 
 class _StreamStore:
-    def __init__(self, client: Any, settings: RedisSettings):
+    def __init__(self, client: Any, settings: StreamSettings):
         self.client = client
         self.settings = settings
         self.prefix = settings.pattern_prefix("streams")
@@ -519,10 +519,16 @@ class StreamBackend:
         self,
         client: Any,
         *,
-        settings: RedisSettings | None = None,
+        settings: StreamSettings | None = None,
         blocking_client: Any = None,
     ):
-        self.settings = settings or get_settings()
+        # Project the environment adapter onto the explicit model. No environment
+        # discovery occurs here, including when settings are omitted.
+        if isinstance(settings, RedisSettings):
+            settings = StreamSettings.model_validate(
+                {name: getattr(settings, name) for name in StreamSettings.model_fields}
+            )
+        self.settings = settings if settings is not None else StreamSettings()
         if (
             self.settings.stream_replay_bytes
             < self.settings.stream_max_event_bytes + 512
@@ -534,6 +540,7 @@ class StreamBackend:
         self._blocking_client = blocking_client
         self._relay: Any = None
         self._initialized = False
+        self._runtime_active = False
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -545,21 +552,41 @@ class StreamBackend:
         self._initialized = True
 
     async def __aenter__(self) -> StreamBackend:
-        if self._relay is not None:
+        if self._runtime_active:
             raise RuntimeError("StreamBackend runtime is already started")
-        await self.initialize()
-        if self._blocking_client is None or self._blocking_client is self._store.client:
-            raise ValueError("Subscriptions require a separate blocking Redis client")
-        from redis_fastapi._stream_relay import _StreamRelay
+        command_pool = getattr(self._store.client, "connection_pool", None)
+        if (
+            self._blocking_client is None
+            or self._blocking_client is self._store.client
+            or (
+                command_pool is not None
+                and command_pool
+                is getattr(self._blocking_client, "connection_pool", None)
+            )
+        ):
+            raise ValueError("Subscriptions require separate blocking Redis resources")
+        self._runtime_active = True
+        try:
+            await self.initialize()
+            from redis_fastapi._stream_relay import _StreamRelay
 
-        self._relay = _StreamRelay(self._store, self._blocking_client)
-        await self._relay.start()
+            self._relay = _StreamRelay(self._store, self._blocking_client)
+            await self._relay.start()
+        except BaseException:
+            await self.__aexit__()
+            raise
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        if self._relay is not None:
-            await self._relay.stop()
+        import anyio
+
+        try:
+            if self._relay is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._relay.stop()
+        finally:
             self._relay = None
+            self._runtime_active = False
 
     async def create(self, stream: str, *, ttl: int) -> None:
         await self.initialize()

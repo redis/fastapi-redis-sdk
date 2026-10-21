@@ -13,7 +13,14 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import SSLConnection
 from redis.driver_info import DriverInfo
@@ -50,26 +57,15 @@ _COOKIE_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]+")
 _CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-class RedisSettings(BaseSettings):
-    """Central configuration for the FastAPI Redis integration.
+class StreamSettings(BaseModel):
+    """Explicit event-log settings; never reads environment variables or .env.
 
-    Supports two connection modes:
-
-    1. **URL mode** (default): set ``url`` to a full Redis URL.
-    2. **KV mode**: set ``host``, ``port``, ``db``, ``password``, etc.
-
-    When ``url`` is provided it takes precedence over KV fields.
-
-    Set ``cluster`` for an OSS Cluster, or ``sentinel`` to find the primary
-    through Redis Sentinel.  Sentinel mode uses KV mode for the primary's
-    ``db``, ``username`` and ``password``, and ``sentinel_nodes`` in place of
-    ``host`` and ``port``.
-
-    All settings can be configured via environment variables with the ``REDIS_`` prefix.
-    For example: ``REDIS_URL``, ``REDIS_HOST``, ``REDIS_PORT``, etc.
-
-    Supports reading from ``.env`` files automatically.
+    RedisSettings adds environment discovery for the fluent setup path. Direct
+    backends default to this model and accept only stream settings and a prefix.
     """
+
+    model_config = ConfigDict(extra="forbid")
+    prefix: str = "redis:fastapi"
 
     # Streaming is opt-in; existing features keep their server requirements.
     stream_bucket_count: int = Field(default=16, ge=1, le=256)
@@ -92,6 +88,31 @@ class RedisSettings(BaseSettings):
     stream_read_maxbytes: int = Field(default=1048576, ge=1)
     stream_replay_concurrency: int = Field(default=8, ge=1)
     stream_replay_bytes: int = Field(default=1048576, ge=2048)
+
+    def pattern_prefix(self, pattern: str) -> str:
+        return f"{self.prefix}:{pattern}"
+
+
+class RedisSettings(BaseSettings, StreamSettings):
+    """Central configuration for the FastAPI Redis integration.
+
+    Supports two connection modes:
+
+    1. **URL mode** (default): set ``url`` to a full Redis URL.
+    2. **KV mode**: set ``host``, ``port``, ``db``, ``password``, etc.
+
+    When ``url`` is provided it takes precedence over KV fields.
+
+    Set ``cluster`` for an OSS Cluster, or ``sentinel`` to find the primary
+    through Redis Sentinel.  Sentinel mode uses KV mode for the primary's
+    ``db``, ``username`` and ``password``, and ``sentinel_nodes`` in place of
+    ``host`` and ``port``.
+
+    All settings can be configured via environment variables with the ``REDIS_`` prefix.
+    For example: ``REDIS_URL``, ``REDIS_HOST``, ``REDIS_PORT``, etc.
+
+    Supports reading from ``.env`` files automatically.
+    """
 
     # -- Connection: URL mode --------------------------------------------------
     url: str | None = Field(

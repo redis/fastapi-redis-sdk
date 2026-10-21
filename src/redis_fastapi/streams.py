@@ -25,31 +25,72 @@ from redis_fastapi.stream_backend import (
 )
 
 
-def add_redis_streams(app: FastAPI, **options: Any) -> None:
-    """Enable streaming. Identical repeated setup is harmless; conflicts fail."""
-    # Optional dependency: importing existing SDK features stays compatible.
+def add_redis_streams(
+    app: FastAPI,
+    *,
+    backend: StreamBackend | None = None,
+    manage_lifespan: bool = True,
+    **options: Any,
+) -> None:
+    """Register streaming and HTTP errors for this application.
+
+    With an explicit backend, never discover settings, create Redis clients, or
+    initialize telemetry. By default wrap the existing lifespan to manage backend
+    relay resources. Set manage_lifespan=False when the caller enters/exits the
+    backend. Both modes leave the backend's Redis clients caller-owned.
+
+    Without a backend, stream_* options use RedisSettings and require the normal
+    Redis lifespan. Identical registration is a no-op; conflicts fail.
+    """
     try:
         from fastapi.sse import EventSourceResponse  # noqa: F401
     except ImportError as error:
         raise RuntimeError(
             "Install fastapi-redis-sdk[streams] for native SSE support"
         ) from error
-    allowed = {
-        name for name in RedisSettings.model_fields if name.startswith("stream_")
-    }
-    if any(name not in allowed for name in options):
-        raise ValueError("Unknown streaming option; use stream_* RedisSettings fields")
-    settings = get_settings().model_dump(exclude_unset=True)
-    settings.update(options)
-    # model_validate rather than model_copy: validate explicit setup overrides.
-    validated = RedisSettings.model_validate(settings)
-    if validated.stream_replay_bytes < validated.stream_max_event_bytes + 512:
-        raise ValueError("Replay byte budget must accommodate one maximum event")
-    previous = getattr(app.state, "_redis_stream_options", None)
-    if previous is not None and previous != options:
-        raise ValueError("Streaming was already configured differently")
-    app.state._redis_stream_options = dict(options)
-    app.state._redis_stream_settings = validated
+    if backend is not None and options:
+        raise ValueError(
+            "Configure explicit backends with StreamSettings, not overrides"
+        )
+    if backend is None and not manage_lifespan:
+        raise ValueError("manage_lifespan=False requires an explicit backend")
+    registration = (backend, manage_lifespan, dict(options))
+    previous = getattr(app.state, "_redis_stream_registration", None)
+    if previous is not None:
+        if previous != registration:
+            raise ValueError("Streaming was already configured differently")
+        return
+
+    if backend is None:
+        allowed = {
+            name for name in RedisSettings.model_fields if name.startswith("stream_")
+        }
+        if any(name not in allowed for name in options):
+            raise ValueError(
+                "Unknown streaming option; use stream_* RedisSettings fields"
+            )
+        settings = get_settings().model_dump(exclude_unset=True)
+        settings.update(options)
+        validated = RedisSettings.model_validate(settings)
+        if validated.stream_replay_bytes < validated.stream_max_event_bytes + 512:
+            raise ValueError("Replay byte budget must accommodate one maximum event")
+        app.state._redis_stream_settings = validated
+    elif manage_lifespan:
+        existing = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def explicit_runtime(app: FastAPI) -> AsyncIterator[Any]:
+            async with backend:
+                app.state._redis_stream_backend = backend
+                try:
+                    async with existing(app) as state:
+                        yield state
+                finally:
+                    del app.state._redis_stream_backend
+
+        app.router.lifespan_context = explicit_runtime
+    else:
+        app.state._redis_stream_backend = backend
 
     async def stream_error(request: Request, error: StreamError) -> JSONResponse:
         return JSONResponse(
@@ -59,6 +100,7 @@ def add_redis_streams(app: FastAPI, **options: Any) -> None:
         )
 
     app.add_exception_handler(StreamError, stream_error)  # type: ignore[arg-type]
+    app.state._redis_stream_registration = registration
 
 
 def _blocking_client(settings: RedisSettings) -> Any:

@@ -565,7 +565,7 @@ async def test_lifespan_composition_repeat_setup_and_rollback(deployment, monkey
     from redis_fastapi.config import get_settings
 
     backend, _, ports, _ = deployment
-    if not ports or backend.settings.cluster:
+    if not ports:
         pytest.skip(
             "Application setup exercised on standalone; backend Cluster path tested separately"
         )

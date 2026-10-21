@@ -11,7 +11,7 @@ from redis_fastapi.cache import (
     default_key_builder,
 )
 from redis_fastapi.cache_backend import CacheBackend, SyncCacheBackend
-from redis_fastapi.config import RedisSettings, get_settings
+from redis_fastapi.config import RedisSettings, StreamSettings, get_settings
 from redis_fastapi.deps import (
     AsyncRedisDep,
     CacheBackendDep,
@@ -103,6 +103,7 @@ from redis_fastapi.types import (
 )
 
 __all__ = [
+    "StreamSettings",
     "StreamBackend",
     "StreamBackendDep",
     "get_stream_backend",

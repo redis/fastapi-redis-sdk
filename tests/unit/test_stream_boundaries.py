@@ -185,3 +185,41 @@ async def test_tls_relay_construction_and_url_pool_limits():
         _blocking_client(
             RedisSettings(url="redis://localhost:6379?socket_timeout=0.001")
         )
+
+
+def test_explicit_settings_defaults_are_environment_free(monkeypatch, tmp_path):
+    from redis_fastapi import StreamSettings, add_redis_streams
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "REDIS_PREFIX=unwanted\nREDIS_STREAM_BUCKET_COUNT=invalid\n"
+    )
+    monkeypatch.setenv("REDIS_STREAM_BUCKET_COUNT", "invalid")
+    settings = StreamSettings(prefix="explicit")
+    assert settings.stream_bucket_count == 16
+    assert StreamBackend(Mock()).settings.prefix == "redis:fastapi"
+    backend = StreamBackend(Mock(), settings=settings)
+    app = FastAPI()
+    add_redis_streams(app, backend=backend)
+    with pytest.raises(ValueError):
+        add_redis_streams(FastAPI(), backend=backend, stream_bucket_count=2)
+    with pytest.raises(ValueError):
+        add_redis_streams(FastAPI(), manage_lifespan=False)
+    with pytest.raises(ValueError):
+        StreamSettings(unknown=True)
+
+
+async def test_shared_command_and_blocking_pool_is_rejected():
+    from redis.asyncio import ConnectionPool, Redis
+
+    pool = ConnectionPool()
+    command, blocking = Redis(connection_pool=pool), Redis(connection_pool=pool)
+    try:
+        backend = StreamBackend(command, blocking_client=blocking)
+        with pytest.raises(ValueError, match="separate blocking"):
+            async with backend:
+                pass
+    finally:
+        await command.aclose()
+        await blocking.aclose()
+        await pool.aclose()
