@@ -71,6 +71,28 @@ class RedisSettings(BaseSettings):
     Supports reading from ``.env`` files automatically.
     """
 
+    # Streaming is opt-in; existing features keep their server requirements.
+    stream_bucket_count: int = Field(default=16, ge=1, le=256)
+    stream_max_event_bytes: int = Field(default=65536, ge=1, le=1048576)
+    stream_max_events: int = Field(default=10000, ge=1, le=100000)
+    stream_idmp_duration: int = Field(default=86400, ge=1, le=86400)
+    stream_idmp_maxsize: int = Field(default=10000, ge=1, le=10000)
+    stream_expiry_recognition: int = Field(default=86400, ge=1)
+    stream_keepalive: float = Field(default=15, gt=0, allow_inf_nan=False)
+    stream_max_duration: float = Field(default=300, gt=0, allow_inf_nan=False)
+    stream_send_timeout: float = Field(default=10, gt=0, allow_inf_nan=False)
+    stream_prepare_timeout: float = Field(default=10, gt=0, allow_inf_nan=False)
+    stream_queue_events: int = Field(default=256, ge=1)
+    stream_queue_bytes: int = Field(default=1048576, ge=1)
+    stream_max_subscribers: int = Field(default=1000, ge=1)
+    stream_max_active_streams: int = Field(default=256, ge=1, le=4096)
+    stream_block_ms: int = Field(default=1000, ge=1, le=10000)
+    stream_read_count: int = Field(default=32, ge=1, le=1000)
+    stream_read_maxcount: int = Field(default=256, ge=1, le=10000)
+    stream_read_maxbytes: int = Field(default=1048576, ge=1)
+    stream_replay_concurrency: int = Field(default=8, ge=1)
+    stream_replay_bytes: int = Field(default=1048576, ge=2048)
+
     # -- Connection: URL mode --------------------------------------------------
     url: str | None = Field(
         default=None,

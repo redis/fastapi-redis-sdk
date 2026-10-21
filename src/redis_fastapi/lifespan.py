@@ -214,7 +214,13 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _check_cache_eviction_safety(ps)
 
     try:
-        yield
+        if hasattr(app.state, "_redis_stream_settings"):
+            from redis_fastapi.streams import _stream_runtime
+
+            async with _stream_runtime(app, ps.get_async_client()):
+                yield
+        else:
+            yield
     finally:
         ps.clear()
         if settings.cluster:

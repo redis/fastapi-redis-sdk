@@ -202,6 +202,13 @@ class FastAPIRedis:
         )
         return self
 
+    def streams(self, **options: Any) -> FastAPIRedis:
+        """Enable resumable events; options override stream_* RedisSettings fields."""
+        from redis_fastapi.streams import add_redis_streams
+
+        add_redis_streams(self._app, **options)
+        return self
+
     def otel(self) -> FastAPIRedis:
         """Enable OpenTelemetry instrumentation for cache operations.
 

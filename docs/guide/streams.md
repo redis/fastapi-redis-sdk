@@ -1,0 +1,243 @@
+# Resumable events
+
+Streaming adds a finite Redis event log: publishers append JSON events, and
+clients replay and follow the log through authenticated HTTP endpoints. Event
+production is independent of subscriptions. Disconnecting does not cancel work.
+
+This implements the generic API proposed in [PR #89](https://github.com/redis/fastapi-redis-sdk/pull/89).
+The contribution is under qualification; see the limitations below.
+
+## Install and configure
+
+```bash
+pip install 'fastapi-redis-sdk[streams]'
+export REDIS_URL=redis://localhost:6379
+```
+
+Streaming requires Redis 8.10 with native producer idempotency and aggregate
+`XREAD MAXCOUNT`/`MAXSIZE` support. The extra requires FastAPI 0.135+ and redis-py
+8.0.1+. Existing caching, rate limiting, and session installations keep their
+existing requirements; SSE classes are imported only when streaming is enabled.
+An unsupported or unreachable Redis fails streaming startup.
+
+```python
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import StreamingResponse
+from redis_fastapi import FastAPIRedis, StreamBackendDep, sse_response
+
+from myapp.chats import Chat, require_chat_read_access
+
+app = FastAPI()
+FastAPIRedis(app).lifespan().streams()
+
+@app.get(
+    "/chats/{chat_id}/events",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def chat_events(
+    request: Request,
+    streams: StreamBackendDep,
+    chat: Chat = Depends(require_chat_read_access),
+):
+    return await sse_response(request, backend=streams, stream=chat.event_stream_id)
+```
+
+`Chat` and its dependency belong to the application. Authenticate, load the
+resource within the verified tenant, and authorize access before calling the
+helper. A stream name or cursor never grants access. The backend dependency
+itself does not read history. FastAPI security schemes, dependency overrides,
+and normal denial responses remain application-owned.
+
+**Why StreamingResponse in the decorator?** FastAPI's native
+`EventSourceResponse` marker selects generator routing, including in FastAPI
+0.138.2, where an ordinary async endpoint returning a response is not awaited
+on that path. The helper returns an `EventSourceResponse` instance with its own
+UTF-8 framing, so use `StreamingResponse` for the route declaration. The explicit
+response content documents SSE in OpenAPI. This corrects the proposal's example.
+
+## Publish and finish
+
+Create the stream in the application's write workflow, before starting work:
+
+```python
+await streams.create(stream_id, ttl=86400)
+cursor = await streams.append(
+    stream_id,
+    event="message",
+    data={"message_id": message.id, "text": message.text},
+    producer="chat-server",
+    idempotency_key=str(message.id),
+)
+await streams.finish(
+    stream_id,
+    event="chat.closed",
+    data={"chat_id": chat.id},
+    producer="chat-server",
+    idempotency_key=f"{chat.id}:closed",
+)
+```
+
+Use a stable producer and a stable event identity across retries. Redis native
+IDMP protection is bounded by duration, capacity, and stream lifetime: defaults
+are 24 hours and 10,000 IDs per producer. It does not compare retry payloads or
+deduplicate application side effects. Retrying an event whose payload was trimmed
+can return its original cursor without restoring the payload.
+
+`finish` puts an authoritative final marker in the final event itself. Concurrent
+writers serialize with same-slot WATCH/MULTI/EXEC; later appends fail. A matching
+finish retry returns the retained final cursor. Reusing an ordinary event's retry
+identity for finish raises a conflict. An ordinary `message.completed` event need
+not seal a chat containing later messages.
+
+Creation retries preserve the original absolute expiry. Conflicting creation
+settings fail. Reads and writes never extend the deadline. Payload expires first;
+content-free metadata remains for expiry recognition, then also expires. Use a
+new unique stream identity for a new delivery window; after metadata expiry the
+SDK cannot detect reuse. The application's database owns permanent chat state.
+
+A worker can use `StreamBackend(client, settings=settings)` and call
+`await backend.initialize()` before publishing. It does not need FastAPI or a
+relay. For non-HTTP subscriptions, provide a **separate** blocking client:
+
+```python
+async with StreamBackend(client, settings=settings, blocking_client=relay_client) as backend:
+    async with backend.subscribe(stream_id, after=cursor) as events:
+        async for event in events:
+            print(event.id, event.event, event.data)
+```
+
+Both clients remain caller-owned. Workers and gateways must use the same prefix,
+serialization, bucket count, and stream settings. Stop the backend before closing
+its clients. Streaming is asyncio-based; no synchronous facade is supplied.
+
+## Resume and recovery
+
+Events carry Redis entry IDs. Resume is strictly after the cursor. Selection is
+explicit helper `after`, then `Last-Event-ID`, then query `after`, then `0-0`.
+Every supplied cursor is validated, even if overridden. Duplicate headers/query
+values, special Redis cursors, empty IDs, malformed IDs, and future IDs fail.
+
+Same-origin cookie users can use `EventSource`; bearer-token applications use a
+streaming fetch client or another SSE client supporting Authorization headers.
+Credentials never belong in URLs. On reconnect, authorization runs again.
+Persist a cursor after applying its event if refresh recovery is needed.
+
+Before headers, errors return `detail.code`:
+
+| Condition | Status/code |
+| --- | --- |
+| Unknown stream | 404 / `stream_not_found` |
+| Known expired stream | 410 / `stream_expired` |
+| History removed | 409 / `history_unavailable` |
+| Cursor ahead | 409 / `cursor_ahead` |
+| Other lifecycle conflict | 409 / `stream_conflict` |
+| Invalid input | 422 / `invalid_stream_request` |
+| Process admission exhausted | 503 / `stream_capacity_exceeded` |
+| Redis unavailable or inconsistent storage | 503 / `stream_unavailable` |
+| Final event already consumed | 204, preventing EventSource retries |
+
+Authentication dependencies retain their own status and challenge headers.
+After headers, recoverable failures send a cursorless `redis.stream.control`
+event when possible, then close. `action` is `reload`, `reconnect`, or
+`reauthenticate`. Keepalives and control messages have no ID. A broken or blocked
+socket may receive no control message; EOF alone does not prove completion.
+
+For reload, fetch application state together with a matching event cursor.
+Starting blindly at the first retained event cannot reconstruct trimmed changes.
+A native EventSource client cannot inspect initial error response bodies; use a
+normal authenticated state endpoint or a fetch-based client for recovery.
+
+`expires_at` accepts a timezone-aware datetime derived from verified credentials.
+Connections end by that deadline or the configured connection lifetime, whichever
+comes first. This bounds reauthorization latency; it is not immediate revocation.
+Do not mutate sessions after headers or apply `cache()`/`cache_put()` to SSE routes.
+
+## Resources and settings
+
+All settings use the normal `REDIS_` prefix. `.streams(stream_...=...)` overrides
+stream settings for that application; invalid or conflicting setup fails.
+
+| Setting suffix | Default |
+| --- | --- |
+| `STREAM_BUCKET_COUNT` | 16, fixed for a storage namespace |
+| `STREAM_MAX_EVENT_BYTES` | 65,536 encoded storage bytes |
+| `STREAM_MAX_EVENTS` | 10,000 application events |
+| `STREAM_IDMP_DURATION` / `STREAM_IDMP_MAXSIZE` | 86,400 seconds / 10,000 IDs per producer |
+| `STREAM_EXPIRY_RECOGNITION` | 86,400 seconds |
+| `STREAM_MAX_DURATION` / `STREAM_KEEPALIVE` | 300 / 15 seconds |
+| `STREAM_SEND_TIMEOUT` / `STREAM_PREPARE_TIMEOUT` | 10 / 10 seconds |
+| `STREAM_QUEUE_EVENTS` / `STREAM_QUEUE_BYTES` | 256 / 1,048,576 per subscriber |
+| `STREAM_MAX_SUBSCRIBERS` / `STREAM_MAX_ACTIVE_STREAMS` | 1,000 / 256 per process |
+| `STREAM_BLOCK_MS` | 1,000 |
+| `STREAM_READ_COUNT` / `STREAM_READ_MAXCOUNT` | 32 per stream / 256 per read |
+| `STREAM_READ_MAXBYTES` | 1,048,576 |
+| `STREAM_REPLAY_CONCURRENCY` / `STREAM_REPLAY_BYTES` | 8 / 1,048,576 per replay page |
+
+One live blocking reader runs per active bucket. For B buckets and P processes,
+at most P × B reads block at once, independent of subscriber count. This is not
+a total socket bound: ordinary commands, replay, topology discovery, and idle
+connections are additional. Cluster pool limits apply per node. Blocking readers
+use separate resources so they cannot occupy the command pool.
+
+Replay pages have a conservative count bound derived from the maximum encoded
+event size and replay byte budget. Live queues enforce count and byte bounds;
+a slow subscriber never blocks the shared reader. Historical replay does not
+rewind that reader. Registration captures a replay boundary and buffers overlap.
+
+Keys use an injective UTF-8/base64url identity encoding and SHA-256 bucket mapping:
+
+```text
+<prefix>:streams:{streams:v1:bucket:<n>}:<encoded-identity>:events
+<prefix>:streams:{streams:v1:bucket:<n>}:<encoded-identity>:meta
+```
+
+Prefixes containing braces are rejected. A persistent namespace manifest records
+layout and bucket count. Every key in a bucket shares a slot; transactions and
+multi-stream reads stay in that slot. Change placement only in a new namespace.
+Reads use primaries. Stream names must be unique across application tenants.
+
+Retention removes bounded prefixes using XDEL. Its native
+`max-deleted-entry-id` records the removed boundary in the same command; metadata
+mirrors that boundary. Readers consult both so failed metadata writes cannot hide
+lost history. The bootstrap and final entry remain until expiry. No Lua, consumer
+groups, untracked trimming, or Pub/Sub delivery path is involved. External writes
+to SDK-owned keys are unsupported.
+
+Creation is initialized as unreadable, then marked ready only after checking the
+committed configuration and deadlines. Redis execution errors do not roll back
+other commands. Partial initialization fails closed; a complete initialization
+whose readiness step was interrupted can be validated by a creation retry.
+
+## Qualification and remaining limitations
+
+Tests use disposable Redis 8.10.2 standalone and three-primary Cluster, isolated
+namespaces, bounded observed-state synchronization, and owned-process teardown.
+Run them with:
+
+```bash
+STREAMS_REDIS_SERVER=/path/to/redis-8.10.2/src/redis-server uv run nox -s streams-3.12
+```
+
+Streaming has its own 80% coverage gate. Redis 7.4/8.8 integration jobs measure
+legacy modules using `tests/coverage-legacy.ini`; unit and full-suite reports
+continue to include every module.
+
+Enterprise requires an explicitly supplied sharded database endpoint through
+`STREAMS_ENTERPRISE_URL` and `STREAMS_ALLOW_EXTERNAL=1`. Missing coverage is
+reported as skipped. Sentinel streaming is rejected until failover is qualified.
+Persistence, failover, resharding, cross-region delivery, sustained capacity, and
+the full IDMP eviction boundaries need separate qualification. No exactly-once
+processing or unconditional Redis failure survival is claimed.
+
+The initial implementation has no custom key builder, renewal API, automatic
+producer retry policy, or application snapshot service. Default limits are
+provisional; they are not published throughput or latency claims.
+
+## Reuse provenance
+
+The subscription cleanup, relay scheduling, and transaction patterns were adapted
+from [Agent Mesh at d94c269](https://github.com/redislabsdev/agent-mesh/tree/d94c2699852481b683e8302da6319380357b836f/sdk/python)
+and the SDK's [resumable-events spike](https://github.com/redis/fastapi-redis-sdk/tree/488128615ef7edc3f5c155459f98a73992fa7e0d/experiments/resumable_events).
+Separate catch-up and live delivery, byte-bounded queues, and final-event sealing
+follow the spike. Agent execution and Task-specific types are outside this API.

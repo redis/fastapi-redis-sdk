@@ -18,6 +18,7 @@ from redis_fastapi.deps import (
     RateLimitBackendDep,
     SessionDep,
     SessionStoreDep,
+    StreamBackendDep,
     SyncCacheBackendDep,
     SyncRateLimitBackendDep,
     SyncSessionStoreDep,
@@ -26,6 +27,7 @@ from redis_fastapi.deps import (
     get_rate_limit_backend,
     get_session,
     get_session_store,
+    get_stream_backend,
     get_sync_cache_backend,
     get_sync_rate_limit_backend,
     get_sync_session_store,
@@ -73,6 +75,20 @@ from redis_fastapi.sessions import (
     valid_session,
 )
 from redis_fastapi.setup import FastAPIRedis
+from redis_fastapi.stream_backend import (
+    InvalidStreamRequest,
+    StreamBackend,
+    StreamCapacityExceeded,
+    StreamConflict,
+    StreamCursorAhead,
+    StreamError,
+    StreamEvent,
+    StreamExpired,
+    StreamHistoryUnavailable,
+    StreamNotFound,
+    StreamSlowConsumer,
+)
+from redis_fastapi.streams import add_redis_streams, sse_response
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
     Challenge,
@@ -87,6 +103,21 @@ from redis_fastapi.types import (
 )
 
 __all__ = [
+    "StreamBackend",
+    "StreamBackendDep",
+    "get_stream_backend",
+    "StreamEvent",
+    "StreamError",
+    "StreamNotFound",
+    "StreamExpired",
+    "StreamConflict",
+    "StreamHistoryUnavailable",
+    "StreamCursorAhead",
+    "StreamCapacityExceeded",
+    "StreamSlowConsumer",
+    "InvalidStreamRequest",
+    "add_redis_streams",
+    "sse_response",
     "AsyncRedisDep",
     "CacheBackend",
     "CacheBackendDep",

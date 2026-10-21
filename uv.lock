@@ -716,6 +716,10 @@ otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
 ]
+streams = [
+    { name = "fastapi" },
+    { name = "redis" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -774,13 +778,15 @@ typecheck = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.13.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fastapi", marker = "extra == 'streams'", specifier = ">=0.135.0" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
     { name = "redis", specifier = ">=6.0.0" },
+    { name = "redis", marker = "extra == 'streams'", specifier = ">=8.0.1" },
 ]
-provides-extras = ["otel"]
+provides-extras = ["streams", "otel"]
 
 [package.metadata.requires-dev]
 dev = [
