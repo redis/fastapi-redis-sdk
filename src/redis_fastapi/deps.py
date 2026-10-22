@@ -42,6 +42,7 @@ from redis_fastapi.session_backend import (
     _StoreCapabilities,
 )
 from redis_fastapi.sessions import Session, session_of, session_state_of
+from redis_fastapi.stream_backend import StreamBackend, StreamError
 
 logger = logging.getLogger(__name__)
 
@@ -334,3 +335,16 @@ SessionStoreDep = Annotated[SessionStore, Depends(get_session_store)]
 SyncSessionStoreDep = Annotated[SyncSessionStore, Depends(get_sync_session_store)]
 SessionDep = Annotated[Session, Depends(get_session)]
 SessionStateDep = Annotated[SessionState, Depends(get_session_state)]
+
+
+async def get_stream_backend(request: Request) -> StreamBackend:
+    """Return the lifespan-owned shared backend without reading stream history."""
+    backend: StreamBackend | None = getattr(
+        request.app.state, "_redis_stream_backend", None
+    )
+    if backend is None:
+        raise StreamError("Configure FastAPIRedis(app).lifespan().streams()")
+    return backend
+
+
+StreamBackendDep = Annotated[StreamBackend, Depends(get_stream_backend)]

@@ -114,6 +114,14 @@ Redis enforces an idle timeout and an absolute timeout. `valid_session()` return
 
 See the [Sessions Guide](docs/guide/sessions.md) for timeouts, sign-out everywhere, CSRF, encryption and migration.
 
+## Resumable events
+
+`FastAPIRedis(app).lifespan().streams()` enables generic Redis-backed event logs
+with replay after disconnect. Publish through `StreamBackendDep` and expose an
+authorized SSE route using `sse_response()`. Requires the `streams` extra and
+Redis 8.6. See the [streams guide](docs/guide/streams.md) for the API,
+qualification limits, and a runnable example.
+
 ## Configuration
 
 All settings are read from environment variables (prefixed `REDIS_`) or a `.env` file. Set `REDIS_URL` for the simplest setup:

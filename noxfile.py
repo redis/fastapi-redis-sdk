@@ -118,6 +118,7 @@ def tests_integration(session: nox.Session) -> None:
     session.run(
         "pytest",
         "tests/integration",
+        "--cov-config=tests/coverage-legacy.ini",
         f"--cov-fail-under={_INTEGRATION_COV_FLOOR}",
         *session.posargs,
     )
@@ -149,3 +150,29 @@ def fix(session: nox.Session) -> None:
     uv_sync(session, "--only-group", "lint")
     session.run("ruff", "check", "--fix", *SOURCES)
     session.run("ruff", "format", *SOURCES)
+
+
+@nox.session(python=PYTHON_VERSIONS, default=False)
+def streams(session: nox.Session) -> None:
+    """Qualify streaming against disposable pinned Redis 8.6.7 deployments.
+
+    Set STREAMS_REDIS_SERVER to the binary path. Missing local binaries fail
+    this explicit session; ordinary SDK sessions retain their old requirements.
+    """
+    import os
+
+    if not os.getenv("STREAMS_REDIS_SERVER"):
+        session.error("Set STREAMS_REDIS_SERVER to a Redis 8.6.7 binary")
+    uv_sync(
+        session, "--extra", "streams", "--extra", "otel",
+        "--no-default-groups", "--group", "test",
+    )
+    session.run(
+        "pytest", "tests/streams", "tests/unit/test_stream_boundaries.py",
+        "-o", "addopts=", "--cov=redis_fastapi.stream_backend",
+        "--cov=redis_fastapi._stream_relay", "--cov=redis_fastapi.streams",
+        "--cov-fail-under=80", "--cov-report=term-missing",
+        f"--cov-report=xml:{session.virtualenv.location}/coverage.xml", "-rs",
+        *session.posargs,
+        env={"COVERAGE_FILE": f"{session.virtualenv.location}/.coverage"},
+    )

@@ -38,6 +38,7 @@ METER_NAME = "fastapi-redis-sdk"
 class _OTelState:
     """Groups all mutable OTel state into a single object."""
 
+    stream_instruments: dict[str, Any] = dataclasses.field(default_factory=dict)
     enabled: bool = False
     tracer: Any = None  # opentelemetry.trace.Tracer | None
     meter: Any = None  # opentelemetry.metrics.Meter | None
@@ -134,6 +135,27 @@ def enable_telemetry() -> None:
         description="Rate-limit check duration",
         unit="s",
     )
+
+    for name in (
+        "operations",
+        "rejections",
+        "replay_batches",
+        "read_batches",
+        "deliveries",
+        "disconnects",
+    ):
+        _state.stream_instruments[name] = _state.meter.create_counter(
+            name=f"redis_fastapi.streams.{name}", unit="1"
+        )
+    for name in ("subscribers", "active_streams", "blocked_readers", "queue_bytes"):
+        _state.stream_instruments[name] = _state.meter.create_up_down_counter(
+            name=f"redis_fastapi.streams.{name}",
+            unit="By" if name == "queue_bytes" else "1",
+        )
+    for name in ("operation_duration", "read_duration", "delivery_lag"):
+        _state.stream_instruments[name] = _state.meter.create_histogram(
+            name=f"redis_fastapi.streams.{name}", unit="s"
+        )
 
     _state.enabled = True
     logger.info("fastapi-redis-sdk OpenTelemetry instrumentation enabled")
@@ -389,3 +411,28 @@ def timed_session(operation: str) -> Generator[None, None, None]:
         yield
     finally:
         record_session_latency(duration=time.monotonic() - start, operation=operation)
+
+
+def record_stream(name: str, value: float = 1, **attributes: str | int) -> None:
+    """Record bounded stream measurements; callers never pass resource IDs.
+
+    Known attributes are operation, result, reason, and bucket. Unknown names or
+    disabled telemetry are no-ops, and instrumentation never changes delivery.
+    """
+    if not _state.enabled:
+        return
+    instrument = _state.stream_instruments.get(name)
+    if instrument is None:
+        return
+    labels = {
+        key: value
+        for key, value in attributes.items()
+        if key in {"operation", "result", "reason", "bucket"}
+    }
+    try:
+        if name.endswith("duration") or name == "delivery_lag":
+            instrument.record(value, labels)
+        else:
+            instrument.add(value, labels)
+    except Exception:
+        logger.debug("Unable to record streaming metric")

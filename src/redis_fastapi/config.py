@@ -13,7 +13,14 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import SSLConnection
 from redis.driver_info import DriverInfo
@@ -50,7 +57,43 @@ _COOKIE_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]+")
 _CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-class RedisSettings(BaseSettings):
+class StreamSettings(BaseModel):
+    """Explicit event-log settings; never reads environment variables or .env.
+
+    RedisSettings adds environment discovery for the fluent setup path. Direct
+    backends default to this model and accept only stream settings and a prefix.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    prefix: str = "redis:fastapi"
+
+    # Streaming is opt-in; existing features keep their server requirements.
+    stream_bucket_count: int = Field(default=16, ge=1, le=256)
+    stream_max_event_bytes: int = Field(default=65536, ge=1, le=1048576)
+    stream_max_events: int = Field(default=10000, ge=1, le=100000)
+    stream_idmp_duration: int = Field(default=86400, ge=1, le=86400)
+    stream_idmp_maxsize: int = Field(default=10000, ge=1, le=10000)
+    stream_expiry_recognition: int = Field(default=86400, ge=1)
+    stream_keepalive: float = Field(default=15, gt=0, allow_inf_nan=False)
+    stream_max_duration: float = Field(default=300, gt=0, allow_inf_nan=False)
+    stream_send_timeout: float = Field(default=10, gt=0, allow_inf_nan=False)
+    stream_prepare_timeout: float = Field(default=10, gt=0, allow_inf_nan=False)
+    stream_queue_events: int = Field(default=256, ge=1)
+    stream_queue_bytes: int = Field(default=1048576, ge=1)
+    stream_max_subscribers: int = Field(default=1000, ge=1)
+    stream_max_active_streams: int = Field(default=256, ge=1, le=4096)
+    stream_block_ms: int = Field(default=1000, ge=1, le=10000)
+    stream_read_count: int = Field(default=32, ge=1, le=1000)
+    stream_read_maxcount: int = Field(default=256, ge=1, le=10000)
+    stream_read_maxbytes: int = Field(default=1048576, ge=1)
+    stream_replay_concurrency: int = Field(default=8, ge=1)
+    stream_replay_bytes: int = Field(default=1048576, ge=2048)
+
+    def pattern_prefix(self, pattern: str) -> str:
+        return f"{self.prefix}:{pattern}"
+
+
+class RedisSettings(BaseSettings, StreamSettings):
     """Central configuration for the FastAPI Redis integration.
 
     Supports two connection modes:

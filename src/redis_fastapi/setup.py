@@ -202,6 +202,17 @@ class FastAPIRedis:
         )
         return self
 
+    def streams(self, **options: Any) -> FastAPIRedis:
+        """Enable resumable events with stream_* overrides or an explicit backend.
+
+        backend=... delegates to add_redis_streams without environment discovery;
+        omit .lifespan() when the application supplies the Redis resources.
+        """
+        from redis_fastapi.streams import add_redis_streams
+
+        add_redis_streams(self._app, **options)
+        return self
+
     def otel(self) -> FastAPIRedis:
         """Enable OpenTelemetry instrumentation for cache operations.
 
