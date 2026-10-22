@@ -314,7 +314,7 @@ Proposed initial defaults, subject to capacity measurements:
 | Process admission | At most 1,000 subscribers and 256 active logical streams; reject excess before headers |
 | Relay buckets | 16 per process, fixed for the storage namespace; one shared blocking `XREAD` loop per active bucket |
 | Relay block timeout | 1 second; bounds how long bucket membership changes wait for a read to return |
-| Relay batch limits | `COUNT 32` per stream, `MAXCOUNT 256` and `MAXSIZE 1048576` across each read; rotate stream order for fairness |
+| Relay batch limits | Standard `XREAD COUNT` with SDK budgets of 256 entries / 1048576 encoded bytes across each read; reduce per-key COUNT and rotate bounded key groups for fairness |
 | Replay read concurrency | At most 8 nonblocking catch-up batches in flight per process, separate from the blocking relay budget |
 
 TTL is explicit at creation. Reads and appends do not extend it. An eventual
@@ -610,14 +610,36 @@ exhaust the pool needed to append the events that wake them. Bound retained idle
 connections as well as in-flight operations; client pool configuration and
 topology determine the total socket budget.
 
-Every blocking read uses `COUNT`, `MAXCOUNT`, and `MAXSIZE`. Rotate stream order
-between reads and cap per-stream work so a busy log cannot consume every reply
-budget ahead of quieter logs. `MAXSIZE` can return a single entry larger than its
-budget, so combine it with validated event sizes and bounded application buffers.
-The read's block timeout bounds membership-update latency: after it returns,
-rebuild its stream list and cursors before blocking again. Do not start a second
-reader while the first is still blocked. Shutdown may cancel the outstanding
-read and must safely release or discard its connection.
+Startup negotiates read capabilities separately for every placement bucket using
+side-effect-free XREAD command probes, rather than trusting a proxy's version
+string or requiring INFO permission. Required native IDMP remains mandatory.
+Redis 8.10 `MAXCOUNT`/`MAXSIZE` support is optional: select native aggregate limits
+where the server accepts them, and bounded standard COUNT groups elsewhere.
+Only a command ResponseError selects the compatible path; connection failures
+fail startup. The chosen mode lasts for the backend instance. Restart after
+capability changes; a later native-command failure closes subscribers with a
+resumable error, rather than changing modes silently mid-read.
+
+Native reads use COUNT, MAXCOUNT and MAXSIZE and rotate first-key order for
+fairness. MAXSIZE is a target and can overshoot while emitting an entry/key;
+validated maximum event sizes and key admission plus bounded subscriber queues
+remain necessary. It is not a hard Python heap limit.
+
+For standard reads, stream_read_maxcount and stream_read_maxbytes are SDK
+aggregate budgets. Reserve 64 bytes for the reply, each selected key's UTF-8
+bytes plus 64 bytes of stream framing, and E + 512 bytes per entry, where E is
+the maximum validated encoded event size. Choose a rotating key group and a
+per-key COUNT whose product fits the entry cap and whose full conservative cost
+fits the byte budget. Reject budgets unable to hold one maximum event and the
+longest allowed key for the configured prefix. This bounds encoded replies from
+SDK-owned logs, not heap or corrupted external writes.
+
+Rotate bounded groups so a busy log cannot starve quiet logs. With N streams and
+G keys per group, an idle round takes at most ceil(N / G) * block_timeout plus
+command and processing time; long keys can reduce G. Document and capacity-test
+this latency tradeoff. Refresh membership/cursors after every read. Do not start
+a second reader while the first is blocked. Shutdown cancels the outstanding read
+and safely releases or discards its connection.
 
 Slow subscriber queues never block the shared reader. Disconnect a subscriber
 that exceeds its event, byte, or send-time bound with a resumable control error
@@ -640,7 +662,7 @@ No replica or Active-Active consistency guarantee is included.
 
 [`XREAD`](https://redis.io/docs/latest/commands/xread/) is a broadcast cursor read;
 consumer groups divide work and are unsuitable for browser fan-out. Shared
-blocking reads and their global count/size controls are part of the initial
+blocking reads and SDK-enforced aggregate count/size budgets are part of the initial
 contract, not a deferred optimization or a polling fallback. The slot-aware
 multiplexed reader should be reused from the client library when available;
 SDK relay internals provide the interim implementation.
@@ -667,16 +689,23 @@ The proposal preserves existing features' compatibility and introduces a
 redis-py version validated for the required operations. Importing existing SDK
 features must not eagerly import unavailable SSE classes.
 
-Streaming requires native IDMP and `XREAD MAXCOUNT`/`MAXSIZE`; the latter are
-available from Redis 8.10 according to the
-[`XREAD` command reference](https://redis.io/docs/latest/commands/xread/).
-The proposed feature baseline is therefore Redis 8.10 with those capabilities,
-subject to qualification on each supported deployment. Older
-servers can continue using existing SDK features; enabling streaming fails with
-an actionable capability error. There is no undocumented fallback that drops
-producer idempotency or replaces shared blocking reads with polling. The exact
-redis-py minimum and optional-extra packaging
-need upstream agreement and compatibility tests before implementation is merged.
+Streaming requires native producer idempotency (`XADD IDMP` / `XCFGSET`),
+available from Redis database version 8.6. Standard `XREAD COUNT` is sufficient;
+use Redis 8.10 `MAXCOUNT`/`MAXSIZE` when detected, without requiring them. The feature baseline
+is Redis database version 8.6, subject to capability checks and qualification on
+each supported deployment. Older servers can continue using existing SDK
+features; enabling streaming fails with an actionable capability error. There is
+no fallback that drops producer idempotency or replaces shared blocking reads
+with polling. The exact redis-py minimum and optional-extra packaging need
+upstream agreement and compatibility tests before implementation is merged.
+
+At the 2026-10-22 compatibility review, Redis 8.6 is the highest database version
+listed by both [Redis Software](https://redis.io/docs/latest/operate/rs/release-notes/rs-8-2-releases/)
+and [Redis Cloud](https://redis.io/docs/latest/operate/rc/databases/version-management/).
+The Software cluster release number differs from its supported database versions.
+This establishes the target command baseline, not a claim of tested Enterprise
+or Cloud deployment support. Qualify the actual sharded database endpoint and
+record server versions, persistence settings, and any command restrictions.
 
 The initial contribution includes storage, retry-safe append within configured
 limits, finite-stream sealing, replay, SSE transport, lifespan integration,
@@ -724,7 +753,7 @@ primaries, and Redis Enterprise sharded databases through the database endpoint.
 Record server/client versions, topology, capabilities, persistence policy, and
 results as passed, failed, or unverified. Test multiple streams per bucket and
 multiple buckets placed across different shards, redirects, connection failures,
-and command errors. Verify that missing `MAXCOUNT`/`MAXSIZE` support fails startup.
+and command errors. Verify startup selects standard reads without MAXCOUNT/MAXSIZE, selects native limits when available (including mixed capability probes), and fails actionably when native IDMP is unavailable.
 A standalone pass is
 not sharded qualification. Sentinel, if advertised for this feature, needs its
 own failover qualification using the SDK's Sentinel client path.
@@ -757,7 +786,7 @@ SDK-owned metadata.
 The proposed API and authorization composition are settled for this draft. The
 remaining review decisions are deliberately narrower:
 
-1. Confirm the Redis 8.10 feature baseline for IDMP and bounded multi-stream
+1. Confirm the Redis 8.6 feature baseline for IDMP and SDK-bounded multi-stream
    `XREAD`, plus the redis-py minimum and FastAPI optional-extra packaging.
 2. Confirm the finite TTL and no-identity-reuse contract for the initial release,
    or specify an explicit generation/renewal API before supporting continuous logs.
