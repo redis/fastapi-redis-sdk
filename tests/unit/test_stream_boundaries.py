@@ -223,3 +223,24 @@ async def test_shared_command_and_blocking_pool_is_rejected():
         await command.aclose()
         await blocking.aclose()
         await pool.aclose()
+
+
+def test_live_read_budget_must_fit_one_maximum_event():
+    from redis_fastapi import StreamSettings
+
+    with pytest.raises(InvalidStreamRequest, match="Live read budget"):
+        StreamBackend(Mock(), settings=StreamSettings(stream_read_maxbytes=1024))
+    with pytest.raises(ValueError, match="Live read budget"):
+        FastAPIRedis(FastAPI()).streams(stream_read_maxbytes=1024)
+
+
+def test_long_key_prefix_is_charged_to_live_read_budget():
+    from redis_fastapi import StreamSettings
+
+    with pytest.raises(InvalidStreamRequest, match="key and framing"):
+        StreamBackend(
+            Mock(),
+            settings=StreamSettings(
+                prefix="x" * 2000, stream_max_event_bytes=64, stream_read_maxbytes=576
+            ),
+        )

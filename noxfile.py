@@ -154,7 +154,7 @@ def fix(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS, default=False)
 def streams(session: nox.Session) -> None:
-    """Qualify streaming against disposable pinned Redis 8.10.2 deployments.
+    """Qualify streaming against disposable pinned Redis 8.6.7 deployments.
 
     Set STREAMS_REDIS_SERVER to the binary path. Missing local binaries fail
     this explicit session; ordinary SDK sessions retain their old requirements.
@@ -162,7 +162,7 @@ def streams(session: nox.Session) -> None:
     import os
 
     if not os.getenv("STREAMS_REDIS_SERVER"):
-        session.error("Set STREAMS_REDIS_SERVER to a Redis 8.10.2 binary")
+        session.error("Set STREAMS_REDIS_SERVER to a Redis 8.6.7 binary")
     uv_sync(
         session, "--extra", "streams", "--extra", "otel",
         "--no-default-groups", "--group", "test",

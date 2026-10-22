@@ -248,29 +248,71 @@ class _StreamRelay:
                 continue
             offset = rotation % len(states)
             states = states[offset:] + states[:offset]
-            rotation += 1
+            limits: list[Any] = []
+            if bucket in self.store.native_read_limits:
+                # Redis 8.10 bounds the aggregate response itself. Rotate the
+                # first key so a busy stream cannot monopolize a native batch.
+                count = min(
+                    self.settings.stream_read_count, self.settings.stream_read_maxcount
+                )
+                limits = [
+                    "MAXCOUNT",
+                    self.settings.stream_read_maxcount,
+                    "MAXSIZE",
+                    self.settings.stream_read_maxbytes,
+                ]
+                rotation += 1
+            else:
+                # Redis 8.6 COUNT is per key. Reserve reply/key framing first,
+                # then admit only a group whose worst-case entries fit the budget.
+                entry_bytes = self.settings.stream_max_event_bytes + 512
+                remaining = self.settings.stream_read_maxbytes - 64
+                selected: list[_LiveStream] = []
+                key_bytes = 0
+                for state in states:
+                    overhead = len(self.store.keys(state.stream)[0].encode()) + 64
+                    if (
+                        len(selected) >= self.settings.stream_read_maxcount
+                        or key_bytes + overhead + (len(selected) + 1) * entry_bytes
+                        > remaining
+                    ):
+                        break
+                    selected.append(state)
+                    key_bytes += overhead
+                if not selected:
+                    raise StreamError("Live read budget no longer fits a stream")
+                states = selected
+                count = min(
+                    self.settings.stream_read_count,
+                    self.settings.stream_read_maxcount // len(states),
+                    (remaining - key_bytes) // (entry_bytes * len(states)),
+                )
+                rotation += len(states)
             keys = [self.store.keys(s.stream)[0] for s in states]
             ids = [max((positions[s.stream], "0-1"), key=parse_cursor) for s in states]
             try:
+                # The relay client is independently owned and may not have a
+                # slot map yet. Route native syntax directly to the bucket node.
+                from redis.asyncio import RedisCluster
+
+                route = {}
+                if limits and isinstance(self.client, RedisCluster):
+                    await self.client.initialize()
+                    route = {"target_nodes": self.client.get_node_from_key(keys[0])}
                 started = time.monotonic()
                 record_stream("blocked_readers", bucket=bucket)
                 try:
                     response = await self.client.execute_command(
                         "XREAD",
                         "COUNT",
-                        min(
-                            self.settings.stream_read_count,
-                            self.settings.stream_read_maxcount,
-                        ),
-                        "MAXCOUNT",
-                        self.settings.stream_read_maxcount,
-                        "MAXSIZE",
-                        self.settings.stream_read_maxbytes,
+                        count,
+                        *limits,
                         "BLOCK",
                         self.settings.stream_block_ms,
                         "STREAMS",
                         *keys,
                         *ids,
+                        **route,
                     )
                 finally:
                     record_stream("blocked_readers", -1, bucket=bucket)

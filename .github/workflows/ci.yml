@@ -179,44 +179,57 @@ jobs:
         fail_ci_if_error: true
 
   streams:
-    name: streams / py${{ matrix.python-version }}
+    name: streams / Redis ${{ matrix.redis-version }} / py${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        redis-version: ["8.6.7"]
+        include:
+          - python-version: "3.12"
+            redis-version: "8.10.2"
     steps:
       - uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - name: Build pinned Redis 8.10.2
+      - name: Build pinned Redis ${{ matrix.redis-version }}
+        env:
+          STREAM_REDIS_VERSION: ${{ matrix.redis-version }}
         run: |
-          curl --fail --location --max-time 60 https://github.com/redis/redis/archive/refs/tags/8.10.2.tar.gz --output "$RUNNER_TEMP/redis.tar.gz"
-          echo "541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8  $RUNNER_TEMP/redis.tar.gz" | sha256sum --check
+          curl --fail --location --max-time 60 "https://github.com/redis/redis/archive/refs/tags/${STREAM_REDIS_VERSION}.tar.gz" --output "$RUNNER_TEMP/redis.tar.gz"
+          case "$STREAM_REDIS_VERSION" in
+            8.6.7) STREAM_REDIS_SHA=96598fae03314298a06366f57e640310b88751ec6aaad404b14b7a22bc45cad8 ;;
+            8.10.2) STREAM_REDIS_SHA=541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8 ;;
+            *) exit 1 ;;
+          esac
+          echo "$STREAM_REDIS_SHA  $RUNNER_TEMP/redis.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/redis.tar.gz" -C "$RUNNER_TEMP"
-          make -C "$RUNNER_TEMP/redis-8.10.2/src" -j2 BUILD_TLS=no MALLOC=libc redis-server redis-cli
+          make -C "${RUNNER_TEMP}/redis-${STREAM_REDIS_VERSION}/src" -j2 BUILD_TLS=no MALLOC=libc redis-server redis-cli
       - name: Standalone and three-primary Cluster acceptance
         run: uv run nox -s "streams-${{ matrix.python-version }}"
         env:
-          STREAMS_REDIS_SERVER: ${{ runner.temp }}/redis-8.10.2/src/redis-server
+          STREAMS_REDIS_SERVER: ${{ runner.temp }}/redis-${{ matrix.redis-version }}/src/redis-server
           STREAMS_TOPOLOGIES: standalone,cluster,enterprise
       - name: Installed wheel outside the checkout
+        env:
+          STREAM_REDIS_VERSION: ${{ matrix.redis-version }}
         run: |
           uv build --wheel
           STREAM_WHEEL=$(find "$GITHUB_WORKSPACE/dist" -name '*.whl' -print -quit)
           STREAM_SMOKE_DIR=$(mktemp -d)
           cd "$STREAM_SMOKE_DIR"
-          uv run --no-project --python "${{ matrix.python-version }}" --with "${STREAM_WHEEL}[streams]" --with httpx python -I "$GITHUB_WORKSPACE/scripts/check_streams_wheel.py" "$RUNNER_TEMP/redis-8.10.2/src/redis-server"
+          uv run --no-project --python "${{ matrix.python-version }}" --with "${STREAM_WHEEL}[streams]" --with httpx python -I "$GITHUB_WORKSPACE/scripts/check_streams_wheel.py" "${RUNNER_TEMP}/redis-${STREAM_REDIS_VERSION}/src/redis-server"
           if [ "${{ matrix.python-version }}" = "3.10" ]; then
-            uv run --no-project --python 3.10 --with "${STREAM_WHEEL}[streams]" --with fastapi==0.135.0 --with redis==8.0.1 --with httpx python -I "$GITHUB_WORKSPACE/scripts/check_streams_wheel.py" "$RUNNER_TEMP/redis-8.10.2/src/redis-server"
+            uv run --no-project --python 3.10 --with "${STREAM_WHEEL}[streams]" --with fastapi==0.135.0 --with redis==8.0.1 --with httpx python -I "$GITHUB_WORKSPACE/scripts/check_streams_wheel.py" "${RUNNER_TEMP}/redis-${STREAM_REDIS_VERSION}/src/redis-server"
             uv run --no-project --python 3.10 --with "$STREAM_WHEEL" --with fastapi==0.115.0 --with redis==8.0.1 python -I -c 'import redis_fastapi; from fastapi import FastAPI; redis_fastapi.FastAPIRedis(FastAPI()).caching()'
           fi
       - name: Upload streaming coverage
         uses: codecov/codecov-action@v7
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && matrix.redis-version == '8.6.7'
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: .nox/streams-3-12/coverage.xml

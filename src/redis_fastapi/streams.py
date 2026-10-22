@@ -21,6 +21,7 @@ from redis_fastapi.stream_backend import (
     InvalidStreamRequest,
     StreamBackend,
     StreamError,
+    _minimum_live_read_bytes,
     parse_cursor,
 )
 
@@ -74,6 +75,10 @@ def add_redis_streams(
         validated = RedisSettings.model_validate(settings)
         if validated.stream_replay_bytes < validated.stream_max_event_bytes + 512:
             raise ValueError("Replay byte budget must accommodate one maximum event")
+        if validated.stream_read_maxbytes < _minimum_live_read_bytes(validated):
+            raise ValueError(
+                "Live read budget must accommodate one maximum event, key and framing"
+            )
         app.state._redis_stream_settings = validated
     elif manage_lifespan:
         existing = app.router.lifespan_context

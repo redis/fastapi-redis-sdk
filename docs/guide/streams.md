@@ -14,8 +14,10 @@ pip install 'fastapi-redis-sdk[streams]'
 export REDIS_URL=redis://localhost:6379
 ```
 
-Streaming requires Redis 8.10 with native producer idempotency and aggregate
-`XREAD MAXCOUNT`/`MAXSIZE` support. The extra requires FastAPI 0.135+ and redis-py
+Streaming requires Redis database version 8.6 with native producer idempotency.
+Startup probes every placement bucket for the Redis 8.10 `XREAD MAXCOUNT`/`MAXSIZE`
+options and uses them where available. Other buckets use standard `XREAD COUNT`
+with SDK-bounded, rotating key groups. Redis 8.10 is an optimization, not a requirement. The extra requires FastAPI 0.135+ and redis-py
 8.0.1+. Existing caching, rate limiting, and session installations keep their
 existing requirements; SSE classes are imported only when streaming is enabled.
 An unsupported or unreachable Redis fails streaming startup.
@@ -260,6 +262,37 @@ a total socket bound: ordinary commands, replay, topology discovery, and idle
 connections are additional. Cluster pool limits apply per node. Blocking readers
 use separate resources so they cannot occupy the command pool.
 
+`stream_read_maxcount` and `stream_read_maxbytes` control aggregate batches.
+At startup, command probes negotiate read limits per placement bucket; no INFO
+permission or assumption about a proxy's version string is required. A mixed
+cluster uses the native path only for buckets that accepted the optional syntax.
+Connection failures fail startup rather than being mistaken for missing features.
+Capability results last for that backend instance; restart after changing server
+capabilities. An unsupported native read after startup fails the subscription
+with a resumable error rather than silently changing behavior mid-read.
+
+On Redis 8.10-capable buckets, send `COUNT`, `MAXCOUNT`, and `MAXSIZE`, rotating
+first-key order for fairness. Native MAXSIZE is a target: the server can exceed
+it when emitting an entry/key. Maximum event sizes, validated key size admission,
+and bounded subscriber buffers still bound that overshoot; MAXSIZE alone is not
+a hard heap-memory limit.
+
+On other buckets, standard COUNT applies per key. Reserve 64 bytes of reply
+framing, each selected key's UTF-8 bytes plus 64 bytes of stream framing, and
+E + 512 bytes per entry, where E is the maximum validated encoded event size.
+Choose a rotating group and per-key COUNT whose total conservative cost fits the
+byte and aggregate count budgets. Startup rejects a byte budget unable to hold
+one maximum event and the longest permitted key for the configured prefix. The
+budget bounds encoded replies from SDK-owned logs, not total Python heap or
+responses from externally corrupted storage.
+
+When a standard-read bucket has more streams than fit one read, rotate disjoint
+groups through one blocking reader. With N streams and group size G, an idle
+full round takes at most `ceil(N / G) * stream_block_ms`, plus command and
+processing time. Long keys can reduce G. This latency/capacity tradeoff does not
+add readers: membership is refreshed after every read, and busy groups cannot
+monopolize the reader. No polling fallback is introduced.
+
 Replay pages have a conservative count bound derived from the maximum encoded
 event size and replay byte budget. Live queues enforce count and byte bounds;
 a slow subscriber never blocks the shared reader. Historical replay does not
@@ -291,19 +324,26 @@ whose readiness step was interrupted can be validated by a creation retry.
 
 ## Qualification and remaining limitations
 
-Tests use disposable Redis 8.10.2 standalone and three-primary Cluster, isolated
+Tests use disposable Redis 8.6.7 standalone and three-primary Cluster for the
+baseline, plus Redis 8.10.2 for native read-limit negotiation, with isolated
 namespaces, bounded observed-state synchronization, and owned-process teardown.
 Run them with:
 
 ```bash
-STREAMS_REDIS_SERVER=/path/to/redis-8.10.2/src/redis-server uv run nox -s streams-3.12
+STREAMS_REDIS_SERVER=/path/to/redis-8.6.7/src/redis-server uv run nox -s streams-3.12
 ```
 
 Streaming has its own 80% coverage gate. Redis 7.4/8.8 integration jobs measure
 legacy modules using `tests/coverage-legacy.ini`; unit and full-suite reports
 continue to include every module.
 
-Enterprise requires an explicitly supplied sharded database endpoint through
+The Redis Software and Redis Cloud documentation lists Redis database version
+8.6 as supported. This is the database compatibility version, not the Software
+cluster version. See [Software release notes](https://redis.io/docs/latest/operate/rs/release-notes/rs-8-2-releases/)
+and [Cloud version management](https://redis.io/docs/latest/operate/rc/databases/version-management/).
+A matching command set does not establish deployment qualification.
+
+Enterprise/Cloud qualification requires an explicitly supplied sharded database endpoint through
 `STREAMS_ENTERPRISE_URL` and `STREAMS_ALLOW_EXTERNAL=1`. Missing coverage is
 reported as skipped. Sentinel streaming is rejected until failover is qualified.
 Persistence, failover, resharding, cross-region delivery, sustained capacity, and

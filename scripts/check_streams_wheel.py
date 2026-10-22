@@ -1,6 +1,6 @@
 """Exercise the installed wheel outside the source checkout against owned Redis.
 
-Run with a pinned Redis 8.10.2 server path as the sole argument. The caller must
+Run with a pinned Redis 8.6.7 server path as the sole argument. The caller must
 install the wheel's streams extra and httpx in an isolated environment.
 """
 
@@ -112,7 +112,7 @@ def main() -> None:
     assert not Path(redis_fastapi.__file__).resolve().is_relative_to(checkout)
     binary = Path(sys.argv[1]).resolve()
     version = subprocess.check_output([str(binary), "--version"], text=True, timeout=5)
-    assert "v=8.10.2 " in version
+    assert any(f"v={v} " in version for v in ("8.6.7", "8.10.2")), version
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]

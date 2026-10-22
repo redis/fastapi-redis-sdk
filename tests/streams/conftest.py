@@ -89,10 +89,10 @@ def server(binary, directory, *, cluster=False):
 def binary(pytestconfig):
     configured = os.getenv("STREAMS_REDIS_SERVER")
     if not configured:
-        pytest.skip("Set STREAMS_REDIS_SERVER to a pinned Redis 8.10.2 binary")
+        pytest.skip("Set STREAMS_REDIS_SERVER to a pinned Redis 8.6.7 binary")
     value = Path(configured).resolve()
     version = subprocess.check_output([str(value), "--version"], text=True, timeout=5)
-    assert "v=8.10.2 " in version, version
+    assert any(f"v={v} " in version for v in ("8.6.7", "8.10.2")), version
     return value
 
 

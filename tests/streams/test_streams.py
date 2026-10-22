@@ -733,3 +733,107 @@ async def test_failure_between_consumer_reads_is_not_lost(deployment):
         await eventually(overflowed)
         with pytest.raises(StreamSlowConsumer):
             await asyncio.wait_for(anext(events), 1)
+
+
+async def test_standard_xread_bounds_and_rotation(deployment, monkeypatch):
+    backend, blocking, *_ = deployment
+    streams = names(backend, each=6)[0]
+    backend.settings.stream_read_maxcount = 3
+    backend.settings.stream_read_maxbytes = 2 * (
+        backend.settings.stream_max_event_bytes + 512
+    )
+    calls = []
+    original = blocking.execute_command
+
+    async def observed(*args, **kwargs):
+        if args[0] == "XREAD":
+            calls.append(args)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(blocking, "execute_command", observed)
+    for stream in streams:
+        await backend.create(stream, ttl=60)
+    async with backend, AsyncExitStack() as stack:
+        subscriptions = [
+            await stack.enter_async_context(backend.subscribe(s)) for s in streams
+        ]
+
+        async def visited():
+            keys = {
+                key
+                for args in calls
+                for key in args[args.index("STREAMS") + 1 :]
+                if key in {backend._store.keys(s)[0] for s in streams}
+            }
+            return len(keys) == len(streams)
+
+        await eventually(visited)
+        for stream in streams:
+            await publish(backend, stream, 1, final=True)
+        for events in subscriptions:
+            assert (await collect(events, 1))[0].final
+    for args in calls:
+        if "MAXCOUNT" in args:
+            assert args[args.index("MAXCOUNT") + 1] == 3
+            assert (
+                args[args.index("MAXSIZE") + 1] == backend.settings.stream_read_maxbytes
+            )
+            continue
+        count = args[args.index("COUNT") + 1]
+        key_count = (len(args) - args.index("STREAMS") - 1) // 2
+        assert count * key_count <= 2
+        start = args.index("STREAMS") + 1
+        keys = args[start : start + key_count]
+        cost = 64 + sum(len(key.encode()) + 64 for key in keys)
+        cost += count * key_count * (backend.settings.stream_max_event_bytes + 512)
+        assert cost <= backend.settings.stream_read_maxbytes
+        assert (
+            count * key_count * (backend.settings.stream_max_event_bytes + 512)
+            <= backend.settings.stream_read_maxbytes
+        )
+
+
+async def test_read_capability_negotiation_matches_server(deployment):
+    backend, *_ = deployment
+    client = backend._store.client
+    from redis.asyncio import RedisCluster
+
+    if isinstance(client, RedisCluster):
+        info = await client.info(
+            "server",
+            target_nodes=client.get_node_from_key(backend._store.keys("probe")[0]),
+        )
+        # RedisCluster aggregates INFO by node name.
+        info = next(iter(info.values())) if "redis_version" not in info else info
+    else:
+        info = await client.info("server")
+    version = tuple(map(int, info["redis_version"].split(".")[:2]))
+    if version >= (8, 10):
+        assert backend._store.native_read_limits == set(
+            range(backend.settings.stream_bucket_count)
+        )
+    else:
+        assert not backend._store.native_read_limits
+
+
+async def test_optional_read_probe_falls_back_per_bucket(deployment, monkeypatch):
+    from redis.exceptions import ResponseError
+
+    backend, blocking, *_ = deployment
+    client = backend._store.client
+    original = client.execute_command
+
+    async def limited(*args, **kwargs):
+        if args[0] == "XREAD" and "MAXCOUNT" in args and ":bucket:0}" in args[-2]:
+            raise ResponseError("syntax error")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(client, "execute_command", limited)
+    negotiated = StreamBackend(
+        client, settings=backend.settings, blocking_client=blocking
+    )
+    await negotiated.initialize()
+    assert 0 not in negotiated._store.native_read_limits
+    assert negotiated._store.native_read_limits == backend._store.native_read_limits - {
+        0
+    }

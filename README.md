@@ -119,7 +119,7 @@ See the [Sessions Guide](docs/guide/sessions.md) for timeouts, sign-out everywhe
 `FastAPIRedis(app).lifespan().streams()` enables generic Redis-backed event logs
 with replay after disconnect. Publish through `StreamBackendDep` and expose an
 authorized SSE route using `sse_response()`. Requires the `streams` extra and
-Redis 8.10. See the [streams guide](docs/guide/streams.md) for the API,
+Redis 8.6. See the [streams guide](docs/guide/streams.md) for the API,
 qualification limits, and a runnable example.
 
 ## Configuration

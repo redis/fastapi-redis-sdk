@@ -135,12 +135,27 @@ class _Batch:
     sealed: bool
 
 
+def _minimum_live_read_bytes(settings: StreamSettings) -> int:
+    # Worst-case UTF-8/base64 identity, bucket digits, returned key and RESP
+    # framing, plus one validated entry. Prefix bytes are not part of event size.
+    key = f"{settings.pattern_prefix('streams')}:{{streams:v1:bucket:{settings.stream_bucket_count - 1}}}:"
+    return (
+        settings.stream_max_event_bytes
+        + 512
+        + len(key.encode())
+        + 684
+        + len(":events")
+        + 128
+    )
+
+
 class _StreamStore:
     def __init__(self, client: Any, settings: StreamSettings):
         self.client = client
         self.settings = settings
         self.prefix = settings.pattern_prefix("streams")
         self.buckets = settings.stream_bucket_count
+        self.native_read_limits: set[int] = set()
         if not self.prefix or any(c in self.prefix for c in "{}"):
             raise InvalidStreamRequest(
                 "Stream prefix must be nonempty and contain no braces"
@@ -173,10 +188,6 @@ class _StreamStore:
                     "XREAD",
                     "COUNT",
                     1,
-                    "MAXCOUNT",
-                    1,
-                    "MAXSIZE",
-                    1024,
                     "STREAMS",
                     key,
                     "0-0",
@@ -201,8 +212,37 @@ class _StreamStore:
                         raise
             except RedisError as error:
                 raise StreamError(
-                    "Streaming requires Redis 8.10 with IDMP and bounded XREAD support"
+                    "Streaming requires Redis 8.6 with native IDMP and standard XREAD support"
                 ) from error
+            # Managed endpoints can report a cluster version different from the
+            # command dialect. Probe each placement bucket rather than trusting
+            # a version string or requiring INFO permission. Transport errors
+            # remain startup failures; unsupported optional syntax selects 8.6.
+            from redis.asyncio import RedisCluster
+
+            route = (
+                {"target_nodes": self.client.get_node_from_key(key)}
+                if isinstance(self.client, RedisCluster)
+                else {}
+            )
+            try:
+                await self.client.execute_command(
+                    "XREAD",
+                    "COUNT",
+                    1,
+                    "MAXCOUNT",
+                    1,
+                    "MAXSIZE",
+                    1024,
+                    "STREAMS",
+                    key,
+                    "0-0",
+                    **route,
+                )
+            except ResponseError:
+                self.native_read_limits.discard(bucket)
+            else:
+                self.native_read_limits.add(bucket)
         # This manifest intentionally has no TTL: placement must survive restarts.
         layout = json.dumps(
             {"version": 1, "hash": "sha256", "buckets": self.buckets}, sort_keys=True
@@ -535,6 +575,10 @@ class StreamBackend:
         ):
             raise InvalidStreamRequest(
                 "Replay budget must accommodate one maximum event"
+            )
+        if self.settings.stream_read_maxbytes < _minimum_live_read_bytes(self.settings):
+            raise InvalidStreamRequest(
+                "Live read budget must accommodate one maximum event, key and framing"
             )
         self._store = _StreamStore(client, self.settings)
         self._blocking_client = blocking_client
