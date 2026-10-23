@@ -26,6 +26,7 @@ export REDIS_URL=redis://localhost:6379/0
 | Sessions | [`sessions/csrf.py`](sessions/csrf.py) | CSRF protection with a token kept in the session, replaced at sign-in | `uv run --with "fastapi[standard]" --with python-multipart fastapi dev examples/sessions/csrf.py` |
 | Sessions | [`sessions/encryption.py`](sessions/encryption.py) | The session payload encrypted at rest with AES-GCM | `uv run --with "fastapi[standard]" --with cryptography fastapi dev examples/sessions/encryption.py` |
 | Observability | [`observability/`](observability/) | Traces and metrics in Grafana, with Docker Compose | see its [README](observability/README.md) |
+| All four, and resumable streams | [`incident_triage_app/`](incident_triage_app/) | An on-call agent that streams its answer through Redis: resume after a dropped connection, a second device, a shared tool cache and per-engineer quotas. Needs Redis 8.6.2+; streams come from a stub until the SDK has them | see its [README](incident_triage_app/README.md) |
 
 The session examples run over plain HTTP, so set
 `REDIS_SESSION_COOKIE_HTTPS_ONLY=false` for them; the encryption example also
@@ -56,3 +57,6 @@ Optionally set more variables:
 fastapi cloud env set REDIS_PREFIX myapp
 fastapi cloud env set REDIS_DEFAULT_TTL 300
 ```
+
+The [incident triage demo](incident_triage_app/) deploys separately, with
+`uv run nox -f examples/incident_triage_app/deploy/noxfile.py`: see [its deploy guide](incident_triage_app/deploy/README.md).
