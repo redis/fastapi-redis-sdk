@@ -653,7 +653,7 @@ sequenceDiagram
     B->>A: POST /runs (stream_id)
     A->>R: SET active slot NX, create meta, heartbeat
     A->>P: spawn()
-    A-->>B: 202 {stream_id}
+    A-->>B: 202 with stream_id
 
     loop each event
         P->>R: MULTI: XADD IDMP, EXPIRE, heartbeat, read cancel flag
@@ -668,7 +668,7 @@ sequenceDiagram
         A-->>B: events, or ": ping"
     end
 
-    Note over B,A: connection drops; the run goes on
+    Note over B,A: connection drops, the run goes on
     B->>A: GET /events, Last-Event-ID: cursor
     A->>R: checks, first page after the cursor
     A-->>B: only the entries after the cursor
