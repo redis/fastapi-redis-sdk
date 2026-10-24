@@ -1,0 +1,67 @@
+/* Redis brand accent */
+:root {
+  --md-primary-fg-color: #dc382c;
+
+  /* Main text font - Geist with fallbacks */
+  --md-text-font-family: Geist, ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  /* Menu/monospace font - Space Mono with fallbacks */
+  --md-code-font-family: "Space Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Swap logo for dark mode */
+[data-md-color-scheme="slate"] .md-header__button.md-logo img,
+[data-md-color-scheme="slate"] .md-nav__button.md-logo img {
+  content: url("../logo-dark.svg");
+}
+
+/* Apply main text font to body and content */
+body,
+.md-typeset {
+  font-family: var(--md-text-font-family);
+}
+
+/* Apply monospace font to navigation/menu */
+.md-nav,
+.md-nav__title,
+.md-nav__link,
+.md-tabs__link,
+.md-header__title,
+.md-footer__title {
+  font-family: var(--md-code-font-family);
+}
+
+/* Apply monospace font to code elements */
+code,
+pre,
+.md-typeset code,
+.md-typeset pre,
+kbd,
+samp,
+tt {
+  font-family: var(--md-code-font-family);
+}
+
+/* Ensure headings use the main text font */
+h1, h2, h3, h4, h5, h6,
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-family: var(--md-text-font-family);
+}
+
+/* Underline all links */
+.md-typeset a,
+.md-footer__link,
+.md-source {
+  text-decoration: underline !important;
+}
+
+/* Keep underline on hover */
+.md-typeset a:hover,
+.md-footer__link:hover {
+  text-decoration: underline !important;
+}
