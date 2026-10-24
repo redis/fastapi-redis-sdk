@@ -248,9 +248,10 @@ class Pane {
     this.es = es;
     this.conn = "connecting";
     es.onopen = () => { this.conn = "live"; this.render(); };
-    // stream.end is the final entry spawn() writes; stream.error is the
-    // reader's own event. The SDK's types all start with "stream.".
-    for (const type of ["status", "tool", "delta", "stream.end", "stream.error"]) {
+    // stream.end is the final entry spawn() writes; stream.gap and
+    // stream.error are the reader's own events. The SDK's types all start
+    // with "stream.".
+    for (const type of ["status", "tool", "delta", "stream.end", "stream.gap", "stream.error"]) {
       es.addEventListener(type, (e) => this.onEntry(type, e, log));
     }
     es.addEventListener("error", () => {
@@ -262,8 +263,8 @@ class Pane {
 
   onEntry(type, e, log) {
     let id = e.lastEventId || null;
-    // A reader's own event (producer_lost, credential_expired) has no ID; EventSource then repeats the last one.
-    if (type === "stream.error" && id === this.lastId) id = null;
+    // A reader's own event (gap, producer_lost, credential_expired) has no ID; EventSource then repeats the last one.
+    if ((type === "stream.error" || type === "stream.gap") && id === this.lastId) id = null;
     if (id && this.lastId && cmpId(id, this.lastId) <= 0) { this.repeats++; return; }
     if (id) this.lastId = id;
     this.received++;
@@ -274,7 +275,10 @@ class Pane {
     if (type === "stream.error" && data.code === "credential_expired") {
       return this.signedOut("Your session ended", "The stream closed at the session's deadline. Sign in again to follow your runs.");
     }
-    if (type === "status") this.statuses.push(data.text);
+    // The reader fell behind the trimming: some output was skipped, and the
+    // stream goes on.
+    if (type === "stream.gap") this.statuses.push(`${data.missing} entries were skipped; the answer is incomplete.`);
+    else if (type === "status") this.statuses.push(data.text);
     else if (type === "tool") this.tools.push(data);
     else if (type === "delta") this.text += data.text;
     else this.finish(type, data);

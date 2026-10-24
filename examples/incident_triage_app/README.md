@@ -12,11 +12,11 @@ through Redis. One story uses all four features of `fastapi-redis-sdk`:
 
 The design is in [`specs/resumable-streams-demo.md`](../../specs/resumable-streams-demo.md).
 
-**Resumable streams are not in the SDK yet.** `streams_stub.py` stands in for
-them. It has the API of the
-[streams design](../../specs/resumable-streams-design.md), but it keeps its
-state in memory, not in Redis: the state does not survive a restart and is not
-shared between replicas. When the feature lands, only the imports change.
+Resumable streams use the SDK's feature (`FastAPIRedis(app).streams()`); see
+the [Resumable Streams Guide](../../docs/guide/streams.md). Runs live in Redis,
+so a device can follow a run from any replica. A planner runs on the replica
+that started it: if that replica stops, its readers see the run end as
+`producer_lost`, and the engineer asks again.
 
 ## Run it
 

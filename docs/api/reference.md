@@ -11,6 +11,7 @@ FastAPIRedis(app).lifespan()                    # connection pools only
 FastAPIRedis(app).lifespan().caching()          # + DI caching support
 FastAPIRedis(app).lifespan().rate_limiting()    # + DI rate limiting support
 FastAPIRedis(app).lifespan().sessions()         # + server-side sessions
+FastAPIRedis(app).lifespan().streams()          # + resumable streams
 ```
 
 Or compose the lifespan directly:
@@ -542,3 +543,135 @@ returns its response.
 A failed **read** yields an empty session unless `session_fail_closed` is set.
 A failed **write** always raises. `count_for_subject` always raises, because
 there the store is the authorization answer.
+
+---
+
+## Stream dependencies
+
+### `StreamBackendDep`
+
+```python
+from redis_fastapi import StreamBackendDep
+
+@app.get("/chats/{chat_id}/runs/active")
+async def active(chat_id: str, streams: StreamBackendDep) -> dict:
+    return {"stream_id": await streams.active(f"chat:{chat_id}")}
+```
+
+`Annotated[StreamBackend, Depends(get_stream_backend)]`. Requires `.streams()`.
+
+### `get_stream_backend()`
+
+Returns the application's one `StreamBackend`, the instance `.streams()`
+created. Unlike `get_cache_backend()` it does not build a backend per request:
+the backend holds the tasks from `spawn()` and the live reader count for the
+whole process. Raises `StreamConfigurationError` when streams are not set up.
+
+---
+
+## Stream setup
+
+### `add_redis_streams()` / `FastAPIRedis.streams()`
+
+```python
+FastAPIRedis(app).lifespan().streams(coder=None)
+# or, without the builder:
+add_redis_streams(app, coder=None)
+```
+
+| Argument | Purpose |
+|---|---|
+| `coder` | Serializer for event payloads. Defaults to `JsonCoder`. |
+
+Creates the backend, registers the handlers that turn stream errors into
+status codes, and marks the app so the lifespan detects server support at
+startup and cancels spawned producers at shutdown. Calling it twice is a
+no-op. Raises `StreamConfigurationError` when the prefix contains braces,
+`stream_alive_ttl_seconds` is not longer than `stream_heartbeat_seconds`, or
+`socket_timeout` is not longer than `stream_heartbeat_seconds`.
+
+---
+
+## `StreamBackend`
+
+| Method | Purpose |
+|---|---|
+| `await open(*, scope, stream_id=None, exclusive=True)` | Create a run and return its `StreamWriter`. With `exclusive`, the run takes the scope's active slot; another run in the scope raises `StreamBusy`. A retried start with the same `stream_id` returns a writer whose `created` is `False`. |
+| `await attach(stream_id, *, scope)` | Continue a run from another process. The new writer continues the sequence numbers and fences the old one. Raises `StreamNotFound` or `StreamFinished`. |
+| `spawn(writer, fn) -> asyncio.Task` | Run `fn(writer)` as a task the backend owns, with the heartbeat around it. Writes a final `stream.end` with the reason unless `fn` called `finish()`. |
+| `await sse(stream_id, *, request, scope, after=None, expires_at=None) -> Response` | Prepare an SSE response. Every check that decides the status runs first. Reads `Last-Event-ID` and `?after=` itself; `after` overrides both. Ends at `expires_at` with `stream.error` `credential_expired`. |
+| `follow(stream_id, *, scope, after=None) -> AsyncIterator[StreamEvent]` | The same read without HTTP. Stops after the final event. Wrap it in `contextlib.aclosing()` if you may leave early. |
+| `await cancel(stream_id, *, scope) -> bool` | Ask the run to stop. `False` if it had ended. Raises `StreamNotFound`. |
+| `await active(scope) -> str \| None` | The ID of the scope's active run. |
+| `await detect() -> bool \| None` | Detect server support. The lifespan calls it at startup; the result is cached. |
+| `supported` | `True`, `False`, or `None` while unknown. |
+
+Every method except `spawn()` and `detect()` raises `StreamUnsupported` when
+the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
+`[A-Za-z0-9_.:-]{1,200}` and stream IDs `[A-Za-z0-9_-]{1,64}`; others raise
+`ValueError`, or `StreamNotFound` when reading.
+
+---
+
+## `StreamWriter`
+
+| Member | Purpose |
+|---|---|
+| `stream_id`, `scope` | The run's identity. |
+| `created` | `True` when `open()` created the run; `False` for a retried start. Start a producer only when `True`. |
+| `await append(type, data) -> AppendResult` | Store one event. Retried safely after a timeout. Raises `ValueError` for an invalid or reserved type or an event over `stream_max_event_bytes`, `StreamFinished` after the final event, `StreamExpired` when the stream expired, `StreamFenced` after a takeover. |
+| `await finish(type, data=None) -> str` | Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID. |
+| `await suspend(ttl)` | Extend the stream, the heartbeat and the active slot. `ttl` is `int` seconds or `timedelta`. |
+| `keepalive()` | Async context manager that refreshes the heartbeat and reads the cancel flag every `stream_heartbeat_seconds`. |
+| `cancelled` | Whether a stop was requested, as last seen. |
+| `finished` | Whether this writer wrote the final event. |
+
+Event types are 1 to 128 characters with no CR, LF or NUL. Types starting with
+`stream.` are reserved: `stream.end` (a final event the SDK writes),
+`stream.gap` and `stream.error` (sent by the reader, never stored).
+
+---
+
+## Stream data types
+
+| Type | Contents |
+|---|---|
+| `StreamEvent` | `id` (the entry ID, the cursor; `None` for the reader's own events), `type`, `data` (decoded), `final`. |
+| `AppendResult` | `id`, `cancelled`. |
+
+---
+
+## `session_expiry()`
+
+```python
+from redis_fastapi import session_expiry
+
+return await streams.sse(stream_id, request=request, scope=scope,
+                         expires_at=session_expiry(request))
+```
+
+The absolute deadline of the request's SDK session as an aware `datetime`, or
+`None` without session middleware or without a deadline.
+
+---
+
+## Stream errors
+
+```
+StreamError
+├── StreamNotFound             404  no stream under this scope and ID
+├── StreamExpired              410  expired, or entries after the cursor removed
+├── StreamBusy                 409  the scope has an active run (.stream_id)
+├── StreamCursorAhead          409  the cursor is past the stream's last entry
+├── StreamFinished             409  a write after the final event
+├── StreamFenced               409  another writer took over
+├── StreamInvalidCursor        422  malformed or repeated cursor (also a ValueError)
+├── StreamCredentialExpired    401  expires_at had already passed
+├── StreamUnsupported          503  the server lacks support
+├── StreamStoreError           503  Redis failed
+└── StreamConfigurationError        a setting cannot work, or no .streams()
+```
+
+The status is what the handlers `.streams()` registers answer before the first
+byte. A `503` carries `Retry-After`.
+

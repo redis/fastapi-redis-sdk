@@ -16,9 +16,14 @@ from fastapi import APIRouter, Depends, Request
 from examples.incident_triage_app import config
 from examples.incident_triage_app.health import features
 from examples.incident_triage_app.session import subject_of
-from examples.incident_triage_app.streams_stub import StreamBackendDep
 from examples.incident_triage_app.tools import SERVICES
-from redis_fastapi import AsyncRedisDep, RateLimitBackendDep, SessionStoreDep
+from redis_fastapi import (
+    AsyncRedisDep,
+    RateLimitBackendDep,
+    SessionStoreDep,
+    StreamBackendDep,
+    get_settings,
+)
 from redis_fastapi.sessions import session_state_of
 
 router = APIRouter(prefix="/api", tags=["lens"])
@@ -44,6 +49,62 @@ def _key(name: str, type: str, fields: dict[str, Any] | None) -> dict[str, Any]:
     return {"name": name, "type": type, "fields": fields}
 
 
+def _text(value: Any) -> Any:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str, Any]]:
+    """The run's Redis keys, read as they are, under the SDK's key layout.
+
+    The layout is documented in the streams guide: the scope and the stream
+    ID form the hash tag, and every key uses the SDK's prefix setting.
+    """
+    prefix = get_settings().prefix
+    tag = f"{{{scope}:{stream_id}}}"
+    stream = f"{prefix}:stream:{tag}"
+    meta = f"{prefix}:stream-meta:{tag}"
+    alive = f"{prefix}:stream-alive:{tag}"
+    active = f"{prefix}:stream-active:{scope}"
+
+    keys: list[dict[str, Any]] = []
+    if await redis.exists(stream):
+        last = await redis.xrevrange(stream, count=1)
+        keys.append(
+            _key(
+                stream,
+                "Stream",
+                {
+                    "XLEN": await redis.xlen(stream),
+                    "last ID": _text(last[0][0]) if last else None,
+                    "TTL": await redis.ttl(stream),
+                },
+            )
+        )
+    raw_meta = await redis.hgetall(meta)
+    if raw_meta:
+        fields = {_text(k): _text(v) for k, v in raw_meta.items()}
+        keys.append(
+            _key(
+                meta,
+                "Hash",
+                {
+                    "status": fields.get("status"),
+                    "cancel": int(fields.get("cancel") or 0),
+                    "final": fields.get("final"),
+                    "TTL": await redis.ttl(meta),
+                },
+            )
+        )
+    alive_ms = await redis.pttl(alive)
+    if raw_meta or alive_ms > 0:
+        keys.append(_key(alive, "String", {"PTTL": alive_ms} if alive_ms > 0 else None))
+    if _text(await redis.get(active)) == stream_id:
+        keys.append(
+            _key(active, "String", {"value": stream_id, "TTL": await redis.ttl(active)})
+        )
+    return keys
+
+
 @router.get("/lens")
 async def lens(
     request: Request,
@@ -58,15 +119,10 @@ async def lens(
 
     # The run: the stream ID the page follows, or the active one.
     scope = f"triage:{subject}"
-    view = None
     if streams.supported is not False:  # streams off: show the other keys
         stream_id = stream_id or await streams.active(scope)
-        view = streams.inspect(stream_id, scope=scope) if stream_id else None
-    for name, fields in (view or {}).items():
-        type = (
-            "Stream" if ":stream:" in name else "Hash" if "-meta:" in name else "String"
-        )
-        keys.append(_key(name, type, fields))
+        if stream_id:
+            keys.extend(await _stream_keys(redis, scope, stream_id))
 
     # The session: the key's TTL is the absolute clock, field d's the idle one.
     session_id = session_state_of(request).session_id

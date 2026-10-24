@@ -20,8 +20,12 @@ from examples.incident_triage_app.planner import (
     run_planner,
 )
 from examples.incident_triage_app.session import by_subject, subject_of
-from examples.incident_triage_app.streams_stub import StreamBackendDep, session_expiry
-from redis_fastapi import RateLimitBackendDep, rate_limit
+from redis_fastapi import (
+    RateLimitBackendDep,
+    StreamBackendDep,
+    rate_limit,
+    session_expiry,
+)
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -46,11 +50,12 @@ async def start(
     limits: RateLimitBackendDep,
     subject: str = Depends(subject_of),
 ) -> dict[str, str]:
-    scope = f"triage:{subject}"
-    if body.run_id and await streams.active(scope) == body.run_id:
-        return {"stream_id": body.run_id}  # a retried start; no second budget slot
-    # open() first: a busy scope raises StreamBusy (409) before any budget is spent
-    writer = await streams.open(scope=scope, stream_id=body.run_id)
+    # open() first: a busy scope raises StreamBusy (409) before any budget is
+    # spent.  A retried start finds the same run and returns created=False:
+    # no second producer, and no second budget slot.
+    writer = await streams.open(scope=f"triage:{subject}", stream_id=body.run_id)
+    if not writer.created:
+        return {"stream_id": writer.stream_id}
     planner = SCRIPTED
     note = None
     if model_configured():
@@ -88,7 +93,7 @@ async def events(
     # scope comes from the session, so another engineer's run ID names no
     # stream here and gets a 404.  The response ends when the session does,
     # and the reconnect runs subject_of again.
-    return streams.sse(
+    return await streams.sse(
         stream_id,
         request=request,
         scope=f"triage:{subject}",

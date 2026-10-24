@@ -13,7 +13,7 @@ from fastapi import Depends, HTTPException, Request
 from redis.exceptions import RedisError
 
 from examples.incident_triage_app import config
-from redis_fastapi import AsyncRedisDep
+from redis_fastapi import AsyncRedisDep, StreamBackend, StreamBackendDep
 
 _RECHECK_SECONDS = 30
 
@@ -35,16 +35,16 @@ def _feature(
 
 
 async def _streams_feature(
-    request: Request, redis: Any, version: tuple[int, ...] | None
+    streams: StreamBackend, version: tuple[int, ...] | None
 ) -> dict[str, Any]:
     """Streams detect their own support, as the SDK's other features do.
 
-    The stub probes ``COMMAND INFO XCFGSET DELEX`` and caches the answer; an
-    unknown answer (Redis was down at startup) is asked again here.
+    The SDK probes ``COMMAND INFO XCFGSET DELEX`` at startup and caches the
+    answer; an unknown answer (Redis was down at startup) is asked again here.
     """
     if version is None:
         return {"available": False, "reason": "Redis is unreachable"}
-    supported = await request.app.state.streams.detect(redis)
+    supported = await streams.detect()
     if supported is None:
         return {"available": False, "reason": "Redis is unreachable"}
     if not supported:
@@ -52,7 +52,9 @@ async def _streams_feature(
     return {"available": True}
 
 
-async def features(request: Request, redis: AsyncRedisDep) -> dict[str, Any]:
+async def features(
+    request: Request, redis: AsyncRedisDep, streams: StreamBackendDep
+) -> dict[str, Any]:
     """Read the server version once, and again every 30 s while it fails."""
     state = request.app.state
     cached = getattr(state, "health", None)
@@ -71,7 +73,7 @@ async def features(request: Request, redis: AsyncRedisDep) -> dict[str, Any]:
             "sessions": _feature(version, config.SESSIONS_MIN_VERSION),
             "caching": _feature(version, (6, 0, 0)),
             "rate_limiting": _feature(version, (6, 0, 0)),
-            "streams": await _streams_feature(request, redis, version),
+            "streams": await _streams_feature(streams, version),
         },
     }
     state.health, state.health_at = health, time.monotonic() + _RECHECK_SECONDS

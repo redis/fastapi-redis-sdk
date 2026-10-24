@@ -15,33 +15,49 @@ Automatically reads from:
 
 ### Fields
 
-| Field                    | Type                | Default           | Validation                                   | Description                                                          |
-|--------------------------|---------------------|-------------------|----------------------------------------------|----------------------------------------------------------------------|
-| `url`                    | `str \| None`       | `None`            | -                                            | Full Redis URL                                                       |
-| `host`                   | `str`               | `"localhost"`     | -                                            | Redis host                                                           |
-| `port`                   | `int`               | `6379`            | 1-65535                                      | Redis port                                                           |
-| `db`                     | `int`               | `0`               | 0-15                                         | Database number                                                      |
-| `username`               | `str \| None`       | `None`            | -                                            | Redis username                                                       |
-| `password`               | `SecretStr \| None` | `None`            | -                                            | Redis password (secure)                                              |
-| `ssl`                    | `bool`              | `False`           | -                                            | Enable TLS                                                           |
-| `ssl_certfile`           | `str \| None`       | `None`            | -                                            | Client certificate                                                   |
-| `ssl_keyfile`            | `str \| None`       | `None`            | -                                            | Client key                                                           |
-| `ssl_ca_certs`           | `str \| None`       | `None`            | -                                            | CA bundle                                                            |
-| `ssl_check_hostname`     | `bool`              | `False`           | -                                            | Verify hostname                                                      |
-| `max_connections`        | `int \| None`       | `None`            | >= 1                                         | Max pool size                                                        |
-| `socket_timeout`         | `float \| None`     | `None`            | >= 0                                         | Socket timeout                                                       |
-| `socket_connect_timeout` | `float \| None`     | `None`            | >= 0                                         | Connect timeout                                                      |
-| `cluster`                | `bool`              | `False`           | -                                            | OSS Cluster mode                                                     |
-| `sentinel`               | `bool`              | `False`           | -                                            | Sentinel mode                                                        |
-| `sentinel_master_name`   | `str`               | `"mymaster"`      | not empty                                    | Name of the primary that the Sentinels monitor                       |
-| `sentinel_nodes`         | `list[str]`         | `[]`              | `host[:port]`; at least one in Sentinel mode | Sentinel addresses (port defaults to `26379`)                        |
-| `sentinel_username`      | `str \| None`       | `None`            | -                                            | Sentinel username                                                    |
-| `sentinel_password`      | `SecretStr \| None` | `None`            | -                                            | Sentinel password                                                    |
-| `prefix`                 | `str`               | `"redis:fastapi"` | -                                            | Key prefix                                                           |
-| `default_ttl`            | `int`               | `0`               | >= 0                                         | Default cache TTL (0 = no expiry)                                    |
-| `warn_unbounded_cache`   | `bool`              | `True`            | -                                            | Warn at startup when no-TTL caching meets a server that cannot evict |
-| `otel_enabled`           | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
-| `otel_redis_enabled`     | `bool`              | `False`           | -                                            | Enable redis-py native OTel                                          |
+| Field                           | Type                | Default           | Validation                                   | Description                                                          |
+|---------------------------------|---------------------|-------------------|----------------------------------------------|----------------------------------------------------------------------|
+| `url`                           | `str \| None`       | `None`            | -                                            | Full Redis URL                                                       |
+| `host`                          | `str`               | `"localhost"`     | -                                            | Redis host                                                           |
+| `port`                          | `int`               | `6379`            | 1-65535                                      | Redis port                                                           |
+| `db`                            | `int`               | `0`               | 0-15                                         | Database number                                                      |
+| `username`                      | `str \| None`       | `None`            | -                                            | Redis username                                                       |
+| `password`                      | `SecretStr \| None` | `None`            | -                                            | Redis password (secure)                                              |
+| `ssl`                           | `bool`              | `False`           | -                                            | Enable TLS                                                           |
+| `ssl_certfile`                  | `str \| None`       | `None`            | -                                            | Client certificate                                                   |
+| `ssl_keyfile`                   | `str \| None`       | `None`            | -                                            | Client key                                                           |
+| `ssl_ca_certs`                  | `str \| None`       | `None`            | -                                            | CA bundle                                                            |
+| `ssl_check_hostname`            | `bool`              | `False`           | -                                            | Verify hostname                                                      |
+| `max_connections`               | `int \| None`       | `None`            | >= 1                                         | Max pool size                                                        |
+| `socket_timeout`                | `float \| None`     | `None`            | >= 0                                         | Socket timeout                                                       |
+| `socket_connect_timeout`        | `float \| None`     | `None`            | >= 0                                         | Connect timeout                                                      |
+| `cluster`                       | `bool`              | `False`           | -                                            | OSS Cluster mode                                                     |
+| `sentinel`                      | `bool`              | `False`           | -                                            | Sentinel mode                                                        |
+| `sentinel_master_name`          | `str`               | `"mymaster"`      | not empty                                    | Name of the primary that the Sentinels monitor                       |
+| `sentinel_nodes`                | `list[str]`         | `[]`              | `host[:port]`; at least one in Sentinel mode | Sentinel addresses (port defaults to `26379`)                        |
+| `sentinel_username`             | `str \| None`       | `None`            | -                                            | Sentinel username                                                    |
+| `sentinel_password`             | `SecretStr \| None` | `None`            | -                                            | Sentinel password                                                    |
+| `prefix`                        | `str`               | `"redis:fastapi"` | -                                            | Key prefix                                                           |
+| `default_ttl`                   | `int`               | `0`               | >= 0                                         | Default cache TTL (0 = no expiry)                                    |
+| `warn_unbounded_cache`          | `bool`              | `True`            | -                                            | Warn at startup when no-TTL caching meets a server that cannot evict |
+| `otel_enabled`                  | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
+| `otel_redis_enabled`            | `bool`              | `False`           | -                                            | Enable redis-py native OTel                                          |
+| `stream_ttl_active`             | `int`               | `600`             | > 0                                          | TTL of a running stream, refreshed by every append                   |
+| `stream_ttl_done`               | `int`               | `120`             | > 0                                          | How long a finished stream stays readable                            |
+| `stream_expiry_window`          | `int`               | `3600`            | >= 0                                         | How long stream metadata outlives the stream                         |
+| `stream_maxlen`                 | `int`               | `10000`           | > 0                                          | Approximate entries kept per stream                                  |
+| `stream_max_event_bytes`        | `int`               | `65536`           | > 0                                          | Largest encoded event                                                |
+| `stream_heartbeat_seconds`      | `float`             | `15`              | > 0                                          | SSE ping, read bound, producer heartbeat                             |
+| `stream_alive_ttl_seconds`      | `float`             | `45`              | > heartbeat                                  | Lifetime of the producer heartbeat key                               |
+| `stream_replay_page`            | `int`               | `100`             | > 0                                          | Entries per stream read                                              |
+| `stream_max_readers`            | `int`               | `256`             | > 0                                          | Live SSE readers per process                                         |
+| `stream_max_connection_seconds` | `float`             | `300`             | > 0                                          | Longest SSE connection                                               |
+| `stream_read_retry_seconds`     | `float`             | `30`              | >= 0                                         | How long a reader retries a failing read                             |
+| `stream_send_timeout_seconds`   | `float`             | `10`              | > 0                                          | Longest wait for one send to a client                                |
+
+The `stream_*` fields are checked when `.streams()` runs, not by the model
+itself: an application without resumable streams never sees those checks. See
+[Resumable streams](../guide/streams.md#settings).
 
 ### Methods
 

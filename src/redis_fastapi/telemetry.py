@@ -1,7 +1,8 @@
 """OpenTelemetry instrumentation for fastapi-redis-sdk.
 
 Provides spans and metrics for cache(), cache_evict(), cache_put() and
-CacheBackend operations, for rate-limit checks, and for the session store.
+CacheBackend operations, for rate-limit checks, for the session store, and for
+resumable streams.
 All OTel imports are guarded - when the ``opentelemetry`` packages are not
 installed every helper is a silent no-op.
 
@@ -55,6 +56,11 @@ class _OTelState:
     # Session metric instruments
     session_operations: Any = None
     session_latency: Any = None
+
+    # Stream metric instruments
+    stream_operations: Any = None
+    stream_latency: Any = None
+    stream_readers: Any = None
 
 
 _state = _OTelState()
@@ -133,6 +139,21 @@ def enable_telemetry() -> None:
         name="redis_fastapi.ratelimit.latency",
         description="Rate-limit check duration",
         unit="s",
+    )
+    _state.stream_operations = _state.meter.create_counter(
+        name="redis_fastapi.streams.operations",
+        description="Resumable-stream operations by kind and outcome",
+        unit="1",
+    )
+    _state.stream_latency = _state.meter.create_histogram(
+        name="redis_fastapi.streams.latency",
+        description="Resumable-stream write latency",
+        unit="s",
+    )
+    _state.stream_readers = _state.meter.create_up_down_counter(
+        name="redis_fastapi.streams.readers",
+        description="Live SSE readers",
+        unit="1",
     )
 
     _state.enabled = True
@@ -389,3 +410,73 @@ def timed_session(operation: str) -> Generator[None, None, None]:
         yield
     finally:
         record_session_latency(duration=time.monotonic() - start, operation=operation)
+
+
+# ---------------------------------------------------------------------------
+# Stream telemetry
+# ---------------------------------------------------------------------------
+#
+# The session rule applies here too: no scope, stream ID or event data may
+# become a span attribute or a metric label.  A scope usually names a user or
+# a chat, and label cardinality would grow with every run.
+
+
+@contextlib.contextmanager
+def stream_span(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+) -> Generator[Any, None, None]:
+    """Create a span for a stream operation.  No-op when OTel is disabled."""
+    if not _state.enabled or _state.tracer is None:
+        yield None
+        return
+    with _state.tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+        yield span
+
+
+def record_stream_operation(*, operation: str, result: str) -> None:
+    """Count a stream operation.
+
+    Args:
+        operation: ``open``, ``attach``, ``append``, ``finish``, ``cancel``,
+            ``read``, ``gap``, ``producer_lost`` or ``slow_consumer``.
+        result: ``ok``, ``created``, ``retry``, ``busy``, ``expired``,
+            ``fenced``, ``error``, or for ``read``: ``started``, ``resumed``,
+            ``finished``, ``not_found``, ``expired`` or ``ahead``.
+    """
+    if not _state.enabled or _state.stream_operations is None:
+        return
+    try:
+        _state.stream_operations.add(1, {"operation": operation, "result": result})
+    except Exception:
+        logger.debug("Error recording stream operation metric", exc_info=True)
+
+
+def record_stream_latency(*, duration: float, operation: str) -> None:
+    """Record stream write latency in seconds."""
+    if not _state.enabled or _state.stream_latency is None:
+        return
+    try:
+        _state.stream_latency.record(duration, {"operation": operation})
+    except Exception:
+        logger.debug("Error recording stream latency metric", exc_info=True)
+
+
+def add_stream_readers(delta: int) -> None:
+    """Move the live-reader gauge by *delta*."""
+    if not _state.enabled or _state.stream_readers is None:
+        return
+    try:
+        _state.stream_readers.add(delta)
+    except Exception:
+        logger.debug("Error recording stream reader metric", exc_info=True)
+
+
+@contextlib.contextmanager
+def timed_stream(operation: str) -> Generator[None, None, None]:
+    """Context manager that records latency for a stream operation."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        record_stream_latency(duration=time.monotonic() - start, operation=operation)

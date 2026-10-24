@@ -43,7 +43,7 @@ the application.
 | **Creation** | `open()` writes meta. The first `XADD` creates the stream; later appends use `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
 | **Idempotency keys** | SDK-internal: writer ID plus sequence `q`, and one fixed pair for the final entry. Keys from the application are deferred to phase 3 (section 6.3). `attach()` fences the old writer. | Supplied by the application: a stable `producer` and an `idempotency_key` per logical event. |
 | **Append checks** | One `MULTI`: `XADD` + `EXPIRE` + `HGET` of the cancel flag. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
-| **Trimming and gaps** | `XADD MAXLEN ~`. One `max-deleted-entry-id` check before replay gives a 410; no cursor counts as `0-0`. A gap found later, from a jump in `q`, is a `stream.gap` event, and the reader goes on. | Bans untracked `MAXLEN`. The backend trims in a guarded transaction and advances a `history_floor` in meta. |
+| **Trimming and gaps** | `XADD MAXLEN ~`. One check before replay gives a 410: `max-deleted-entry-id` for `XDEL`, and `entries-added` against `length` and the first entry for trimming, which does not move that field. No cursor counts as `0-0`. A gap found later, from a jump in `q`, is a `stream.gap` event, and the reader goes on. | Bans untracked `MAXLEN`. The backend trims in a guarded transaction and advances a `history_floor` in meta. |
 | **Terminal state** | Changed 2026-10-23: one end marker, `f=1`, on a final entry whose type and data the application chooses. `finish()` writes it in one append and records `final` in meta. The writer refuses later appends, and readers ignore anything after the first final entry. When the SDK ends a run itself, `spawn()` writes `stream.end` with the reason in its data. | `finish()` writes the final event and seals the log in one `WATCH`/`MULTI` step. Finality is SDK metadata, so the application keeps its own event names. |
 | **404 versus 410** | Adopted 2026-10-23: meta outlives the stream by `stream_expiry_window` (1 h), and a `started` flag tells an expired stream from one not started yet. 410 within the window, 404 after it. | Settled: meta outlives payload by 24 h, so a known expired stream returns 410. |
 | **Errors after headers** | Decided 2026-10-23: no action field. A passing problem (Redis down past a retry bound, shutdown, the connection cap) closes with no event, and `EventSource` resumes. A stream that is over ends: a reader writes `stream.end` for a dead producer, or a vanished stream gets 410 or 404 on reconnect. Only `stream.error` `credential_expired` remains, as a hint, plus `producer_lost` for a read-only reader. The `stream.` prefix is reserved. | A `redis.stream.control` event with no ID and an action (`reload`, `reconnect`, `reauthenticate`). The `redis.stream.` prefix is reserved. |
@@ -133,11 +133,14 @@ one round trip. The PR checks the deadline and sealed state under `WATCH` on
 every append, with bounded retries. That costs extra round trips, which matters
 for token-by-token output.
 
-**Gap detection.** The PR's `history_floor` rebuilds by hand what
-`max-deleted-entry-id` already gives us natively. It also bans `MAXLEN` and adds
-a trim transaction. One reason may be that its hidden bootstrap entry would move
-the native field. That cost comes from its creation design, not from any flaw
-in the native field.
+**Gap detection.** The PR keeps a `history_floor` in meta and trims in its
+own transaction. We read what Redis already records: `max-deleted-entry-id`
+catches an `XDEL`, and `entries-added`, `length` and the first entry catch
+trimming. Trimming does not move `max-deleted-entry-id`, which we found on a
+real server (Redis 8.8), so our trimming test is conservative rather than
+exact: a client whose last entry was exactly the newest one trimmed gets 410
+although it missed nothing. The PR's floor is exact in that case, at the cost
+of a trim transaction and a ban on `MAXLEN`.
 
 **Idempotency reach.** The PR's keys reach further: they survive a producer
 that crashes and runs again, where ours would store the repeated events a
@@ -321,8 +324,9 @@ both).
   waits on a slow tool. It also makes the application manage a new stream
   identity each time a delivery window ends. The stream TTL also stays
   independent of the session TTL (section 4).
-- **`max-deleted-entry-id`** over `history_floor`. It is native and exact, and
-  needs no trim transaction.
+- **Redis's own stream fields** over `history_floor`. `max-deleted-entry-id`
+  and `entries-added` against `length` need no trim transaction and no ban on
+  `MAXLEN`. The trimming test is conservative, not exact (section 4).
 - **One `MULTI` per append** over `WATCH` with retries.
 - **`open()`** over `create()` with a bootstrap entry.
 - **Run control:** `spawn()`, `cancel()`, the active slot and

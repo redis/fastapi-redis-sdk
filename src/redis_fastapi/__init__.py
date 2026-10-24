@@ -18,6 +18,7 @@ from redis_fastapi.deps import (
     RateLimitBackendDep,
     SessionDep,
     SessionStoreDep,
+    StreamBackendDep,
     SyncCacheBackendDep,
     SyncRateLimitBackendDep,
     SyncSessionStoreDep,
@@ -26,6 +27,7 @@ from redis_fastapi.deps import (
     get_rate_limit_backend,
     get_session,
     get_session_store,
+    get_stream_backend,
     get_sync_cache_backend,
     get_sync_rate_limit_backend,
     get_sync_session_store,
@@ -35,6 +37,18 @@ from redis_fastapi.exceptions import (
     SessionError,
     SessionRejected,
     SessionStoreError,
+    StreamBusy,
+    StreamConfigurationError,
+    StreamCredentialExpired,
+    StreamCursorAhead,
+    StreamError,
+    StreamExpired,
+    StreamFenced,
+    StreamFinished,
+    StreamInvalidCursor,
+    StreamNotFound,
+    StreamStoreError,
+    StreamUnsupported,
 )
 from redis_fastapi.lifespan import redis_lifespan
 from redis_fastapi.rate import Rate, parse_rate
@@ -73,6 +87,13 @@ from redis_fastapi.sessions import (
     valid_session,
 )
 from redis_fastapi.setup import FastAPIRedis
+from redis_fastapi.stream_backend import (
+    AppendResult,
+    StreamBackend,
+    StreamEvent,
+    StreamWriter,
+)
+from redis_fastapi.streams import add_redis_streams, session_expiry
 from redis_fastapi.telemetry import disable_telemetry, enable_telemetry
 from redis_fastapi.types import (
     Challenge,
@@ -87,6 +108,7 @@ from redis_fastapi.types import (
 )
 
 __all__ = [
+    "AppendResult",
     "AsyncRedisDep",
     "CacheBackend",
     "CacheBackendDep",
@@ -127,6 +149,22 @@ __all__ = [
     "SessionStoreDep",
     "SessionStoreError",
     "SessionStoreProtocol",
+    "StreamBackend",
+    "StreamBackendDep",
+    "StreamBusy",
+    "StreamConfigurationError",
+    "StreamCredentialExpired",
+    "StreamCursorAhead",
+    "StreamError",
+    "StreamEvent",
+    "StreamExpired",
+    "StreamFenced",
+    "StreamFinished",
+    "StreamInvalidCursor",
+    "StreamNotFound",
+    "StreamStoreError",
+    "StreamUnsupported",
+    "StreamWriter",
     "SyncCacheBackend",
     "SyncCacheBackendDep",
     "SyncRateLimitBackend",
@@ -136,6 +174,7 @@ __all__ = [
     "add_redis_caching",
     "add_redis_rate_limiting",
     "add_redis_sessions",
+    "add_redis_streams",
     "build_cookie",
     "cache",
     "cache_evict",
@@ -149,6 +188,7 @@ __all__ = [
     "get_session",
     "get_session_store",
     "get_settings",
+    "get_stream_backend",
     "get_sync_cache_backend",
     "get_sync_rate_limit_backend",
     "get_sync_session_store",
@@ -157,5 +197,6 @@ __all__ = [
     "pydantic_model_coder",
     "rate_limit",
     "redis_lifespan",
+    "session_expiry",
     "valid_session",
 ]

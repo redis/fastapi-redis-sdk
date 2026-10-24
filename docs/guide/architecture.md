@@ -635,6 +635,82 @@ or `session.save` comes after them.
 
 ---
 
+## Resumable streams
+
+A resumable stream separates the work from the connection. The start request
+creates the run and returns at once; a producer task writes events to a Redis
+Stream; and the events route, on any API process, reads that stream. The
+producer and the reader share nothing but Redis, so a dropped connection ends
+only its reader, and the run goes on.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser (EventSource)
+    participant A as API process
+    participant P as Producer task
+    participant R as Redis
+
+    B->>A: POST /runs (stream_id)
+    A->>R: SET active slot NX, create meta, heartbeat
+    A->>P: spawn()
+    A-->>B: 202 {stream_id}
+
+    loop each event
+        P->>R: MULTI: XADD IDMP, EXPIRE, heartbeat, read cancel flag
+    end
+
+    B->>A: GET /events
+    A->>R: MULTI: meta, XINFO STREAM, first page
+    A-->>B: 200, replay, then live events (id: entry ID)
+    loop until the final entry
+        A->>R: XREAD BLOCK after cursor
+        R-->>A: new entries, or none (ping)
+        A-->>B: events, or ": ping"
+    end
+
+    Note over B,A: connection drops; the run goes on
+    B->>A: GET /events, Last-Event-ID: cursor
+    A->>R: checks, first page after the cursor
+    A-->>B: only the entries after the cursor
+
+    P->>R: final entry (f=1), status finished, release slot
+    A-->>B: final event, then close
+    B->>A: GET /events, Last-Event-ID: final
+    A-->>B: 204, EventSource stops
+
+    opt producer dies
+        Note over R: heartbeat key lapses
+        A->>R: reader writes stream.end (producer_lost)
+        A-->>B: final event, then close
+    end
+```
+
+Four rules hold this together:
+
+1. **One read loop.** The reader replays and follows with the same `XREAD`,
+   so there is no splice between a replay source and a live source, and no
+   Pub/Sub beside the stream.
+2. **Checks before the first byte.** One transaction reads the metadata,
+   `XINFO STREAM` and the first page, so the decision on `404`, `410`, `409`
+   or `204` and the first page are one snapshot.
+3. **One final entry.** Every final entry, whether the producer, `spawn()` or a
+   reader writes it, uses the same `IDMP` pair, so a stream holds at most
+   one. Readers stop at it, and a reconnect after it gets `204`.
+4. **Redis keeps the clocks.** The stream's TTL, the producer heartbeat and
+   the active slot all expire in Redis; no process compares timestamps. The
+   metadata hash outlives the stream, so an expired stream answers `410`.
+
+The backend is one object per process, created by `.streams()`. Unlike the
+cache backend, which the dependency builds per request, it holds state for the
+whole process: the tasks `spawn()` started, the live reader count, and the
+support result. The lifespan detects support at startup and, at shutdown,
+cancels the remaining producers, which write their final entries, before it
+closes the pool.
+
+See [Resumable streams](streams.md) for the API and the client side.
+
+---
+
 ## Telemetry
 
 Observability is layered into three independent tiers - HTTP request spans

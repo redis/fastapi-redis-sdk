@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from redis_fastapi.rate import Rate
     from redis_fastapi.ratelimit import Identifier, OnLimitExceeded, SkipWhen
     from redis_fastapi.sessions import CookieSpec, Session
-    from redis_fastapi.types import Challenge
+    from redis_fastapi.types import Challenge, Coder
 
 
 class FastAPIRedis:
@@ -200,6 +200,26 @@ class FastAPIRedis:
             challenge=challenge,
             **store_options,
         )
+        return self
+
+    def streams(self, *, coder: type[Coder] | None = None) -> FastAPIRedis:
+        """Enable resumable streams.
+
+        Creates the application's one :class:`~redis_fastapi.StreamBackend`,
+        reachable through ``StreamBackendDep``, and registers the handlers
+        that turn stream errors into status codes.  At startup the lifespan
+        detects whether the server supports the feature (Redis 8.6.2 or
+        later); without support the feature turns off and the rest of the
+        application runs.
+
+        Calling this method more than once on the same app is a no-op.
+
+        Args:
+            coder: Serializer for event payloads.  Defaults to JSON.
+        """
+        from redis_fastapi.streams import add_redis_streams
+
+        add_redis_streams(self._app, coder=coder)
         return self
 
     def otel(self) -> FastAPIRedis:

@@ -71,7 +71,7 @@ with it.
 | Feature | Since | Use in this design |
 |---|---|---|
 | `XREAD ... STREAMS key +` | 7.4 | Read the last entry cheaply, to find the writer's last sequence number. |
-| `XINFO STREAM` field `max-deleted-entry-id` | 5.0 field; correct after trimming from 7.4.2 | Detect a gap exactly (section 7.2). |
+| `XINFO STREAM` fields `max-deleted-entry-id`, `entries-added`, `length`, `first-entry`, `last-generated-id` | 7.0 | Detect removed history and a cursor ahead of the stream (section 7.2). |
 | `XADD ... NOMKSTREAM` | 6.2 | A late write cannot resurrect a stream that expired or was cleaned up (section 6.2). |
 | `XADD ... IDMP producer-id idempotent-id` | 8.6 | A retried append after a timeout does not store a duplicate (section 6.3). |
 | `DELEX key IFEQ value` | 8.4 | Release the "active run" slot only if it still names this run (section 7.1). |
@@ -84,8 +84,12 @@ Notes on this table:
 - **Why 8.6.2 and not 8.6.0.** IDMP had defects in 8.6.0 and 8.6.1. The 8.6.2
   notes list an AOF rewrite fix (`XIDMPRECORD`), expiry that failed after an
   RDB load, and further IDMP fixes. Since every append uses IDMP, the floor is
-  the first release with those fixes. This also covers the 7.4.2 `XTRIM`
-  tombstone fix that gap detection needs.
+  the first release with those fixes.
+- **Trimming does not move `max-deleted-entry-id`.** Checked on Redis 8.8 on
+  2026-10-23: `XDEL` raises the field, but trimming, with `XTRIM` or with
+  `XADD … MAXLEN ~`, leaves it at `0-0`. Trimming shows only as
+  `entries-added` exceeding `length`, with the oldest entries gone. Section
+  7.2 detects removed history from both.
 - **Deferred to a later phase.** `XREAD ... MAXSIZE` and `MAXCOUNT` (8.10)
   bound a replay page by bytes and by entries across streams. They sit above
   the floor, so the first release does not use them. `COUNT` plus a cap on
@@ -391,6 +395,13 @@ keeping it is cheap: a few short fields in a compact hash, about 100 bytes.
 Meta lives under the scope's name too, so a reader from another scope looks up
 a key that never existed, gets a 404, and learns nothing.
 
+A write to meta outside the append transaction (the final entry's ID, the
+cancel flag, a new writer on `attach()`) runs with `EXPIRE … NX` in the same
+transaction. If meta expired a moment before, `HSET` would create it again
+with no TTL, and it would never expire. `EXPIRE … NX` sets a TTL only on a key
+that has none, so it repairs exactly that case and leaves a live meta's TTL
+alone.
+
 `started` is what tells "expired" from "not started yet". Before the first
 append, meta exists and the stream key does not, which is also how an expired
 stream looks. The flag separates the two without comparing clocks, which keeps
@@ -480,9 +491,12 @@ one replay page at the product of the two settings.
    <stream_ttl_active>`. With `exclusive=False` the run takes no slot, so a
    scope can hold several runs at once. On
    failure, read the value. If it equals `<id>`, this is a retry of the same
-   start request, so attach to it. If not, raise `StreamBusy` with the
-   existing ID. A client-supplied `stream_id` (for example an idempotency key)
-   makes a retried `POST` safe, which is Vercel's idempotent entry point.
+   start request: return a writer whose `created` is `False`, so the caller
+   does not start a second producer. That writer is a handle only; it refuses
+   to write with `StreamFenced`, because the run's own producer writes. If the
+   value names another run, raise `StreamBusy` with the existing ID. A
+   client-supplied `stream_id` (for example an idempotency key) makes a retried
+   `POST` safe, which is Vercel's idempotent entry point.
 2. Create the meta hash (`status=running`, `writer=<id>`) with TTL
    `stream_ttl_active + stream_expiry_window`.
 
@@ -492,7 +506,14 @@ one replay page at the product of the two settings.
 - `EXPIRE` on the stream (`t`) and on the meta hash (`t` plus
   `stream_expiry_window`).
 - On the first append only, `HSET started 1` on the meta hash.
+- `SET` on the `alive` key with its PX TTL, so a producer that appends counts
+  as alive even without `keepalive()`.
 - `HMGET` on the meta hash for the cancel flag and the `writer` field.
+
+A timeout or a dropped connection, after which Redis may or may not have
+applied the transaction, is retried with backoff, up to three attempts. Every
+command in it is safe to repeat: the `IDMP` pair makes the `XADD` idempotent,
+and `EXPIRE`, `HSET` and `SET` converge.
 
 It returns the entry ID and the cancel flag in one round trip. If `writer`
 names another writer, `attach()` has replaced this one: the writer raises
@@ -566,9 +587,17 @@ second process attaches while the first is still alive.
    - Meta has a `final` ID and the cursor is at or past it: the reader has
      already read the end. `follow()` yields nothing, and `sse()` answers 204,
      which stops `EventSource` for good.
-   - `cursor < max-deleted-entry-id`: an entry after the cursor was deleted or
-     trimmed, so raise `StreamExpired` (HTTP 410). The test is exact: a gap
-     exists if and only if an entry newer than the cursor was removed.
+   - History after the cursor was removed: raise `StreamExpired` (HTTP 410).
+     An `XDEL` of an entry newer than the cursor raises
+     `max-deleted-entry-id` above the cursor, which is exact. Trimming does not
+     move that field (section 3.1); it shows only as `entries-added` exceeding
+     `length`. So once anything was removed, a cursor whose own entry is gone
+     and that is older than the first retained entry counts as a gap, and so
+     does a cursor of `0-0`. If every entry was trimmed, a cursor below
+     `last-generated-id` counts as a gap. The trimming test is conservative: a
+     client whose last entry was exactly the newest one trimmed also gets 410,
+     although it missed nothing. That is safe, and rare with the default
+     `stream_maxlen`.
 
    The transaction makes the checks and the first page one snapshot, so no
    trim can fall between them. `XRANGE` returns the cursor's own entry, whose `q` is the
@@ -670,7 +699,10 @@ task the backend owns:
 - If `fn` has not called `finish()` itself, `spawn()` writes the final entry.
   Its type is `stream.end`, and its data gives the reason:
   `{"reason": "done"}` when `fn` returns, `{"reason": "error", "code": ...}`
-  when it raises, and `{"reason": "cancelled"}` on cancellation. An
+  when it raises, and `{"reason": "cancelled"}` on cancellation. The code is
+  the exception's `code` attribute if it is a string, and `producer_error`
+  otherwise, so an exception's class name or message never reaches the
+  client. A writer fenced by `attach()` writes no final entry. An
   application that wants its own final event calls `finish()` at the end of
   `fn`.
 - It runs `keepalive()` around `fn`.
@@ -697,9 +729,9 @@ class StreamBackend:
               fn: Callable[[StreamWriter], Awaitable[None]]) -> asyncio.Task[None]: ...
     def follow(self, stream_id: str, *, scope: str,
                after: str | None = None) -> AsyncIterator[StreamEvent]: ...
-    def sse(self, stream_id: str, *, request: Request, scope: str,
-            after: str | None = None,   # an override; the request's own cursor otherwise
-            expires_at: datetime | None = None) -> Response: ...
+    async def sse(self, stream_id: str, *, request: Request, scope: str,
+                  after: str | None = None,   # an override; the request's own cursor otherwise
+                  expires_at: datetime | None = None) -> Response: ...
     async def cancel(self, stream_id: str, *, scope: str) -> bool: ...
     async def active(self, scope: str) -> str | None: ...
 
@@ -707,6 +739,10 @@ def session_expiry(request: Request) -> datetime | None: ...
 
 class StreamWriter:
     stream_id: str
+    scope: str
+    created: bool    # False for a retried start: do not start a producer
+    cancelled: bool  # a stop was requested, as last seen
+    finished: bool   # this writer wrote the final entry
     async def append(self, type: str, data: Any) -> AppendResult: ...
     async def finish(self, type: str, data: Any = None) -> str: ...
     async def suspend(self, ttl: int | timedelta) -> None: ...
@@ -724,6 +760,11 @@ class StreamEvent:
 
 `follow()` is the transport-neutral core. `sse()` wraps it. A WebSocket handler
 would iterate `follow()` and send each event.
+
+`sse()` is a coroutine: `return await streams.sse(...)`. Every check that
+decides the status code (404, 410, 409, 422, 204, 401) reads Redis, and all of
+them must finish before the first byte, so the response is built only after
+they pass.
 
 `session_expiry()` returns the absolute deadline of the request's SDK session,
 or `None` if the request has no session or the session has no deadline. An
@@ -746,7 +787,8 @@ async def require_chat_access(chat_id: str, session: SessionDep) -> None:
                         Depends(rate_limit("10/minute"))])
 async def start(chat_id: str, body: RunIn, streams: StreamBackendDep):
     writer = await streams.open(scope=f"chat:{chat_id}", stream_id=body.run_id)
-    streams.spawn(writer, lambda w: run_agent(body, w))
+    if writer.created:  # False for a retried start: the run already has a producer
+        streams.spawn(writer, lambda w: run_agent(body, w))
     return {"stream_id": writer.stream_id}
 
 @app.get("/chats/{chat_id}/runs/{stream_id}/events",
@@ -754,8 +796,8 @@ async def start(chat_id: str, body: RunIn, streams: StreamBackendDep):
 async def events(chat_id: str, stream_id: str, request: Request,
                  streams: StreamBackendDep):
     # sse() reads Last-Event-ID and ?after= itself; do not pass the query in.
-    return streams.sse(stream_id, request=request, scope=f"chat:{chat_id}",
-                       expires_at=session_expiry(request))
+    return await streams.sse(stream_id, request=request, scope=f"chat:{chat_id}",
+                             expires_at=session_expiry(request))
 
 @app.post("/chats/{chat_id}/runs/{stream_id}/cancel", status_code=204,
           dependencies=[Depends(require_chat_access)])
@@ -814,7 +856,8 @@ async def run_agent(body, w: StreamWriter) -> None:
   write (section 5.5). These are the only two `stream.error` codes. At
   `stream_max_connection_seconds` the response ends with no event, and the
   browser reconnects by itself through the application's dependency. An
-  `expires_at` already in the past gives a 401 before the first byte.
+  `expires_at` already in the past raises `StreamCredentialExpired`, which
+  the handlers answer with 401 before the first byte.
 - **Reader slots.** `sse()` only prepares the response: it chooses the
   cursor and runs the checks that answer 404, 410, 409 and 422, none of which
   reserves anything. The SDK's SSE response class takes the reader slot when
@@ -864,7 +907,7 @@ The settings validator should reject a combination where it does not.
 |---|---|
 | New module | `stream_backend.py`: `StreamBackend`, `StreamWriter`, key builders, `probe_streams_support()`. |
 | New module | `streams.py`: the SSE response, the cursor parser, the exception handlers, `session_expiry()`. |
-| `exceptions.py` | Add `StreamError` (base), `StreamNotFound`, `StreamExpired`, `StreamBusy`, `StreamFinished`, `StreamFenced`, `StreamInvalidCursor`, `StreamCursorAhead`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Update the module docstring, which says "session feature". |
+| `exceptions.py` | Add `StreamError` (base), `StreamNotFound`, `StreamExpired`, `StreamBusy`, `StreamFinished`, `StreamFenced`, `StreamInvalidCursor`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Update the module docstring, which says "session feature". |
 | `deps.py` | `get_stream_backend`, `StreamBackendDep`, and a `stream_capabilities` entry on `_PoolState`, beside `ratelimit_capabilities` and `session_capabilities`, so support is detected once per pool. Unlike `get_cache_backend()`, which builds a backend per request, `get_stream_backend()` returns the one `StreamBackend` that `.streams()` created at startup. That backend keeps state for the whole process: the tasks from `spawn()`, the live reader count for `stream_max_readers`, and the support detection. A backend built per request would lose its spawned tasks when the request ended. |
 | `setup.py` | `FastAPIRedis.streams()`: register the handlers and the shutdown hook. Calling it twice is a no-op, like the other builder methods. |
 | `telemetry.py` | `stream_span`, `record_stream_operation(operation, result)`, `record_stream_latency`. Counters for appends, resumes, gap errors (410), `producer_lost`, live readers, replay bytes and slow-consumer disconnects. |
@@ -938,9 +981,11 @@ it supports the command:
 
 1. Resume from a cursor returns exactly the entries after it: none lost, none
    repeated.
-2. A cursor older than a trimmed entry returns 410, never a partial replay.
-   A request with no cursor on a stream that was ever trimmed also returns
-   410. A trim that lands while a slow reader is still reading produces one
+2. A cursor older than a trimmed entry returns 410, never a partial replay,
+   whether the entries were trimmed (`MAXLEN ~`, past a stream node) or
+   deleted (`XDEL`). A request with no cursor on a stream that was ever
+   trimmed also returns 410. A cursor whose own entry survived returns no
+   error. A trim that lands while a slow reader is still reading produces one
    `stream.gap` event with the right `missing` count, and the reader goes on.
 3. A killed producer leads, within the `alive` TTL, to one `stream.end`
    final entry with reason `producer_lost`, even when several readers notice
@@ -1002,6 +1047,12 @@ it supports the command:
     characters is rejected before Redis. A payload whose encoding holds line
     breaks reaches the browser as several `data:` lines and decodes to the
     same text.
+26. A retried start returns `created=False`, starts no second producer, and
+    its writer refuses to append.
+27. A cancel or an `attach()` on a meta hash that expired a moment before
+    leaves a key with a TTL, never one without.
+28. A producer that appends but never runs `keepalive()` is not declared
+    lost while it keeps appending.
 
 The stream tests run against Redis 8.8, which `ci.yml` already tests. On the
 7.4 entry, one test checks that the probe finds no `XCFGSET`, that the

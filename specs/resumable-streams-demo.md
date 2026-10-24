@@ -3,6 +3,8 @@
 Date: 2026-10-19
 Revised: 2026-10-20. The topic changed from trip planning to incident triage
 (decision 5), and the feature set shrank to a minimal one (decision 6).
+Revised: 2026-10-24. The demo uses the SDK's resumable streams; the
+in-memory stub is gone (decision 12).
 Revised: 2026-10-23. Stream access follows the streams design's decision 2:
 the app checks access, each stream's name includes its scope, and an open
 stream ends when the session does (decision 8). Runs end with the design's
@@ -220,7 +222,7 @@ The UI shows `X-RateLimit-Remaining`, `X-RateLimit-Reset` and the IETF
 |---|---|
 | `POST /api/triage/runs` | `streams.open(scope=f"triage:{subject}", stream_id=body.run_id)`, then `streams.spawn(writer, triage)` |
 | `GET /api/triage/runs/active` | `streams.active(f"triage:{subject}")` |
-| `GET /api/streams/{id}/events` | `streams.sse(id, request=request, scope=f"triage:{subject}", expires_at=session_expiry(request))` |
+| `GET /api/streams/{id}/events` | `await streams.sse(id, request=request, scope=f"triage:{subject}", expires_at=session_expiry(request))` |
 | `POST /api/streams/{id}/cancel` | `streams.cancel(id, scope=f"triage:{subject}")` |
 
 Every endpoint depends on `subject_of`, so access is checked before any SDK
@@ -323,11 +325,10 @@ passed:
           dependencies=[Depends(rate_limit("5/minute", identifier=by_subject))])
 async def start(body: RunIn, streams: StreamBackendDep,
                 limits: RateLimitBackendDep, subject: str = Depends(subject_of)):
-    scope = f"triage:{subject}"
-    if body.run_id and await streams.active(scope) == body.run_id:
-        return {"stream_id": body.run_id}  # a retried start; no second budget slot
     # open() first: a busy scope raises StreamBusy (409) before any budget is spent
-    writer = await streams.open(scope=scope, stream_id=body.run_id)
+    writer = await streams.open(scope=f"triage:{subject}", stream_id=body.run_id)
+    if not writer.created:
+        return {"stream_id": writer.stream_id}  # a retried start; no second budget slot
     planner = triage_scripted
     note = None
     if model_configured():
@@ -356,8 +357,9 @@ How the SDK behaves here:
   rejected, so an outage never leads to unbounded spend. The demo cannot
   stream without Redis anyway.
 - **A retried start costs nothing more.** The browser's `run_id` makes a
-  repeated `POST` return the same stream. The handler checks
-  `streams.active()` first, so a retry does not take a second slot.
+  repeated `POST` return the same stream: `open()` returns a writer whose
+  `created` is `False`, and the handler returns before `hit()`, so a retry
+  starts no second planner and takes no second slot.
 - **A busy scope costs nothing.** The handler calls `open()` before `hit()`.
   If another run is already active, `open()` raises `StreamBusy` (`409`)
   before the budget is touched.
@@ -442,10 +444,10 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
 
 ### 8.3 Failure handling
 
-- **Startup.** The lifespan pings Redis, and the streams stub detects support
-  the way the SDK's other features do: `COMMAND INFO XCFGSET DELEX`, once.
-  Neither check fails the app. On a server without the commands, the stub
-  logs one warning and turns streams off: every stream entry point raises
+- **Startup.** The lifespan pings Redis, and the SDK detects stream support
+  the way its other features do: `COMMAND INFO XCFGSET DELEX`, once. Neither
+  check fails the app. On a server without the commands, the SDK logs one
+  warning and turns streams off: every stream entry point raises
   `StreamUnsupported`, which answers `503`. If Redis is down at startup, the
   answer stays unknown and the health check asks again.
 - **Health.** `GET /api/health` reports each feature as available or not, with
@@ -465,7 +467,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   `/api/triage/runs/active` and follows any run in progress, so a reload never
   loses an answer. A `credential_expired` event sends the device back to
   sign-in; the run goes on.
-- **Slow clients.** The stub sends every chunk under a 10-second limit. A
+- **Slow clients.** The SDK sends every chunk under a 10-second limit. A
   device whose tab freezes in the middle of a replay is closed, its reader
   slot is freed at once, and the browser resumes from `Last-Event-ID` when it
   wakes. With only 8 reader slots (section 8.2), this keeps one frozen phone
@@ -493,7 +495,6 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
 | Once | Create the app, and note its UUID. |
 | Once | Link a Redis Cloud database to the app in the FastAPI Cloud dashboard. The docs list no CLI command for this. |
 | Once | Make `ANTHROPIC_API_KEY` available to the app as a secret. It is already injected in the target environment. |
-| Once | Set the maximum replicas to 1, while the streams stub keeps runs in memory (risk 1). |
 | Once | Create a deploy token. |
 | Every deploy | `uv run nox -f examples/incident_triage_app/deploy/noxfile.py`, with the token in `FASTAPI_CLOUD_TOKEN` and the app's UUID in `FASTAPI_CLOUD_APP_ID`. By hand, not from CI. |
 | Local | Docker Compose with `redis:8.8` and the app. |
@@ -548,7 +549,6 @@ examples/incident_triage_app/
   model.py        the model planner (section 5.6)
   runs.py         start, active, events, cancel
   lens.py         /api/lens, /api/health
-  streams_stub.py an in-memory stand-in for the streams feature (risk 1)
   deploy/         bundle.py, which writes the folder FastAPI Cloud deploys;
                   noxfile.py, which deploys it; the setup steps (section 8.4)
   web/            index.html, app.js, style.css
@@ -562,13 +562,13 @@ Risks:
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | The streams feature does not exist yet, and the story depends on it. | `streams_stub.py` copies the designed API (`open`, `spawn`, `follow`, `sse`, `cancel`, `active`, `session_expiry`) and keeps the state in memory. The endpoints use the real names, so only the imports change when streams phase 1 lands. Until then the state does not survive a restart and is not shared between replicas. |
+| 1 | The story depends on the SDK's streams feature, which needs Redis 8.6.2 or later. | The target database runs 8.6.2 or later. On an older server the SDK turns streams off, the chat answers `503`, and the page says why (section 8.3). |
 | 2 | The model makes the wording differ between runs and adds a cost. | Redis behaviour does not depend on the wording. A daily budget bounds the cost, and the script takes over when it is spent. |
-| 2a | Two copies of the same start `POST` arriving together can both pass the `active()` check. `open()` then attaches the second to the same run (streams design, section 7.1), and the planner starts twice and uses two budget slots. | Feed back to the streams design: `open()` should tell the caller whether it created the run or attached to it. The handler then spawns and calls `hit()` only for a new run. |
+| 2a | Two copies of the same start `POST` arriving together could start the planner twice and use two budget slots. | Resolved: `open()` returns `created=False` for the second copy, and the handler spawns and calls `hit()` only when `created` is `True`. The active slot's `SET NX` decides which copy created the run. |
 | 3 | `ip_identifier` ignores `X-Forwarded-For`, so behind FastAPI Cloud's proxy all engineers may share one budget. | Identify engineers by session subject. |
-| 4 | FastAPI Cloud's scaling is unknown to this design: replica count, scale to zero and SSE timeouts. Its autoscaling docs page returned 404. | With the SDK's streams feature, readers can follow a run from any replica, so replicas help the demo. While the stub keeps runs in memory, set the maximum replicas to 1, or a device can land on a replica that does not know the run. Scale to zero, or a deploy, then forgets runs: a reconnect gets `404`. Sessions, the cache and the quotas live in Redis and survive. |
+| 4 | FastAPI Cloud's scaling is unknown to this design: replica count, scale to zero and SSE timeouts. Its autoscaling docs page returned 404. | Runs live in Redis, so readers can follow a run from any replica. A planner runs on the replica that started it, so scale to zero, or a deploy, ends the answers in progress, and their readers see `producer_lost`. Finished answers, sessions, the cache and the quotas live in Redis and survive. |
 | 5 | An in-process call through `ASGITransport` shares the event loop with the SSE readers. | Tool latency is simulated with `asyncio.sleep`, so nothing blocks the loop. |
-| 6 | A crashed producer holds the active slot until the stream TTL runs out (10 minutes), so its engineer cannot start a new run. | The stub frees the slot when the `alive` key has expired and no final entry exists. Feed back to the streams design: `open()` should take over a slot whose producer is dead. |
+| 6 | A crashed producer holds the active slot until a reader notices or the slot's TTL runs out (10 minutes), so its engineer cannot start a new run. | The page follows the active run on load, and its reader ends a dead producer's stream (`producer_lost`), which releases the slot within the heartbeat key's 15 seconds. With no reader, the slot lasts until its TTL. |
 | 7 | An open SSE response does not check the session again. After "sign out everywhere", the phone keeps reading until the connection ends. | Taken into the streams design (decision 2): the response ends at the session's deadline and after `stream_max_connection_seconds`, 60 seconds here, and the reconnect gets `401`. The page's 4-second poll still shows the `401` sooner. |
 | 8 | `StreamEvent` has no `q`, so the browser cannot prove that no entry was lost on a resume. | The page reports the entries since the cursor and any repeats by entry ID. Feed back to the streams design if a "0 lost" check is wanted. |
 
@@ -625,7 +625,7 @@ Decisions:
    reads the outcome from the data, not from the event type. The lens shows
    meta `status` as `running` or `finished`, and the `final` entry ID.
 10. **Cursor rules: decided 2026-10-23.** The demo follows the streams
-    design's section 5.1. The stub validates cursors at the boundary, compares
+    design's section 5.1. The SDK validates cursors at the boundary, compares
     them as numbers, treats no cursor as `0-0`, and refuses a cursor past the
     stream's last ID. The events route passes no `after`.
 11. **Problems after the first byte: decided 2026-10-23.** The demo follows
@@ -633,6 +633,16 @@ Decisions:
     reader, and every other problem closes the connection with no event, so
     `EventSource` resumes. The page handles only `stream.end` and the
     `credential_expired` hint; it needs no list of error codes.
+
+12. **The SDK's streams: decided 2026-10-24.** The demo uses
+    `FastAPIRedis(app).streams()` and `StreamBackendDep`; `streams_stub.py` is
+    gone. The stream clocks are `REDIS_STREAM_*` defaults set in `main.py`
+    before any setting is read: a 5-second heartbeat, a 15-second heartbeat
+    key, 8 readers, a 500-entry cap and a 60-second connection cap. A retried
+    start returns `created=False`, so it starts no second planner and spends
+    no budget. The lens reads the stream's keys from Redis under the layout
+    the streams guide documents. The page shows a `stream.gap` as a note that
+    the answer is incomplete.
 
 No open questions remain.
 

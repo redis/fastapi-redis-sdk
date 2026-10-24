@@ -22,8 +22,8 @@ from examples.incident_triage_app.planner import (
     TriageRequest,
     call_tool,
 )
-from examples.incident_triage_app.streams_stub import StreamWriter
 from examples.incident_triage_app.tools import SERVICES
+from redis_fastapi import StreamWriter
 
 try:
     import anthropic

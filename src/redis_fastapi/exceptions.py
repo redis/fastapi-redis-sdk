@@ -1,10 +1,12 @@
-"""Exceptions for the session feature.
+"""Exceptions for the session and resumable-stream features.
 
 A module of their own so that ``session_backend`` can raise them without
 importing ``sessions``.  That import used to run the wrong way - the storage
 half depended on the request-facing half purely so it could mutate a
 ``Session`` - and removing it is what turns the two-file split into a real
-layering boundary rather than a mutual-friend arrangement.
+layering boundary rather than a mutual-friend arrangement.  The stream errors
+live here for the same reason: ``stream_backend`` raises them, and ``streams``
+maps them to HTTP status codes.
 """
 
 from __future__ import annotations
@@ -54,3 +56,78 @@ class SessionRejected(Exception):
         super().__init__()
         self.response = response
         self.__suppress_context__ = True
+
+
+class StreamError(Exception):
+    """Base for every error the resumable-stream feature raises.
+
+    Catching this catches the whole feature.  The SSE handlers that
+    ``FastAPIRedis.streams()`` registers map each subclass to a status code.
+    """
+
+
+class StreamNotFound(StreamError):
+    """No stream under this scope and ID.  Answered with 404.
+
+    An ID from another scope names a key that does not exist, so it lands here
+    too, and a stream ID reveals nothing about streams in other scopes.
+    """
+
+
+class StreamExpired(StreamError):
+    """The stream is gone, or entries after the cursor were trimmed.  410."""
+
+
+class StreamBusy(StreamError):
+    """The scope already has an active run.  Answered with 409.
+
+    Attributes:
+        stream_id: The ID of the run that holds the scope.
+    """
+
+    def __init__(self, stream_id: str) -> None:
+        super().__init__(f"the scope already has an active run: {stream_id}")
+        self.stream_id = stream_id
+
+
+class StreamCursorAhead(StreamError):
+    """The cursor is past the stream's last generated ID.  Answered with 409.
+
+    The cursor came from another stream, from a client bug, or from a failover
+    that lost writes the client had already read.
+    """
+
+
+class StreamInvalidCursor(StreamError, ValueError):
+    """A malformed, out-of-range or repeated cursor.  Answered with 422."""
+
+
+class StreamCredentialExpired(StreamError):
+    """``expires_at`` had already passed when the stream was requested.  401."""
+
+
+class StreamUnsupported(StreamError):
+    """The Redis server lacks the commands this feature needs.  503.
+
+    Detected once per pool; see :func:`~redis_fastapi.stream_backend.probe_streams_support`.
+    """
+
+
+class StreamFinished(StreamError):
+    """A write to a stream that already has its final entry."""
+
+
+class StreamFenced(StreamError):
+    """Another writer took over this stream with ``attach()``.
+
+    The writer stops.  At most the append that reported the fence landed after
+    the new writer started.
+    """
+
+
+class StreamStoreError(StreamError):
+    """Redis could not complete a stream operation.  Answered with 503."""
+
+
+class StreamConfigurationError(StreamError):
+    """A stream setting is invalid, or the feature was not set up."""

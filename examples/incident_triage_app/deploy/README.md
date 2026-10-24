@@ -62,10 +62,10 @@ root still deploys `examples.main:app`.
    `ANTHROPIC_API_KEY` with **Secret** on. Without it the scripted planner
    answers. The daily budget of 500 model runs bounds the bill.
 
-4. **Keep one replica.** In **Scaling**, set the maximum replicas to 1. The
-   streams stub keeps runs in memory, so a second replica would not see a run
-   that the first one started. Remove this limit when the SDK's streams
-   feature replaces the stub.
+4. **Replicas.** Any number works: runs live in Redis, so a device can follow
+   a run from any replica. Each replica holds up to 8 live readers and a pool
+   of 20 connections, so the free database's 30 connections fit one replica;
+   a larger plan fits more.
 
 5. **Create a deploy token.** In the app, open **Tokens** and click **Create
    Token**. It lasts at most 365 days. The token is shown once.
@@ -82,6 +82,7 @@ root still deploys `examples.main:app`.
   environment variables, until you unpin it. A deployment that fails to start
   never takes traffic: FastAPI Cloud keeps the last good one.
 - **Scale to zero** is on by default. The first request after an idle period
-  is slow. The streams stub keeps runs in memory, so a scale-down or a deploy
-  forgets them: a reconnect then gets `404`. Sessions, the cache and the
-  quotas live in Redis and survive both.
+  is slow. A planner runs on the replica that started it, so a scale-down or
+  a deploy ends the answers in progress: their readers see `producer_lost`.
+  Finished answers, sessions, the cache and the quotas live in Redis and
+  survive both.

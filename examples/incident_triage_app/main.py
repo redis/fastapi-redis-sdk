@@ -2,8 +2,7 @@
 
 One app shows the SDK's four features in one story (see
 ``specs/resumable-streams-demo.md``): sessions, caching, rate limiting and
-resumable streams.  Resumable streams are not in the SDK yet, so
-``streams_stub.py`` stands in for them with the designed API.
+resumable streams.
 
 Run locally (Redis 8.6.2 or later)::
 
@@ -34,27 +33,40 @@ for _path in (str(_root / "src"), str(_root)):
 # A pool of 20 fits the free database's 30 connections (spec, section 8.2).
 os.environ.setdefault("REDIS_MAX_CONNECTIONS", "20")
 
+# The demo's stream clocks and limits.  Set before anything reads the
+# settings: tools.py builds its cache() dependencies at import time, and the
+# settings are read once and cached.  A short heartbeat makes a lost producer
+# show within seconds; 8 readers fit the free database; a 60-second
+# connection cap makes a revoked phone lose its stream within a minute even
+# without the page's poll.
+for _name, _value in {
+    "REDIS_STREAM_TTL_ACTIVE": "600",
+    "REDIS_STREAM_TTL_DONE": "120",
+    "REDIS_STREAM_MAXLEN": "500",
+    "REDIS_STREAM_HEARTBEAT_SECONDS": "5",
+    "REDIS_STREAM_ALIVE_TTL_SECONDS": "15",
+    "REDIS_STREAM_MAX_READERS": "8",
+    "REDIS_STREAM_MAX_CONNECTION_SECONDS": "60",
+}.items():
+    os.environ.setdefault(_name, _value)
+
 from fastapi import FastAPI
 from starlette.requests import Request
 
 from examples.incident_triage_app import config, lens, planner, runs, session, tools
 from examples.incident_triage_app.devices import DeviceCookies
-from examples.incident_triage_app.streams_stub import install as install_streams
 from redis_fastapi import FastAPIRedis
-from redis_fastapi.deps import _get_pool_state
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # The SDK's lifespan wraps this one: it detects stream support before
+    # this runs, and ends spawned producers (stream.end, reason cancelled)
+    # after it returns, before the pool closes.
     planner.connect(app)
-    # What .streams() will do at startup: detect support once per pool.  The
-    # stub reaches the pool through the SDK's internal accessor, as the real
-    # feature will from inside the SDK.
-    await app.state.streams.detect(_get_pool_state(app).get_async_client())
     try:
         yield
     finally:
-        await app.state.streams.shutdown()  # stream.end entries, so readers end
         await planner.disconnect()
 
 
@@ -84,8 +96,7 @@ FastAPIRedis(app).lifespan().caching().rate_limiting(
     idle_ttl=config.SESSION_IDLE_TTL,
     absolute_ttl=config.SESSION_ABSOLUTE_TTL,
     skip=_no_session,
-)
-install_streams(app, config.STREAMS)
+).streams()
 app.add_middleware(DeviceCookies)  # outermost: before the session middleware
 
 app.include_router(session.router)
