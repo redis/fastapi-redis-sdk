@@ -457,6 +457,10 @@ header, a fresh signature.
     the one served-but-not-stored case you cannot spot from the response
     alone.
 
+    This only applies to messages sent after `http.response.start`. Starlette's
+    `TemplateResponse` sends `debug` before the start, so it is forwarded as-is
+    and the template response is cached normally.
+
 !!! warning "A per-caller header leaks like a per-caller body"
 
     Because an entry now stores the headers your endpoint set, a header whose
