@@ -1382,15 +1382,17 @@ class CacheResponseCaptureMiddleware:
         response_status = 200
         response_headers: list[tuple[bytes, bytes]] = []
         passthrough = False
+        started = False
         pending: CachePending | None = None
 
         # Flow: start → buffer body chunks → on final chunk: cache + send
         async def capture_send(message: Message) -> None:
             nonlocal response_body, response_status, response_headers
-            nonlocal passthrough, pending
+            nonlocal passthrough, started, pending
 
             # 1. Response start: decide whether to buffer or passthrough
             if message["type"] == "http.response.start":
+                started = True
                 pending = getattr(request.state, "redis_cache_pending", None)
                 if pending is None:
                     passthrough = True
@@ -1408,8 +1410,11 @@ class CacheResponseCaptureMiddleware:
             # with no BYPASS marker - see "Extension responses" in the guide.
             # Trailer fields reach the client but never the entry, which is what
             # RFC 9111 section 3.1 permits a cache to do with them.
+            # A message sent before the start (Starlette's TemplateResponse
+            # sends http.response.debug first) has no start to flush, so it is
+            # forwarded as-is and the response is still cached as usual.
             if message["type"] != "http.response.body":
-                if not passthrough:
+                if started and not passthrough:
                     await send(
                         {
                             "type": "http.response.start",

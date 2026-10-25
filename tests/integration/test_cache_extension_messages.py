@@ -101,6 +101,24 @@ class _TrailersResponse(Response):
         )
 
 
+class _DebugFirstResponse(Response):
+    """Emit ``http.response.debug`` before ``http.response.start``.
+
+    Mirrors Starlette's ``TemplateResponse``, which sends the debug message
+    first whenever the server advertises the extension (``TestClient`` does),
+    then a normal start and body.
+    """
+
+    debug: Message = BODYLESS_EXTENSION_MESSAGES["debug"]
+
+    def __init__(self) -> None:
+        super().__init__(content="<p>report</p>", media_type="text/html")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await send(dict(self.debug))
+        await super().__call__(scope, receive, send)
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
     FastAPIRedis(app).lifespan().caching()
@@ -116,6 +134,14 @@ def _build_app() -> FastAPI:
     @app.get("/cached-trailers", dependencies=[Depends(cache(ttl=300))])
     async def cached_trailers() -> Response:
         return _TrailersResponse()
+
+    @app.get("/cached-debug-first", dependencies=[Depends(cache(ttl=300))])
+    async def cached_debug_first() -> Response:
+        return _DebugFirstResponse()
+
+    @app.get("/plain-debug-first")
+    async def plain_debug_first() -> Response:
+        return _DebugFirstResponse()
 
     @app.get("/items", dependencies=[Depends(cache(ttl=300))])
     async def get_items() -> dict[str, int]:
@@ -288,6 +314,39 @@ class TestTrailersAfterBufferedBody:
         await _call(ext_app, "/cached-trailers")
 
         assert real_redis.keys("*trailers*") == []
+
+
+@requires_redis
+@pytest.mark.integration
+class TestDebugBeforeStart:
+    """A message sent before ``http.response.start`` has no start to flush."""
+
+    async def test_plain_route_sends_one_start(self, ext_app: FastAPI) -> None:
+        sent = await _call(ext_app, "/plain-debug-first")
+
+        assert [m["type"] for m in sent] == [
+            "http.response.debug",
+            "http.response.start",
+            "http.response.body",
+        ]
+        assert sent[0] == _DebugFirstResponse.debug
+        assert _headers(sent[1])[b"content-type"].startswith(b"text/html")
+
+    async def test_cached_route_is_cached(self, ext_app: FastAPI) -> None:
+        status_header = CACHE_STATUS_HEADER.lower().encode()
+
+        first = await _call(ext_app, "/cached-debug-first")
+        assert [m["type"] for m in first] == [
+            "http.response.debug",
+            "http.response.start",
+            "http.response.body",
+        ]
+        assert _headers(first[1])[b"content-type"].startswith(b"text/html")
+        assert _headers(first[1])[status_header] == b"MISS"
+
+        second = await _call(ext_app, "/cached-debug-first")
+        assert _headers(second[0])[status_header] == b"HIT"
+        assert second[1]["body"] == first[2]["body"]
 
 
 @requires_redis
