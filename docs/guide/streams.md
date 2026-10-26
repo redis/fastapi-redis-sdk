@@ -22,9 +22,7 @@ async def run_agent(writer: StreamWriter) -> None:
 @app.post("/chats/{chat_id}/runs", status_code=202,
           dependencies=[Depends(require_chat_access)])
 async def start(chat_id: str, run_id: str, streams: StreamBackendDep) -> dict:
-    writer = await streams.open(scope=f"chat:{chat_id}", stream_id=run_id)
-    if writer.created:
-        streams.spawn(writer, run_agent)
+    writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_id)
     return {"stream_id": writer.stream_id}
 
 
@@ -80,30 +78,46 @@ The check confirms the command set, not the patch release. Redis 8.6.0 and
 
 ## Starting a run
 
-`open()` creates the run and returns a `StreamWriter`:
+`start()` creates the run, starts your producer on it, and returns its
+`StreamWriter`:
 
 ```python
-writer = await streams.open(scope="chat:42", stream_id=run_id)
+writer = await streams.start(run_agent, scope="chat:42", stream_id=run_id)
 ```
 
 - **`scope`** names what the run belongs to, usually the resource your access
   check just authorized, such as a chat. It is part of every key (see
   [Access](#access)).
 - **`stream_id`** is optional. Let the browser generate one before it sends
-  the request, and a retried `POST` finds the same run: `open()` returns a
-  writer whose `created` is `False`. Start a producer only when `created` is
-  `True`. Without a `stream_id`, the SDK generates one.
+  the request, and a retried `POST` finds the same run: `start()` starts no
+  second producer, and the writer it returns has `created` set to `False`.
+  This holds while the run goes on and for
+  `stream_done_ttl_seconds + stream_gone_ttl_seconds` after it ends; later,
+  the same ID starts a new run. Without a `stream_id`, the SDK generates one.
 - **One active run per scope.** By default a run takes the scope's slot, and a
   second `open()` in the same scope raises `StreamBusy` (`409`), whose
   `stream_id` names the running one. Pass `exclusive=False` to allow several
   runs at once.
 
 Scopes may use letters, digits and `_ . : -`, up to 200 characters. Stream IDs
-may use letters, digits and `_ -`, up to 64.
+may use letters, digits and `_ -`, up to 64. Any other value raises
+`StreamInvalidName`, answered with `422`, on every method.
+
+To do something between creating the run and starting the producer, such as
+spending a budget only for a new run, call `open()` and `spawn()` yourself:
+
+```python
+writer = await streams.open(scope="chat:42", stream_id=run_id)
+if writer.created:  # False for a retried start: the run already has a producer
+    streams.spawn(writer, run_agent)
+```
+
+`spawn()` refuses a writer whose `created` is `False` with `ValueError`.
 
 ### Producing
 
-`spawn()` runs your producer as a task the backend owns. It keeps a reference
+`spawn()`, which `start()` calls, runs your producer as a task the backend
+owns. It keeps a reference
 so the task is not garbage-collected, refreshes the producer heartbeat while
 it runs, and cancels it at shutdown.
 
@@ -117,7 +131,8 @@ async def run_agent(writer: StreamWriter) -> None:
     await writer.finish("message", {"id": message_id})   # optional
 ```
 
-`append(type, data)` stores one event. The type is any name you choose, up to
+`append(type, data)` stores one event and returns its entry ID. The type is
+any name you choose, up to
 128 characters with no line breaks; names starting with `stream.` belong to
 the SDK. The data goes through the payload coder, JSON by default, and may be
 at most `stream_max_event_bytes`. A timeout or a dropped connection is retried
@@ -168,21 +183,30 @@ repeated header or query parameter are refused with `422`.
 
 The response sends a `: ping` comment every `stream_heartbeat_seconds`, sets
 `Cache-Control: no-store` and `X-Accel-Buffering: no`, and closes after the
-final event. Never put the SSE route behind `cache()`, and exclude it from
+final event. Its `retry:` hint asks the browser to reconnect after one to three
+seconds, chosen at random per connection, so clients that a deploy closed at
+the same moment do not all return at once. Never put the SSE route behind `cache()`, and exclude it from
 compression middleware that buffers the body.
 
 ### Reading without HTTP
 
-`follow()` is the same read as an async iterator, for code that is not an SSE
-response:
+`follow()` is the same read for code that is not an SSE response. It runs
+every check when you await it, so a WebSocket handler can refuse a bad request
+before it accepts the connection, and it returns a `StreamReader`:
 
 ```python
-async with contextlib.aclosing(streams.follow(stream_id, scope=scope)) as events:
-    async for event in events:
-        print(event.id, event.type, event.data, event.final)
+reader = await streams.follow(stream_id, scope=scope, after=cursor)
+await websocket.accept()
+async with reader:
+    async for event in reader:
+        await websocket.send_json({"id": event.id, "type": event.type,
+                                   "data": event.data})
 ```
 
-Use `aclosing()` if you might leave the loop early, so the read closes at once.
+`async with` closes the read at once if you leave the loop early. A reader
+whose cursor is at or past the final event is empty. A `follow()` reader takes
+no reader slot, so `stream_max_readers` does not limit it; bound such readers
+yourself.
 
 ---
 
@@ -244,7 +268,9 @@ async def stop(chat_id: str, stream_id: str, streams: StreamBackendDep) -> None:
 `cancel()` sets a flag in Redis and returns `False` if the run had already
 ended. A producer started by `spawn()` in the same process is cancelled at
 once; one in another process sees the flag at its next append or heartbeat. A
-producer you run yourself reads `AppendResult.cancelled` and calls `finish()`.
+producer you run yourself checks `writer.cancelled` after each append and calls
+`finish()`. A cancel that arrives while the producer writes its final event
+lets that write finish.
 
 ---
 
@@ -260,12 +286,13 @@ reader then stops, and reconnects get `204` instead of waiting again.
 - **Long tool calls.** `spawn()` runs `writer.keepalive()` around your
   producer. If you run a producer yourself, wrap long waits in
   `async with writer.keepalive():`.
-- **Slow waits.** `writer.suspend(ttl)` extends the stream, the heartbeat and
-  the active slot, for a run that waits on something slow.
+- **Slow waits.** `writer.extend(ttl)` keeps the stream, the heartbeat and
+  the active slot for `ttl` seconds, for a run that waits on something slow.
 - **Another process continues.** `streams.attach(stream_id, scope=...)`
   returns a writer that continues the run's sequence numbers. The old writer is
   fenced: its next append or heartbeat raises `StreamFenced`, and at most that
-  one append lands after the takeover.
+  one append lands after the takeover. Its `finish()` raises `StreamFenced`
+  before it writes, so it can never end the new writer's run.
 
 A reader that cannot write, because its Redis ACL is read-only, sends a
 `stream.error` event with code `producer_lost` and closes instead.
@@ -284,10 +311,15 @@ dependency answers `401` or `403` before the SDK runs.
 | `404`  | No such stream in this scope                                             | `StreamNotFound`          |
 | `409`  | The scope has an active run; the cursor is past the stream's last entry  | `StreamBusy`, `StreamCursorAhead` |
 | `410`  | The stream expired, or entries after the cursor were removed             | `StreamExpired`           |
-| `422`  | A malformed or repeated cursor                                           | `StreamInvalidCursor`     |
+| `422`  | A malformed or repeated cursor; a scope or stream ID outside the rules   | `StreamInvalidCursor`, `StreamInvalidName` |
 | `503`  | Too many live readers; Redis unavailable; the server lacks support       | -, `StreamStoreError`, `StreamUnsupported` |
 
-`StreamError` is the base of every stream exception.
+`StreamError` is the base of every stream exception. The body is
+`{"detail": ..., "code": ...}`, where `code` is a stable name such as
+`stream_not_found`, `stream_expired` or `cursor_ahead` (see the
+[API reference](../api/reference.md#stream-errors) for the full list), and a
+`503` carries `Retry-After`. Branch on `code`, not on `detail`. A handler you
+register for `StreamError`, or for one of its subclasses, takes precedence.
 
 After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:
@@ -384,30 +416,33 @@ Every key uses the SDK's `prefix` setting (`REDIS_PREFIX`, default
 `redis:fastapi`):
 
 ```
-<prefix>:stream:{<scope>:<id>}        Stream   the events
-<prefix>:stream-meta:{<scope>:<id>}   Hash     status, cancel, final, writer, started
-<prefix>:stream-alive:{<scope>:<id>}  String   the producer heartbeat
-<prefix>:stream-active:<scope>        String   the scope's active run
+<prefix>:stream:{<scope>}:<id>        Stream   the events
+<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, final, writer, started
+<prefix>:stream-alive:{<scope>}:<id>  String   the producer heartbeat
+<prefix>:stream-active:{<scope>}      String   the scope's active run
 ```
 
-The `{<scope>:<id>}` hash tag keeps a stream's keys in one Cluster slot. The
-metadata hash outlives the stream by `stream_expiry_window`, so a late
-reconnect gets `410` (expired) instead of `404` (unknown). The prefix must not
-contain braces.
+The `{<scope>}` hash tag keeps a scope's keys in one Cluster slot, so one
+transaction starts a run and takes the slot, and one transaction ends it and
+frees the slot. It also puts all of a scope's runs on one shard, so make the
+scope one resource, such as a chat, and not one value for the whole
+application. The metadata hash outlives the stream by `stream_gone_ttl_seconds`,
+so a late reconnect gets `410` (expired) instead of `404` (unknown). The prefix
+must not contain braces.
 
 ---
 
 ## Settings
 
 Every setting is an environment variable prefixed `REDIS_`, so
-`stream_ttl_active` is `REDIS_STREAM_TTL_ACTIVE`. See
+`stream_active_ttl_seconds` is `REDIS_STREAM_ACTIVE_TTL_SECONDS`. See
 [Configuration](configuration.md) for how these are loaded.
 
 | Setting                         | Default  | Notes                                                                |
 |---------------------------------|----------|----------------------------------------------------------------------|
-| `stream_ttl_active`             | `600`    | TTL of a running stream, refreshed by every append                   |
-| `stream_ttl_done`               | `120`    | How long a finished stream stays readable                            |
-| `stream_expiry_window`          | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
+| `stream_active_ttl_seconds`     | `600`    | TTL of a running stream, refreshed by every append                   |
+| `stream_done_ttl_seconds`       | `120`    | How long a finished stream stays readable                            |
+| `stream_gone_ttl_seconds`       | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
 | `stream_maxlen`                 | `10000`  | Approximate entries kept per stream                                  |
 | `stream_max_event_bytes`        | `65536`  | Largest encoded event                                                |
 | `stream_heartbeat_seconds`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |

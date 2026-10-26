@@ -114,7 +114,7 @@ The session subject is the identity for two other features:
 
 - **Run scope.** One active run per subject, in scope `triage:<subject>`. That
   is how the phone finds the run in step 4. The scope is also part of every
-  stream's name (`stream:{triage:<subject>:<id>}`). Every stream endpoint
+  stream's name (`stream:{triage:<subject>}:<id>`). Every stream endpoint
   builds it from the session, so Sam, signed in, names a stream under
   `triage:sam` when he asks for Alex's run ID. That stream does not exist, and
   he gets the same `404` as for any unknown stream.
@@ -408,10 +408,10 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
 
 | Key | Shown |
 |---|---|
-| `redis:fastapi:stream:{triage:<subject>:<id>}` | `XLEN`, TTL, last entry ID |
-| `redis:fastapi:stream-meta:{triage:<subject>:<id>}` | Status, cancel flag, final entry ID, TTL |
-| `redis:fastapi:stream-alive:{triage:<subject>:<id>}` | Present or not, TTL in ms |
-| `redis:fastapi:stream-active:triage:<subject>` | The stream ID it names, TTL |
+| `redis:fastapi:stream:{triage:<subject>}:<id>` | `XLEN`, TTL, last entry ID |
+| `redis:fastapi:stream-meta:{triage:<subject>}:<id>` | Status, cancel flag, final entry ID, TTL |
+| `redis:fastapi:stream-alive:{triage:<subject>}:<id>` | Present or not, TTL in ms |
+| `redis:fastapi:stream-active:{triage:<subject>}` | The stream ID it names, TTL |
 | Session record | Idle and absolute TTLs |
 | Run quota | Count and TTL of the current window |
 | Daily model budget | Count and TTL of the current window |
@@ -484,7 +484,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   the final `stream.end` entry, with `reason` `done`, `error` or `cancelled`,
   and the page shows the outcome from that data. A reconnect past the final
   entry gets `204`, and the page says the run has ended.
-- **Expired streams.** A finished stream stays readable for `stream_ttl_done`
+- **Expired streams.** A finished stream stays readable for `stream_done_ttl_seconds`
   (default 2 minutes). A resume after that gets `410`. The page says the
   answer has expired and never starts the run again by itself.
 
@@ -564,7 +564,7 @@ Risks:
 |---|---|---|
 | 1 | The story depends on the SDK's streams feature, which needs Redis 8.6.2 or later. | The target database runs 8.6.2 or later. On an older server the SDK turns streams off, the chat answers `503`, and the page says why (section 8.3). |
 | 2 | The model makes the wording differ between runs and adds a cost. | Redis behaviour does not depend on the wording. A daily budget bounds the cost, and the script takes over when it is spent. |
-| 2a | Two copies of the same start `POST` arriving together could start the planner twice and use two budget slots. | Resolved: `open()` returns `created=False` for the second copy, and the handler spawns and calls `hit()` only when `created` is `True`. The active slot's `SET NX` decides which copy created the run. |
+| 2a | Two copies of the same start `POST` arriving together could start the planner twice and use two budget slots. | Resolved: `open()` returns `created=False` for the second copy, and the handler spawns and calls `hit()` only when `created` is `True`. `open()` takes the slot and creates the run in one `WATCH`/`MULTI` transaction, so exactly one copy creates it. |
 | 3 | `ip_identifier` ignores `X-Forwarded-For`, so behind FastAPI Cloud's proxy all engineers may share one budget. | Identify engineers by session subject. |
 | 4 | FastAPI Cloud's scaling is unknown to this design: replica count, scale to zero and SSE timeouts. Its autoscaling docs page returned 404. | Runs live in Redis, so readers can follow a run from any replica. A planner runs on the replica that started it, so scale to zero, or a deploy, ends the answers in progress, and their readers see `producer_lost`. Finished answers, sessions, the cache and the quotas live in Redis and survive. |
 | 5 | An in-process call through `ASGITransport` shares the event loop with the SSE readers. | Tool latency is simulated with `asyncio.sleep`, so nothing blocks the loop. |

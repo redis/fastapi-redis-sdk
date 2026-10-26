@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -28,23 +29,16 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
-    StreamBusy,
     StreamConfigurationError,
     StreamCredentialExpired,
-    StreamCursorAhead,
     StreamError,
-    StreamExpired,
-    StreamFenced,
-    StreamFinished,
     StreamInvalidCursor,
-    StreamNotFound,
     StreamStoreError,
-    StreamUnsupported,
 )
 from redis_fastapi.stream_backend import (
     ERROR_TYPE,
     StreamBackend,
-    StreamEvent,
+    _Entry,
     parse_cursor,
 )
 from redis_fastapi.telemetry import record_stream_operation
@@ -59,6 +53,18 @@ logger = logging.getLogger(__name__)
 
 _RETRY_AFTER = "5"
 _HEADERS = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+
+# The SSE "retry:" hint, in milliseconds: how long EventSource waits before
+# it reconnects after the server closes.  Short, because a planned close (the
+# connection cap, a slow client, a deploy) happens while the run goes on.  A
+# random value per connection spreads the reconnects of many clients that a
+# deploy closed at once.
+_RETRY_MIN_MS = 1000
+_RETRY_SPREAD_MS = 2000
+
+
+def _retry_ms() -> int:
+    return _RETRY_MIN_MS + secrets.randbelow(_RETRY_SPREAD_MS + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -124,9 +130,11 @@ def encode_frame(event_type: str, data: str, event_id: str | None = None) -> str
     return f"{head}event: {event_type}\n{body}\n"
 
 
-def _frame(event: StreamEvent) -> str:
-    data = event._raw if event._raw is not None else json.dumps(event.data)
-    return encode_frame(event.type, data, event.id)
+def _frame(entry: _Entry) -> str:
+    # The payload as stored: the SSE path never decodes it.
+    return encode_frame(
+        entry.type, entry.raw if entry.raw is not None else "null", entry.id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +195,10 @@ class _SSEResponse(StreamingResponse):
         if not self._backend._reserve_reader():
             await self._close_body()
             busy = JSONResponse(
-                {"detail": "too many live readers; retry shortly"},
+                {
+                    "detail": "too many live readers; retry shortly",
+                    "code": "stream_capacity_exceeded",
+                },
                 status_code=503,
                 headers={"Retry-After": _RETRY_AFTER},
             )
@@ -249,11 +260,19 @@ async def sse(
         credential_end = (
             started + credential_left if credential_left is not None else None
         )
-        events = backend._events(plan)
+        deadline = (
+            lifetime_end
+            if credential_end is None
+            else min(lifetime_end, credential_end)
+        )
+        pages = backend._pages(plan, deadline=deadline)
         try:
-            yield f"retry: {int(settings.stream_heartbeat_seconds * 1000)}\n\n"
-            async for event in events:
-                yield ": ping\n\n" if event is None else _frame(event)
+            yield f"retry: {_retry_ms()}\n\n"
+            async for page in pages:
+                if page:
+                    # One chunk per read: one send, and one send timeout, for
+                    # a whole replay page.
+                    yield "".join(_frame(entry) for entry in page)
                 now = time.monotonic()
                 if credential_end is not None and now >= credential_end:
                     yield encode_frame(
@@ -262,10 +281,12 @@ async def sse(
                     return
                 if now >= lifetime_end:
                     return
+                if not page:
+                    yield ": ping\n\n"
         except StreamStoreError:
             return  # Redis stayed down: close, and the client reconnects
         finally:
-            await events.aclose()
+            await pages.aclose()
 
     return _SSEResponse(
         body(),
@@ -280,25 +301,19 @@ async def sse(
 # Setup and handlers
 # ---------------------------------------------------------------------------
 
-_STATUS: dict[type[StreamError], int] = {
-    StreamNotFound: 404,
-    StreamExpired: 410,
-    StreamBusy: 409,
-    StreamCursorAhead: 409,
-    StreamFinished: 409,
-    StreamFenced: 409,
-    StreamInvalidCursor: 422,
-    StreamCredentialExpired: 401,
-    StreamUnsupported: 503,
-    StreamStoreError: 503,
-}
-
 
 async def stream_error_handler(request: Request, exc: Exception) -> Response:
-    """Answer a stream error raised before the first byte with its status."""
-    status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 500)
+    """Answer a stream error raised before the first byte.
+
+    The status and the stable ``code`` come from the exception's class:
+    ``{"detail": ..., "code": ...}``, with ``Retry-After`` on a 503.
+    """
+    status = exc.status_code if isinstance(exc, StreamError) else 500
+    code = exc.code if isinstance(exc, StreamError) else StreamError.code
     headers = {"Retry-After": _RETRY_AFTER} if status == 503 else None
-    return JSONResponse({"detail": str(exc)}, status_code=status, headers=headers)
+    return JSONResponse(
+        {"detail": str(exc), "code": code}, status_code=status, headers=headers
+    )
 
 
 def check_stream_settings() -> None:
@@ -337,7 +352,7 @@ def add_redis_streams(
     """Enable resumable streams on *app*.
 
     Creates the application's one :class:`StreamBackend`, registers the
-    handlers that turn stream errors into status codes, and marks the app so
+    handler that turns stream errors into status codes, and marks the app so
     the lifespan detects server support at startup and stops spawned
     producers at shutdown.  Calling it twice returns the same backend.
 
@@ -355,6 +370,9 @@ def add_redis_streams(
         lambda: _get_pool_state(app).get_async_client(), coder=coder
     )
     app.state._redis_streams = backend
-    for cls in _STATUS:
-        app.add_exception_handler(cls, stream_error_handler)
+    # One handler for the whole family.  Starlette picks the most specific
+    # class, so an application's handler for a subclass still wins, and one
+    # the application already set for StreamError is left in place.
+    if StreamError not in app.exception_handlers:
+        app.add_exception_handler(StreamError, stream_error_handler)
     return backend

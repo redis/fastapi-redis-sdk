@@ -56,15 +56,15 @@ def _text(value: Any) -> Any:
 async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str, Any]]:
     """The run's Redis keys, read as they are, under the SDK's key layout.
 
-    The layout is documented in the streams guide: the scope and the stream
-    ID form the hash tag, and every key uses the SDK's prefix setting.
+    The layout is documented in the streams guide: the scope is the hash
+    tag of every key, and every key uses the SDK's prefix setting.
     """
     prefix = get_settings().prefix
-    tag = f"{{{scope}:{stream_id}}}"
-    stream = f"{prefix}:stream:{tag}"
-    meta = f"{prefix}:stream-meta:{tag}"
-    alive = f"{prefix}:stream-alive:{tag}"
-    active = f"{prefix}:stream-active:{scope}"
+    tag = f"{{{scope}}}"
+    stream = f"{prefix}:stream:{tag}:{stream_id}"
+    meta = f"{prefix}:stream-meta:{tag}:{stream_id}"
+    alive = f"{prefix}:stream-alive:{tag}:{stream_id}"
+    active = f"{prefix}:stream-active:{tag}"
 
     keys: list[dict[str, Any]] = []
     if await redis.exists(stream):

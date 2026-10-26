@@ -34,7 +34,7 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 |--------------|-------------------------------------|
 | Python       | 3.10 to 3.14                        |
 | FastAPI      | 0.115+                              |
-| redis-py     | 6.0+                                |
+| redis-py     | 6.2+                                |
 | Pydantic     | 2.0+                                |
 | Redis server | 7.4+ (8.6.2+ for resumable streams) |
 
@@ -132,9 +132,8 @@ async def run_agent(writer: StreamWriter):
 
 @app.post("/chats/{chat_id}/runs", status_code=202)
 async def start(chat_id: str, run_id: str, streams: StreamBackendDep):
-    writer = await streams.open(scope=f"chat:{chat_id}", stream_id=run_id)
-    if writer.created:
-        streams.spawn(writer, run_agent)
+    # A retried POST with the same run_id finds the run and starts nothing.
+    writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_id)
     return {"stream_id": writer.stream_id}
 
 @app.get("/chats/{chat_id}/runs/{stream_id}/events")

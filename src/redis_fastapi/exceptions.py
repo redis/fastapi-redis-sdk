@@ -61,9 +61,18 @@ class SessionRejected(Exception):
 class StreamError(Exception):
     """Base for every error the resumable-stream feature raises.
 
-    Catching this catches the whole feature.  The SSE handlers that
-    ``FastAPIRedis.streams()`` registers map each subclass to a status code.
+    Catching this catches the whole feature.  Each class carries the HTTP
+    status and the stable ``code`` that the handler ``FastAPIRedis.streams()``
+    registers answers with, as ``{"detail": ..., "code": ...}``.  Branch on
+    ``code``, not on ``detail``, whose wording may change.
+
+    Attributes:
+        status_code: The HTTP status for this error.
+        code: A stable, machine-readable name for this error.
     """
+
+    status_code: int = 500
+    code: str = "stream_error"
 
 
 class StreamNotFound(StreamError):
@@ -73,9 +82,15 @@ class StreamNotFound(StreamError):
     too, and a stream ID reveals nothing about streams in other scopes.
     """
 
+    status_code = 404
+    code = "stream_not_found"
+
 
 class StreamExpired(StreamError):
     """The stream is gone, or entries after the cursor were trimmed.  410."""
+
+    status_code = 410
+    code = "stream_expired"
 
 
 class StreamBusy(StreamError):
@@ -84,6 +99,9 @@ class StreamBusy(StreamError):
     Attributes:
         stream_id: The ID of the run that holds the scope.
     """
+
+    status_code = 409
+    code = "stream_busy"
 
     def __init__(self, stream_id: str) -> None:
         super().__init__(f"the scope already has an active run: {stream_id}")
@@ -97,13 +115,33 @@ class StreamCursorAhead(StreamError):
     that lost writes the client had already read.
     """
 
+    status_code = 409
+    code = "cursor_ahead"
+
 
 class StreamInvalidCursor(StreamError, ValueError):
     """A malformed, out-of-range or repeated cursor.  Answered with 422."""
 
+    status_code = 422
+    code = "invalid_cursor"
+
+
+class StreamInvalidName(StreamError, ValueError):
+    """A scope or stream ID with characters outside the allowed set.  422.
+
+    Scopes may use 1-200 of ``A-Z a-z 0-9 _ . : -``; stream IDs 1-64 of
+    ``A-Z a-z 0-9 _ -``.
+    """
+
+    status_code = 422
+    code = "invalid_stream_name"
+
 
 class StreamCredentialExpired(StreamError):
     """``expires_at`` had already passed when the stream was requested.  401."""
+
+    status_code = 401
+    code = "credential_expired"
 
 
 class StreamUnsupported(StreamError):
@@ -112,22 +150,37 @@ class StreamUnsupported(StreamError):
     Detected once per pool; see :func:`~redis_fastapi.stream_backend.probe_streams_support`.
     """
 
+    status_code = 503
+    code = "stream_unsupported"
+
 
 class StreamFinished(StreamError):
-    """A write to a stream that already has its final entry."""
+    """A write to a stream that already has its final entry.  409."""
+
+    status_code = 409
+    code = "stream_finished"
 
 
 class StreamFenced(StreamError):
-    """Another writer took over this stream with ``attach()``.
+    """This writer does not own the stream.  409.
 
-    The writer stops.  At most the append that reported the fence landed after
-    the new writer started.
+    Raised by a handle from a retried start, which never writes, and by a
+    writer that ``attach()`` replaced.  That writer stops; at most the append
+    that reported the fence landed after the new writer started.
     """
+
+    status_code = 409
+    code = "stream_fenced"
 
 
 class StreamStoreError(StreamError):
     """Redis could not complete a stream operation.  Answered with 503."""
 
+    status_code = 503
+    code = "stream_unavailable"
+
 
 class StreamConfigurationError(StreamError):
     """A stream setting is invalid, or the feature was not set up."""
+
+    code = "stream_configuration_error"

@@ -337,7 +337,7 @@ class RedisSettings(BaseSettings):
     )
 
     # -- Resumable streams -----------------------------------------------------
-    stream_ttl_active: int = Field(
+    stream_active_ttl_seconds: float = Field(
         default=600,
         gt=0,
         description=(
@@ -346,7 +346,7 @@ class RedisSettings(BaseSettings):
             "itself."
         ),
     )
-    stream_ttl_done: int = Field(
+    stream_done_ttl_seconds: float = Field(
         default=120,
         gt=0,
         description=(
@@ -354,12 +354,12 @@ class RedisSettings(BaseSettings):
             "still reconnect and read a finished stream."
         ),
     )
-    stream_expiry_window: int = Field(
+    stream_gone_ttl_seconds: float = Field(
         default=3600,
         ge=0,
         description=(
             "How long a stream's metadata outlives the stream, in seconds, so "
-            "a late reconnect gets 410 (expired) instead of 404 (unknown)."
+            "a late reconnect gets 410 (gone) instead of 404 (unknown)."
         ),
     )
     stream_maxlen: int = Field(

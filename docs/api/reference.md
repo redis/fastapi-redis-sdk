@@ -583,10 +583,12 @@ add_redis_streams(app, coder=None)
 |---|---|
 | `coder` | Serializer for event payloads. Defaults to `JsonCoder`. |
 
-Creates the backend, registers the handlers that turn stream errors into
-status codes, and marks the app so the lifespan detects server support at
-startup and cancels spawned producers at shutdown. Calling it twice is a
-no-op. Raises `StreamConfigurationError` when the prefix contains braces,
+Creates the backend, registers one handler for `StreamError` that turns
+stream errors into status codes, and marks the app so the lifespan detects
+server support at startup and cancels spawned producers at shutdown. A
+`StreamError` handler the application set first is kept, and one it sets for a
+subclass wins for that subclass. Calling it twice is a no-op. Raises
+`StreamConfigurationError` when the prefix contains braces,
 `stream_alive_ttl_seconds` is not longer than `stream_heartbeat_seconds`, or
 `socket_timeout` is not longer than `stream_heartbeat_seconds`.
 
@@ -596,11 +598,12 @@ no-op. Raises `StreamConfigurationError` when the prefix contains braces,
 
 | Method | Purpose |
 |---|---|
+| `await start(fn, *, scope, stream_id=None, exclusive=True) -> StreamWriter` | `open()`, then `spawn(writer, fn)` unless the run already existed. The usual start route in one call. |
 | `await open(*, scope, stream_id=None, exclusive=True)` | Create a run and return its `StreamWriter`. With `exclusive`, the run takes the scope's active slot; another run in the scope raises `StreamBusy`. A retried start with the same `stream_id` returns a writer whose `created` is `False`. |
 | `await attach(stream_id, *, scope)` | Continue a run from another process. The new writer continues the sequence numbers and fences the old one. Raises `StreamNotFound` or `StreamFinished`. |
-| `spawn(writer, fn) -> asyncio.Task` | Run `fn(writer)` as a task the backend owns, with the heartbeat around it. Writes a final `stream.end` with the reason unless `fn` called `finish()`. |
+| `spawn(writer, fn) -> asyncio.Task` | Run `fn(writer)` as a task the backend owns, with the heartbeat around it. Writes a final `stream.end` with the reason unless `fn` called `finish()`. Raises `ValueError` for a writer whose `created` is `False`, or one already spawned. |
 | `await sse(stream_id, *, request, scope, after=None, expires_at=None) -> Response` | Prepare an SSE response. Every check that decides the status runs first. Reads `Last-Event-ID` and `?after=` itself; `after` overrides both. Ends at `expires_at` with `stream.error` `credential_expired`. |
-| `follow(stream_id, *, scope, after=None) -> AsyncIterator[StreamEvent]` | The same read without HTTP. Stops after the final event. Wrap it in `contextlib.aclosing()` if you may leave early. |
+| `await follow(stream_id, *, scope, after=None) -> StreamReader` | The same read without HTTP. Every check runs at the `await`, before any event. |
 | `await cancel(stream_id, *, scope) -> bool` | Ask the run to stop. `False` if it had ended. Raises `StreamNotFound`. |
 | `await active(scope) -> str \| None` | The ID of the scope's active run. |
 | `await detect() -> bool \| None` | Detect server support. The lifespan calls it at startup; the result is cached. |
@@ -609,7 +612,7 @@ no-op. Raises `StreamConfigurationError` when the prefix contains braces,
 Every method except `spawn()` and `detect()` raises `StreamUnsupported` when
 the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
 `[A-Za-z0-9_.:-]{1,200}` and stream IDs `[A-Za-z0-9_-]{1,64}`; others raise
-`ValueError`, or `StreamNotFound` when reading.
+`StreamInvalidName` (`422`, also a `ValueError`) on every method.
 
 ---
 
@@ -619,11 +622,11 @@ the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
 |---|---|
 | `stream_id`, `scope` | The run's identity. |
 | `created` | `True` when `open()` created the run; `False` for a retried start. Start a producer only when `True`. |
-| `await append(type, data) -> AppendResult` | Store one event. Retried safely after a timeout. Raises `ValueError` for an invalid or reserved type or an event over `stream_max_event_bytes`, `StreamFinished` after the final event, `StreamExpired` when the stream expired, `StreamFenced` after a takeover. |
-| `await finish(type, data=None) -> str` | Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID. |
-| `await suspend(ttl)` | Extend the stream, the heartbeat and the active slot. `ttl` is `int` seconds or `timedelta`. |
+| `await append(type, data) -> str` | Store one event and return its entry ID. Retried safely after a timeout. Raises `ValueError` for an invalid or reserved type or an event over `stream_max_event_bytes`, `StreamFinished` after the final event, `StreamExpired` when the stream expired, `StreamFenced` when this writer does not own the stream. |
+| `await finish(type, data=None) -> str` | Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID. Raises `StreamFenced` for a writer `attach()` replaced, so it cannot end the new writer's run. |
+| `await extend(ttl)` | Keep the stream, the heartbeat and the active slot for `ttl`, in seconds or a `timedelta`. Raises `StreamFenced` or `StreamFinished`. |
 | `keepalive()` | Async context manager that refreshes the heartbeat and reads the cancel flag every `stream_heartbeat_seconds`. |
-| `cancelled` | Whether a stop was requested, as last seen. |
+| `cancelled` | Whether a stop was requested, as last seen by an append or heartbeat. |
 | `finished` | Whether this writer wrote the final event. |
 
 Event types are 1 to 128 characters with no CR, LF or NUL. Types starting with
@@ -637,7 +640,7 @@ Event types are 1 to 128 characters with no CR, LF or NUL. Types starting with
 | Type | Contents |
 |---|---|
 | `StreamEvent` | `id` (the entry ID, the cursor; `None` for the reader's own events), `type`, `data` (decoded), `final`. |
-| `AppendResult` | `id`, `cancelled`. |
+| `StreamReader` | What `follow()` returns: an async iterator of `StreamEvent` and an async context manager that closes it. It reads nothing until iterated, and is empty when the cursor is at or past the final event. `await aclose()` stops it. It takes no reader slot. |
 
 ---
 
@@ -666,12 +669,33 @@ StreamError
 ├── StreamFinished             409  a write after the final event
 ├── StreamFenced               409  another writer took over
 ├── StreamInvalidCursor        422  malformed or repeated cursor (also a ValueError)
+├── StreamInvalidName          422  scope or stream ID outside the allowed set (also a ValueError)
 ├── StreamCredentialExpired    401  expires_at had already passed
 ├── StreamUnsupported          503  the server lacks support
 ├── StreamStoreError           503  Redis failed
-└── StreamConfigurationError        a setting cannot work, or no .streams()
+└── StreamConfigurationError   500  a setting cannot work, or no .streams()
 ```
 
-The status is what the handlers `.streams()` registers answer before the first
-byte. A `503` carries `Retry-After`.
+Each class carries its `status_code` and a stable `code`. The handler
+`.streams()` registers answers before the first byte with
+`{"detail": ..., "code": ...}`; a `503` carries `Retry-After`. Branch on
+`code`, not on `detail`.
+
+| Class | `code` |
+|---|---|
+| `StreamNotFound` | `stream_not_found` |
+| `StreamExpired` | `stream_expired` |
+| `StreamBusy` | `stream_busy` |
+| `StreamCursorAhead` | `cursor_ahead` |
+| `StreamFinished` | `stream_finished` |
+| `StreamFenced` | `stream_fenced` |
+| `StreamInvalidCursor` | `invalid_cursor` |
+| `StreamInvalidName` | `invalid_stream_name` |
+| `StreamCredentialExpired` | `credential_expired` |
+| `StreamUnsupported` | `stream_unsupported` |
+| `StreamStoreError` | `stream_unavailable` |
+| `StreamConfigurationError` | `stream_configuration_error` |
+
+Over `stream_max_readers`, the SSE response answers `503` with code
+`stream_capacity_exceeded`; no exception is raised for it.
 

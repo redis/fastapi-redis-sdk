@@ -40,8 +40,8 @@ os.environ.setdefault("REDIS_MAX_CONNECTIONS", "20")
 # connection cap makes a revoked phone lose its stream within a minute even
 # without the page's poll.
 for _name, _value in {
-    "REDIS_STREAM_TTL_ACTIVE": "600",
-    "REDIS_STREAM_TTL_DONE": "120",
+    "REDIS_STREAM_ACTIVE_TTL_SECONDS": "600",
+    "REDIS_STREAM_DONE_TTL_SECONDS": "120",
     "REDIS_STREAM_MAXLEN": "500",
     "REDIS_STREAM_HEARTBEAT_SECONDS": "5",
     "REDIS_STREAM_ALIVE_TTL_SECONDS": "15",

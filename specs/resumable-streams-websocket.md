@@ -451,7 +451,7 @@ Rules:
    - *In-process wait.* The producer task stays alive. If its process dies,
      readers see `producer_lost`.
    - *Suspended wait.* The producer saves its own state (for example a
-     LangGraph checkpoint), writes `writer.suspend(ttl)` and exits. A later
+     LangGraph checkpoint), writes `writer.extend(ttl)` and exits. A later
      process calls `attach()` and continues on the same stream. Saving agent
      state stays the application's job.
 6. **No answer.** When the timeout passes, `ask()` raises `InputTimeout`. The
