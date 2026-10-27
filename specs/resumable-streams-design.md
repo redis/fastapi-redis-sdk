@@ -77,7 +77,7 @@ with it.
 | `DELEX key IFEQ value` | 8.4 | Release the "active run" slot only if it still names this run (section 7.1). |
 | `SET key value IFEQ value` | 8.4 | Refresh the "active run" slot only if it still names this run (section 7.1). Checked on Redis 8.8 on 2026-10-23. |
 | `volatile-lrm` eviction policy | 8.6 | Lets operators evict finished idle streams first (section 3.3). |
-| Compact hashes | 8.10 | None to write. Meta hashes share one schema, so they qualify automatically when the server has the feature. |
+| `HSETEX key PX ms FIELDS 1 field value` (hash-field expiration) | 8.0 | The producer heartbeat is a meta field with its own TTL, so a run needs no key of its own for it (section 6.1). |
 
 Notes on this table:
 
@@ -142,7 +142,7 @@ Notes on this table:
 ```
  client ──POST /runs──────────────▶ API process ── open() ──▶ Redis (meta, active slot)
         ◀─202 {stream_id}──────────                 spawn() ─▶ producer task ──append()─▶ Redis Stream
-                                                                       ▲ heartbeat: alive key, cancel flag
+                                                                       ▲ heartbeat: alive field, cancel flag
  client ──GET /streams/{id}/events (Last-Event-ID)─▶ any API process
         ◀── SSE: replay from cursor, then live tail ──────  XREAD BLOCK ◀── Redis Stream
 ```
@@ -242,8 +242,10 @@ its data.
 
 A reader stops only when it reads the final entry. It never decides that a
 run ended from the meta hash. Stardrift's race (a subscriber deleted before
-its final read) came from relying on out-of-band state. Meta records the final
-entry's ID only so that a reconnect after the end can get a 204 (section 7.2).
+its final read) came from relying on out-of-band state. Meta records no final
+entry ID: a reconnect after the end gets its 204 from the stream itself, the
+end marker on the cursor's entry or its absence from what follows (section
+7.2).
 The SDK also never deletes a stream at completion. It shortens the TTL and
 lets Redis remove it.
 
@@ -269,12 +271,13 @@ matches the AI SDK's current guidance and LangGraph's default
 ### 5.5 Dead producers are detected by Redis, not by timeout alone
 
 Glance reports that it learns of a dead agent loop only by timeout. Here the
-producer keeps a short-lived `alive` key. A reader that times out waiting for
-an entry checks it. If the key is gone and no final entry exists, the stream
+producer keeps a short-lived heartbeat: an `alive` field in meta with its own
+TTL. A reader that times out waiting for an entry checks it. If the field is
+gone and no final entry exists, the stream
 would never get its end marker, so **the reader ends it**. It writes the final
 entry a producer would have written: `stream.end` with data
 `{"reason": "producer_lost"}`, and with the same fixed IDMP pair as every final
-entry (section 6.3). It sets `status=finished`, `final` and the finished TTLs,
+entry (section 6.3). It sets `status=finished` and the finished TTLs,
 and releases the active slot with `DELEX … IFEQ`. From then on a dead producer
 is an ordinary end: every reader stops at the final entry, and a reconnect gets
 a 204, so `EventSource` stops for good. Without this, every reconnect would
@@ -347,9 +350,9 @@ stream.
 
 ```
 <prefix>:stream:{<scope>}:<id>        Stream   entries; key TTL t
-<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, final, writer, started;
-                                               key TTL t + stream_gone_ttl_seconds
-<prefix>:stream-alive:{<scope>}:<id>  String   producer heartbeat; PX TTL
+<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, writer, started, alive;
+                                               key TTL t + stream_gone_ttl_seconds,
+                                               alive with its own PX TTL
 <prefix>:stream-active:{<scope>}      String   -> <id>; one active run per scope;
                                                EX stream_active_ttl_seconds, refreshed by
                                                append() and keepalive()
@@ -372,16 +375,13 @@ SDK rejects anything else. Neither may contain a brace, so no value can break
 out of the hash tag. A stream ID cannot contain `:`, so `{<scope>}:<id>`
 splits in exactly one way, and two different pairs never give the same key.
 
-The `{<scope>}` hash tag puts all four keys, and every run of the scope, in one
+The `{<scope>}` hash tag puts all three keys, and every run of the scope, in one
 Cluster slot, so a transaction over the slot and the run's keys is legal. That
 lets `open()` take the slot and create the run in one transaction, and lets the
 final entry free the slot in the transaction that writes it (section 7.1).
 The cost is that a scope's runs share one shard. A scope names one resource,
 such as a chat, so this load is small; a single scope for a whole application
-would put every stream on one shard, and the guide warns against it. Meta
-hashes all use the same field
-names, so Redis 8.10's compact hash encoding applies without any code on our
-side.
+would put every stream on one shard, and the guide warns against it.
 
 Meta fields:
 
@@ -389,20 +389,28 @@ Meta fields:
 |---|---|---|
 | `status` | `open()`, `finish()` | `running` or `finished`. |
 | `cancel` | `cancel()` | `1` once a stop was requested. |
-| `final` | `finish()` | The final entry's ID, for the 204 after the end (section 7.2). |
 | `writer` | `open()`, `attach()` | The current writer's ID, for the fence (section 7.1). |
 | `started` | The first append | `1` once the stream key exists. |
+| `alive` | `open()`, every append, `keepalive()`, `extend()` | The producer heartbeat: `1`, with its own TTL, set by `HSETEX … PX`. A reader that finds it gone declares the producer lost (section 5.5). |
+
+`alive` is a field, not a key, because a field can expire on its own since
+Redis 7.4, and `HSETEX` (8.0) sets the value and the TTL in one command.
+`PEXPIRE` on meta does not touch the field's TTL, nor `HSETEX` meta's. A
+heartbeat that lands after meta expired creates meta again, holding only
+`alive` and no key TTL. When the field expires, the hash is empty and Redis
+deletes it. Until then, meta without `status` counts as no meta: `follow()`
+and `attach()` answer 404, and `open()` creates the run.
 
 **Meta outlives the stream.** Every `EXPIRE` that gives the stream TTL `t`
 gives meta `t + stream_gone_ttl_seconds`. After the stream expires, meta stays for
 that window as a record that the stream existed. A reconnect in the window
 then gets a 410, not a 404 (section 7.2). Meta holds no message content, so
-keeping it is cheap: a few short fields in a compact hash, about 100 bytes.
+keeping it is cheap: a few short fields.
 Meta lives under the scope's name too, so a reader from another scope looks up
 a key that never existed, gets a 404, and learns nothing.
 
-A write to meta outside the append transaction (the final entry's ID, the
-cancel flag, a new writer on `attach()`) runs with `PEXPIRE … NX` in the same
+A write to meta outside the append transaction (the cancel flag, a new
+writer on `attach()`) runs with `PEXPIRE … NX` in the same
 transaction. If meta expired a moment before, `HSET` would create it again
 with no TTL, and it would never expire. `PEXPIRE … NX` sets a TTL only on a key
 that has none, so it repairs exactly that case and leaves a live meta's TTL
@@ -510,7 +518,7 @@ one replay page at the product of the two settings.
 3. Otherwise run one `MULTI`: `SET stream-active:{<scope>} <id> EX
    <stream_active_ttl_seconds>` (if `exclusive`), create the meta hash
    (`status=running`, `writer=<id>`) with TTL `stream_active_ttl_seconds +
-   stream_gone_ttl_seconds`, and set `alive`.
+   stream_gone_ttl_seconds`, and set its `alive` field with `HSETEX … PX`.
 4. If another start changed a watched key after the `WATCH`, `EXEC` aborts:
    go back to step 1, up to three times. A timeout or a dropped connection is
    retried the same way.
@@ -533,8 +541,8 @@ which is Vercel's idempotent entry point.
   `stream_gone_ttl_seconds`). Every duration setting is in seconds and may be
   fractional, so the feature sends milliseconds (`PEXPIRE`, `PX`).
 - On the first append only, `HSET started 1` on the meta hash.
-- `SET` on the `alive` key with its PX TTL, so a producer that appends counts
-  as alive even without `keepalive()`.
+- `HSETEX` of meta's `alive` field with its PX TTL, so a producer that
+  appends counts as alive even without `keepalive()`.
 - For an exclusive run, `SET stream-active:{<scope>} <id> IFEQ <id> PX
   <stream_active_ttl_seconds>`, so a run that appends keeps its slot even without
   `keepalive()`.
@@ -543,7 +551,7 @@ which is Vercel's idempotent entry point.
 A timeout or a dropped connection, after which Redis may or may not have
 applied the transaction, is retried with backoff, up to three attempts. Every
 command in it is safe to repeat: the `IDMP` pair makes the `XADD` idempotent,
-and `PEXPIRE`, `HSET` and `SET` converge. An error from Redis becomes a
+and `PEXPIRE`, `HSET`, `HSETEX` and `SET` converge. An error from Redis becomes a
 `StreamStoreError` with fixed text: Redis's own message can name the ACL user
 and the key, which holds the scope.
 
@@ -553,17 +561,17 @@ this one: the writer raises `StreamFenced` and stops. This is the fence.
 
 `finish(type, data=None)` appends the final entry: an ordinary event of the
 application's chosen type, with `f=1`. The same transaction sets
-`status=finished` in meta and the finished TTLs, deletes the `alive` key and
-releases the active slot. The final event and the end marker are one append,
+`status=finished` in meta and the finished TTLs, and releases the active slot.
+It leaves `alive` to expire: once `status` is `finished`, nothing reads it. The final event and the end marker are one append,
 so no crash can fall between the last data and the end. A retry of `finish()`
 after a timeout is safe, because the final entry uses its fixed IDMP pair
 (section 6.3).
 
-The final entry's ID is known only once `XADD` returns, so a second step
-records `final=<entry ID>` in meta. That step can fail, or a crash can fall
-before it. Readers do not depend on it: the final entry itself carries `f=1`,
-and a reconnect whose cursor names that entry gets the 204 either way (section
-7.2).
+Meta does not record the final entry's ID. The ID is known only once `XADD`
+returns, so recording it would need a second step, which could fail or be cut
+short by a crash. `status=finished`, set in the same transaction as the final
+entry, says the same thing, and readers find the entry in the stream
+(section 7.2).
 
 Unlike an append, `finish()` checks the fence before it writes. It `WATCH`es
 meta, reads `writer` on another connection, and runs the transaction only if
@@ -576,7 +584,7 @@ After `finish()`, the writer refuses further appends with `StreamFinished`.
 This is the seal. It covers the writer's own process and costs no Redis
 command. A stale writer in another process could still append after the end.
 That is harmless: every reader stops at the first final entry, and a reconnect
-at or past `final` gets a 204 (section 7.2), so no reader ever sees the late
+at or past the final entry gets a 204 (section 7.2), so no reader ever sees the late
 entry.
 
 Releasing the slot uses `DELEX stream-active:{<scope>} IFEQ <id>`. The release
@@ -584,7 +592,7 @@ must compare, because a stale writer must not free the slot of a newer run.
 The comparison also makes it safe for a run opened with `exclusive=False`,
 whose ID the slot never names.
 
-`keepalive()` is an async context manager that refreshes `alive` and polls the
+`keepalive()` is an async context manager that refreshes meta's `alive` field and polls the
 cancel flag and the `writer` field every `stream_heartbeat_seconds`. It covers
 long tool calls, when no appends happen.
 
@@ -613,7 +621,7 @@ every append, or a Lua script, which this design avoids. `open()` and
 rare: it needs an extended run that a second process attaches while the first
 is still alive.
 
-`extend(ttl)` keeps the stream, meta, the `alive` key and the active slot for
+`extend(ttl)` keeps the stream, meta, its `alive` field and the active slot for
 `ttl` seconds, for a run that waits on a slow tool or that another process
 will continue. A retry handle, a fenced writer and a finished writer refuse it
 with `StreamFenced` or `StreamFinished`: only the run's own writer may keep it
@@ -628,7 +636,8 @@ before it accepts it, as `sse()` answers with a status:
 
 1. Read the meta hash and check that the stream key exists, in one round
    trip. Both keys are named from `scope` and `stream_id`. Then decide:
-   - Meta missing: raise `StreamNotFound` (404). This covers an unknown ID and
+   - Meta missing, or holding no `status` (section 6.1): raise
+     `StreamNotFound` (404). This covers an unknown ID and
      an ID from another scope alike, so a foreign stream never reveals that it
      exists or expired.
    - `started=1` and the stream key missing: raise `StreamExpired` (410).
@@ -643,11 +652,9 @@ before it accepts it, as `sse()` answers with a status:
    - `cursor > last-generated-id`: raise `StreamCursorAhead` (HTTP 409,
      section 5.1). This comes first, so a cursor past a finished stream's last
      ID is refused, not taken as "read to the end".
-   - Meta has a `final` ID and the cursor is at or past it, or the cursor's
-     own entry has `f=1`: the reader has already read the end. The reader
-     `follow()` returns is empty, and `sse()` answers 204, which stops
-     `EventSource` for good. The second test covers a `final` field that was
-     never recorded (section 7.1).
+   - The cursor's own entry has `f=1`: the reader has already read the end.
+     The reader `follow()` returns is empty, and `sse()` answers 204, which
+     stops `EventSource` for good.
    - History after the cursor was removed: raise `StreamExpired` (HTTP 410).
      An `XDEL` of an entry newer than the cursor raises
      `max-deleted-entry-id` above the cursor, which is exact. Trimming does not
@@ -659,6 +666,11 @@ before it accepts it, as `sse()` answers with a status:
      client whose last entry was exactly the newest one trimmed also gets 410,
      although it missed nothing. That is safe, and rare with the default
      `stream_maxlen`.
+   - `status=finished`, and the first page is shorter than `<page>` and holds
+     no final entry: everything after the cursor is in that page, and the end
+     is not, so the cursor is past the final entry. Only a stale writer's
+     entry can sit there (section 7.1). The same 204. A full page proves
+     nothing, so the read goes on, and reaches the final entry.
 
    The transaction makes the checks and the first page one snapshot, so no
    trim can fall between them. `XRANGE` returns the cursor's own entry, whose `q` is the
@@ -671,7 +683,7 @@ before it accepts it, as `sse()` answers with a status:
    higher, entries were trimmed while the reader fell behind. Yield a
    `stream.gap` event with no ID and data `{"missing": <count>}`, then go on
    with the entry. Handle each entry as in step 4.
-6. On an empty reply, yield a keepalive. If the `alive` key is gone and the
+6. On an empty reply, yield a keepalive. If meta's `alive` field is gone and the
    stream has no final entry, end the stream with `stream.end` and reason
    `producer_lost` (section 5.5), yield that final entry and stop. The reader
    writes that entry with the same `XADD` builder and the same transaction as
@@ -803,7 +815,7 @@ task the backend owns:
 - On application shutdown, the lifespan cancels the remaining tasks, which
   write `stream.end` entries with reason `cancelled`, so readers do not hang.
 
-An in-process task dies with its process. After the `alive` key expires, a
+An in-process task dies with its process. After the `alive` field expires, a
 reader ends the stream with reason `producer_lost` (section 5.5). Phase 1 has
 no way to run a producer that survives a deploy, because producers outside the
 FastAPI application are not supported (section 2).
@@ -818,7 +830,7 @@ Short names:
 
 | Name | Meaning |
 |---|---|
-| `S`, `M`, `A`, `K` | The stream, meta, `alive` and active slot keys (section 6.1) |
+| `S`, `M`, `K` | The stream, meta and active slot keys (section 6.1). The heartbeat is meta's `alive` field |
 | `<id>`, `<wid>`, `<q>` | The stream ID, the writer's ID, and the entry's sequence number |
 | `<ttl>` | The TTL passed to `extend()`, in ms |
 | `t_a`, `t_d`, `w` | `stream_active_ttl_seconds`, `stream_done_ttl_seconds`, `stream_gone_ttl_seconds`, in ms |
@@ -827,7 +839,7 @@ Short names:
 | `[...]` | Sent only in the case the note names |
 
 On Cluster, `COMMAND INFO` goes to a random node. Every other command goes to
-the node that owns the scope's slot, because all four keys share it.
+the node that owns the scope's slot, because all three keys share it.
 
 **Support probe.** Sent once at startup, and again by the first entry point
 that checks support (`start`, `open`, `attach`, `cancel`, `active`,
@@ -850,7 +862,7 @@ then one of:
     SET K <id> PX t_a
     HSET M status running writer <wid>
     PEXPIRE M t_a+w
-    SET A 1 PX alive_ms
+    HSETEX M PX alive_ms FIELDS 1 alive 1
   EXEC
   UNWATCH                                         -- retried start, or busy
 ```
@@ -867,7 +879,7 @@ MULTI
   [HSET M started 1]                              -- first entry only
   PEXPIRE S t_a
   PEXPIRE M t_a+w
-  SET A 1 PX alive_ms
+  HSETEX M PX alive_ms FIELDS 1 alive 1
   [SET K <id> IFEQ <id> PX t_a]                   -- exclusive run
   HMGET M cancel writer
 EXEC
@@ -877,9 +889,8 @@ EXEC
 a writer from `attach()` on a stream that already has entries.
 
 **`finish(type, data)`**, and the final entry that `spawn()` writes
-(`type` is `stream.end`). Four round trips: the fence check, the write, and
-the second step. A `WATCH` that aborts repeats the first three, and a timeout
-repeats them as for `append`.
+(`type` is `stream.end`). Three round trips: the fence check and the write.
+A `WATCH` that aborts repeats them, and so does a timeout, as for `append`.
 
 ```
 WATCH M
@@ -890,11 +901,9 @@ MULTI
   HSET M status finished
   PEXPIRE S t_d
   PEXPIRE M t_d+w
-  DEL A
   DELEX K IFEQ <id>
   HMGET M cancel writer
 EXEC
-MULTI; HSET M final <entry ID>; PEXPIRE M t_d+w NX; EXEC
 ```
 
 If `HGET` names another writer, `finish()` sends `UNWATCH` in place of the
@@ -906,7 +915,7 @@ If `HGET` names another writer, `finish()` sends `UNWATCH` in place of the
 MULTI
   PEXPIRE S <ttl>
   PEXPIRE M <ttl>+w
-  SET A 1 PX <ttl>
+  HSETEX M PX <ttl> FIELDS 1 alive 1
   [SET K <id> IFEQ <id> PX <ttl>]                 -- exclusive run
 EXEC
 ```
@@ -916,7 +925,7 @@ every `stream_heartbeat_seconds`.
 
 ```
 MULTI
-  SET A 1 PX alive_ms
+  HSETEX M PX alive_ms FIELDS 1 alive 1
   [SET K <id> IFEQ <id> PX t_a]                   -- exclusive run
   HMGET M cancel writer
 EXEC
@@ -946,7 +955,9 @@ GET K
 
 **`follow(stream_id, scope, after)`** and **`sse(...)`**, which reads through
 `follow`'s steps. First, one round trip checks the cursor and reads the first
-page. A cursor at or past the final entry stops here (204). `start()` sends
+page. A cursor at or past the final entry stops here (204): its own entry is
+the final one, or the run has finished and the page is short and holds no
+final entry. `start()` sends
 what `open()` sends, and the producer what `append()` and `finish()` send.
 
 ```
@@ -967,13 +978,14 @@ XREAD BLOCK hb_ms COUNT page STREAMS S <last ID>
 
 The SSE response shortens `hb_ms` to the time left before its deadline.
 
-When a full-length read returns nothing, the reader checks the producer:
+When a full-length read returns nothing, the reader checks the producer, in
+one command:
 
 ```
-MULTI; EXISTS A; HMGET M status started; EXEC
+HMGET M status started alive
 ```
 
-If `A` is gone and the run has not finished, the reader ends the stream for
+If `alive` is gone and the run has not finished, the reader ends the stream for
 the lost producer (section 5.5), then reads again and gets that final entry:
 
 ```
@@ -983,11 +995,9 @@ MULTI
   HSET M status finished
   PEXPIRE S t_d
   PEXPIRE M t_d+w
-  DEL A
   DELEX K IFEQ <id>
   HMGET M cancel writer
 EXEC
-MULTI; HSET M final <entry ID>; PEXPIRE M t_d+w NX; EXEC
 ```
 
 `NOMKSTREAM` is sent once `started` is set, so the `XADD` never recreates an
@@ -1204,7 +1214,7 @@ starting points, to be tuned by benchmark.
 | `stream_maxlen` | 10,000 | Approximate entry cap per stream. |
 | `stream_max_event_bytes` | 65,536 | Largest accepted event. |
 | `stream_heartbeat_seconds` | 15 | SSE ping, `alive` refresh and cancel poll. |
-| `stream_alive_ttl_seconds` | 45 | Lifetime of the `alive` key. |
+| `stream_alive_ttl_seconds` | 45 | Lifetime of meta's `alive` field. |
 | `stream_replay_page` | 100 | Entries per `XREAD`. |
 | `stream_max_readers` | 256 | Concurrent live readers per process. |
 | `stream_max_connection_seconds` | 300 | Longest SSE connection before the client must reconnect and be authorized again. |
@@ -1324,7 +1334,7 @@ it supports the command:
 9. A late `append` after expiry raises and does not recreate the key.
 10. A reconnect storm (many readers, large replay) leaves live delivery on
     other streams within a latency bound.
-11. Stream, meta, `alive` and active slot keys share a Cluster slot, and a
+11. Stream, meta and active slot keys share a Cluster slot, and a
     multi-key transaction on them succeeds. This runs in the one-off Cluster check below,
     not in CI.
 12. Releasing the active slot by a stale writer does not free a newer run.
@@ -1332,7 +1342,8 @@ it supports the command:
     `stream_max_connection_seconds` with no event. A reconnect after the
     session is revoked fails in the application's dependency.
 14. A reader stops after the final entry, and a reconnect at or past it gets
-    a 204, also when meta never recorded the final ID. An append after
+    a 204. A cursor past it, on a stale writer's entry, gets 204 too, and a
+    full first page does not end the read early. An append after
     `finish()` raises `StreamFinished`; an entry a stale writer adds after the
     end reaches no reader.
 15. `spawn()` writes `stream.end` with the right reason when `fn` returns,
@@ -1393,6 +1404,9 @@ it supports the command:
 33. `expires_at` and the connection cap end a response on time with the
     default 15-second heartbeat. A replay page goes out as one chunk, after a
     `retry:` hint between 1 and 3 seconds.
+34. Meta holding only the `alive` field, as a late heartbeat leaves it,
+    counts as no meta: `follow()` and `attach()` answer 404, and `open()`
+    creates the run.
 
 The stream tests run against Redis 8.8, which `ci.yml` already tests. On the
 7.4 entry, one test checks that the probe finds no `XCFGSET`, that the
@@ -1411,7 +1425,7 @@ with at least three primaries and against a Sentinel setup with one replica.
 It is not part of the pipeline, and its scripts and configuration are not
 committed. It must show at least these:
 
-- Test 11 on Cluster: the stream, meta, `alive` and active slot keys share a
+- Test 11 on Cluster: the stream, meta and active slot keys share a
   slot, and the start (`WATCH` and `MULTI`), append, end and first-page
   transactions succeed. Streams in different scopes land on different
   primaries, and each still works.
@@ -1432,8 +1446,10 @@ append, `keepalive()` and `suspend()` (now `extend()`) refresh the slot; that `f
 it; that a retry after the end is not created; that `attach()` and a reader
 work; and that a lost producer is ended and its slot freed. The same check
 found that the first page's `XREAD` failed inside the transaction, which is
-why it is an `XRANGE` now. Different primaries per scope and Sentinel remain
-unchecked. Later changes are not checked again automatically; the
+why it is an `XRANGE` now. Repeated the same day after the heartbeat moved
+into meta (`HSETEX` inside the transactions) and `final` left meta: the same
+results, with the three keys in one slot, and `extend()` checked in place of
+`suspend()`. Different primaries per scope and Sentinel remain unchecked. Later changes are not checked again automatically; the
 check is repeated by hand when a change touches keys, transactions or
 connection handling.
 

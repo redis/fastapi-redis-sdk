@@ -387,7 +387,7 @@ class RedisSettings(BaseSettings):
         default=45,
         gt=0,
         description=(
-            "Lifetime of a producer's heartbeat key.  When it lapses with no "
+            "Lifetime of a producer's heartbeat field.  When it lapses with no "
             "final entry, a reader ends the stream as producer_lost.  Must be "
             "longer than stream_heartbeat_seconds."
         ),

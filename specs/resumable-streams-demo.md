@@ -409,8 +409,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
 | Key | Shown |
 |---|---|
 | `redis:fastapi:stream:{triage:<subject>}:<id>` | `XLEN`, TTL, last entry ID |
-| `redis:fastapi:stream-meta:{triage:<subject>}:<id>` | Status, cancel flag, final entry ID, TTL |
-| `redis:fastapi:stream-alive:{triage:<subject>}:<id>` | Present or not, TTL in ms |
+| `redis:fastapi:stream-meta:{triage:<subject>}:<id>` | Status, cancel flag, the `alive` heartbeat field's TTL in ms, TTL |
 | `redis:fastapi:stream-active:{triage:<subject>}` | The stream ID it names, TTL |
 | Session record | Idle and absolute TTLs |
 | Run quota | Count and TTL of the current window |
@@ -473,7 +472,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   wakes. With only 8 reader slots (section 8.2), this keeps one frozen phone
   from taking a slot for the full connection cap.
 - **Dead producers.** If a planner task dies, for example in a redeploy, its
-  `alive` key expires and the reader writes the `stream.end` entry the planner
+  `alive` heartbeat field expires and the reader writes the `stream.end` entry the planner
   never wrote, with `reason` `producer_lost`. The page shows "The agent stopped
   unexpectedly", and the reconnect gets `204`, so the browser stops retrying.
   The engineer asks again, which starts a new run. The demo has no worker
@@ -623,7 +622,8 @@ Decisions:
 9. **End marker: decided 2026-10-23.** The demo follows the streams design's
    section 5.2. The page listens for `stream.end` and `stream.error` only, and
    reads the outcome from the data, not from the event type. The lens shows
-   meta `status` as `running` or `finished`, and the `final` entry ID.
+   meta `status` as `running` or `finished`. Meta holds no final entry ID
+   (changed 2026-10-26); the stream's last ID shows where it ended.
 10. **Cursor rules: decided 2026-10-23.** The demo follows the streams
     design's section 5.1. The SDK validates cursors at the boundary, compares
     them as numbers, treats no cursor as `0-0`, and refuses a cursor past the

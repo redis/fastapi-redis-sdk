@@ -205,10 +205,7 @@ class TestNames:
 
     def test_keys_share_a_cluster_slot_with_the_active_slot(self) -> None:
         keys = _keys("chat:42", "run1")
-        slots = {
-            key_slot(k.encode())
-            for k in (keys.stream, keys.meta, keys.alive, keys.active)
-        }
+        slots = {key_slot(k.encode()) for k in (keys.stream, keys.meta, keys.active)}
         assert len(slots) == 1
 
     def test_keys_use_the_prefix_setting(self, settings_env: Any) -> None:
@@ -216,7 +213,6 @@ class TestNames:
         keys = _keys("chat:1", "r")
         assert keys.stream == "myapp:stream:{chat:1}:r"
         assert keys.meta == "myapp:stream-meta:{chat:1}:r"
-        assert keys.alive == "myapp:stream-alive:{chat:1}:r"
         assert keys.active == "myapp:stream-active:{chat:1}"
 
 

@@ -490,7 +490,7 @@ Three points follow:
    milliseconds. The delay shows up only in silence: a long tool call, or a
    run waiting for a person. I have corrected the earlier wording above.
 2. **Blocking doubles as the heartbeat.** Inside `ask()`, the producer can loop
-   on `XREAD BLOCK <heartbeat>`. Each timeout refreshes the `alive` key, so no
+   on `XREAD BLOCK <heartbeat>`. Each timeout refreshes meta's `alive` field, so no
    separate heartbeat task is needed while waiting.
 3. **The cost to watch is held connections.** A person may take minutes to
    answer, and each waiting run holds one Redis connection. Polling the control

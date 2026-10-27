@@ -48,7 +48,7 @@ Automatically reads from:
 | `stream_maxlen`                 | `int`               | `10000`           | > 0                                          | Approximate entries kept per stream                                  |
 | `stream_max_event_bytes`        | `int`               | `65536`           | > 0                                          | Largest encoded event                                                |
 | `stream_heartbeat_seconds`      | `float`             | `15`              | > 0                                          | SSE ping, read bound, producer heartbeat                             |
-| `stream_alive_ttl_seconds`      | `float`             | `45`              | > heartbeat                                  | Lifetime of the producer heartbeat key                               |
+| `stream_alive_ttl_seconds`      | `float`             | `45`              | > heartbeat                                  | Lifetime of the producer heartbeat field                             |
 | `stream_replay_page`            | `int`               | `100`             | > 0                                          | Entries per stream read                                              |
 | `stream_max_readers`            | `int`               | `256`             | > 0                                          | Live SSE readers per process                                         |
 | `stream_max_connection_seconds` | `float`             | `300`             | > 0                                          | Longest SSE connection                                               |

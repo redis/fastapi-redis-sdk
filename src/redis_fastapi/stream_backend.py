@@ -7,14 +7,14 @@ is decoupled from the HTTP request: a disconnect never stops it.
 
 Keys, all built from the SDK's ``prefix`` setting::
 
-    <prefix>:stream:{<scope>:<id>}        Stream   entries
-    <prefix>:stream-meta:{<scope>:<id>}   Hash     status, cancel, final, writer, started
-    <prefix>:stream-alive:{<scope>:<id>}  String   producer heartbeat
-    <prefix>:stream-active:<scope>        String   the scope's active run
+    <prefix>:stream:{<scope>}:<id>        Stream   entries
+    <prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, writer, started,
+                                                   alive (a field with its own TTL)
+    <prefix>:stream-active:{<scope>}      String   the scope's active run
 
 The scope is part of every stream key, so a stream is reachable only through
-the scope the application authorized, and the ``{<scope>:<id>}`` hash tag keeps
-a stream's three keys in one Cluster slot.
+the scope the application authorized, and the ``{<scope>}`` hash tag keeps a
+scope's keys in one Cluster slot.
 
 Entry fields: ``t`` (type), ``d`` (payload), ``q`` (writer sequence number) and
 ``f`` (``1`` on the final entry only).
@@ -114,9 +114,12 @@ F_FINAL = "f"
 # Meta fields.
 M_STATUS = "status"
 M_CANCEL = "cancel"
-M_FINAL = "final"
 M_WRITER = "writer"
 M_STARTED = "started"
+# The producer heartbeat: a field with its own TTL, refreshed by every append
+# and heartbeat.  A meta hash holding only this field is the remnant of an
+# expired run (a late heartbeat recreated it), and counts as no meta.
+M_ALIVE = "alive"
 
 STATUS_RUNNING = "running"
 STATUS_FINISHED = "finished"
@@ -237,7 +240,6 @@ def _ms(value: float | timedelta) -> int:
 class _Keys:
     stream: str
     meta: str
-    alive: str
     active: str
 
 
@@ -253,7 +255,6 @@ def _keys(scope: str, stream_id: str) -> _Keys:
     return _Keys(
         stream=f"{prefix}:stream:{tag}",
         meta=f"{prefix}:stream-meta:{tag}",
-        alive=f"{prefix}:stream-alive:{tag}",
         active=_active_key(scope),
     )
 
@@ -520,7 +521,7 @@ class StreamWriter:
             pipe = client.pipeline(transaction=True)
             pipe.pexpire(self._keys.stream, ms)
             pipe.pexpire(self._keys.meta, ms + gone)
-            pipe.set(self._keys.alive, 1, px=ms)
+            _set_alive(pipe, self._keys, ms)
             if self._exclusive:
                 _refresh_slot(pipe, self._keys, self.stream_id, ms)
             await pipe.execute()
@@ -530,8 +531,8 @@ class StreamWriter:
     def keepalive(self) -> AbstractAsyncContextManager[None]:
         """Refresh the producer heartbeat while a block runs.
 
-        Every ``stream_heartbeat_seconds`` it refreshes the heartbeat key and
-        the active slot, and reads the cancel flag.  It covers long tool calls
+        Every ``stream_heartbeat_seconds`` it refreshes the heartbeat and the
+        active slot, and reads the cancel flag.  It covers long tool calls
         during which no append happens.  :meth:`StreamBackend.spawn` runs it
         for you.
         """
@@ -554,7 +555,7 @@ class StreamWriter:
             client = self._backend._client()
             try:
                 pipe = client.pipeline(transaction=True)
-                pipe.set(self._keys.alive, 1, px=_ms(settings.stream_alive_ttl_seconds))
+                _set_alive(pipe, self._keys, _ms(settings.stream_alive_ttl_seconds))
                 if self._exclusive:
                     _refresh_slot(
                         pipe,
@@ -599,7 +600,6 @@ class StreamWriter:
         with stream_span("redis_fastapi.streams.finish"), timed_stream("finish"):
             entry_id, _ = await self._write(type, payload, self._seq + 1, final=True)
             self._final_id = entry_id
-            await self._backend._after_final(self._keys, entry_id)
         record_stream_operation(operation="finish", result="ok")
         return entry_id
 
@@ -692,6 +692,14 @@ def _xadd(
     return args
 
 
+def _set_alive(pipe: Any, keys: _Keys, ms: int) -> None:
+    """Queue a refresh of the producer heartbeat: meta's ``alive`` field.
+
+    ``HSETEX`` gives the field its own TTL and leaves meta's TTL alone.
+    """
+    pipe.execute_command("HSETEX", keys.meta, "PX", ms, "FIELDS", 1, M_ALIVE, "1")
+
+
 def _refresh_slot(pipe: Any, keys: _Keys, stream_id: str, ms: int) -> None:
     """Queue an extension of the active slot, only while it names *stream_id*."""
     pipe.execute_command("SET", keys.active, stream_id, "IFEQ", stream_id, "PX", ms)
@@ -726,10 +734,11 @@ def _build_write(
     pipe.pexpire(keys.stream, ms)
     pipe.pexpire(keys.meta, ms + gone)
     if final:
-        pipe.delete(keys.alive)
+        # No need to clear the heartbeat: once status is finished, nothing
+        # reads it, and the field expires by itself.
         _release_slot(pipe, keys, stream_id)
     else:
-        pipe.set(keys.alive, 1, px=_ms(settings.stream_alive_ttl_seconds))
+        _set_alive(pipe, keys, _ms(settings.stream_alive_ttl_seconds))
         if exclusive:
             # A run that appends keeps its slot even without keepalive().
             _refresh_slot(pipe, keys, stream_id, ms)
@@ -976,16 +985,6 @@ class StreamBackend:
         )
         await pipe.execute()
 
-    async def _after_final(self, keys: _Keys, final_id: str) -> None:
-        """Record the final entry's ID in meta.
-
-        The transaction that wrote the final entry already freed the slot.
-        """
-        try:
-            await self._set_meta(keys, {M_FINAL: final_id})
-        except STORE_ERRORS:
-            logger.warning("Could not record the final entry; readers still stop at it")
-
     # -- writer side ---------------------------------------------------------
 
     async def open(
@@ -1113,7 +1112,7 @@ class StreamBackend:
                         keys.meta,
                         active_ms + _ms(settings.stream_gone_ttl_seconds),
                     )
-                    pipe.set(keys.alive, 1, px=_ms(settings.stream_alive_ttl_seconds))
+                    _set_alive(pipe, keys, _ms(settings.stream_alive_ttl_seconds))
                     await pipe.execute()
                     return True
             except WatchError:
@@ -1164,7 +1163,7 @@ class StreamBackend:
             pipe.get(keys.active)
             meta_raw, last, holder = await pipe.execute()
             meta = {_text(k): _text(v) for k, v in (meta_raw or {}).items()}
-            if not meta:
+            if M_STATUS not in meta:
                 raise StreamNotFound(f"no stream {stream_id} in this scope")
             if meta.get(M_STATUS) == STATUS_FINISHED:
                 raise StreamFinished(f"stream {stream_id} already ended")
@@ -1413,7 +1412,7 @@ class StreamBackend:
                 raise StreamStoreError("could not read the stream") from reply
 
         meta = {_text(k): _text(v) for k, v in (replies[0] or {}).items()}
-        if not meta:
+        if M_STATUS not in meta:
             record_stream_operation(operation="read", result="not_found")
             raise StreamNotFound(f"no stream {stream_id} in this scope")
         exists = bool(replies[1])
@@ -1430,26 +1429,31 @@ class StreamBackend:
         own_fields: dict[str | None, str | None] = {}
         if own and not isinstance(own, Exception):
             own_fields = {_text(k): _text(v) for k, v in own[0][1].items()}
-        final = meta.get(M_FINAL)
-        # Meta records the final ID in a second step that can fail; the
-        # cursor's own entry carries the end marker either way.
-        if (final is not None and cursor >= parse_cursor(final)) or own_fields.get(
-            F_FINAL
-        ) == "1":
+        if own_fields.get(F_FINAL) == "1":
             record_stream_operation(operation="read", result="finished")
-            return None
+            return None  # the cursor is the final entry
         if _history_lost(info, cursor, own_present=bool(own_fields)):
             record_stream_operation(operation="read", result="expired")
             raise StreamExpired(
                 "entries after the cursor were removed; reload from the source"
             )
+        first_reply = replies[-1]
+        first = [] if isinstance(first_reply, Exception) else list(first_reply)
+        if (
+            meta.get(M_STATUS) == STATUS_FINISHED
+            and len(first) < page
+            and not any(_to_entry(i, f)[0].final for i, f in first)
+        ):
+            # The run ended, and everything after the cursor fits in one page
+            # with no final entry in it: the cursor is past the final entry,
+            # where at most a stale writer's one entry can follow.
+            record_stream_operation(operation="read", result="finished")
+            return None
 
         last_seq: int | None = 0 if cursor == _START else None
         if own_fields:
             seq_text = own_fields.get(F_SEQ)
             last_seq = int(seq_text) if seq_text else None
-        first_reply = replies[-1]
-        first = [] if isinstance(first_reply, Exception) else list(first_reply)
         record_stream_operation(
             operation="read", result="started" if cursor == _START else "resumed"
         )
@@ -1547,12 +1551,10 @@ class StreamBackend:
         A producer whose heartbeat lapsed with no final entry will never end
         the stream, so the reader writes the final entry it never wrote.
         """
-        keys = plan.keys
         try:
-            pipe = self._client().pipeline(transaction=True)
-            pipe.exists(keys.alive)
-            pipe.hmget(keys.meta, [M_STATUS, M_STARTED])
-            alive, (status, started) = await pipe.execute()
+            status, started, alive = await self._client().hmget(
+                plan.keys.meta, [M_STATUS, M_STARTED, M_ALIVE]
+            )
         except STORE_ERRORS:
             return "quiet"
         status = _text(status)
@@ -1608,7 +1610,6 @@ class StreamBackend:
         if final_id is None:
             return None
         record_stream_operation(operation="producer_lost", result="ok")
-        await self._after_final(keys, final_id)
         return final_id
 
     # -- readers and lifecycle -----------------------------------------------

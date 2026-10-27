@@ -643,46 +643,53 @@ Stream; and the events route, on any API process, reads that stream. The
 producer and the reader share nothing but Redis, so a dropped connection ends
 only its reader, and the run goes on.
 
+The first diagram shows the producing side. The start request takes the
+active slot, starts the producer task and returns. The producer task then
+writes each event, and last the final entry.
+
 ```mermaid
 sequenceDiagram
-    participant B as Browser (EventSource)
+    participant B as REST client
     participant A as API process
     participant P as Producer task
     participant R as Redis
 
     B->>A: POST /runs (stream_id)
-    A->>R: SET active slot NX, create meta, heartbeat
+    A->>R: take the active slot, create meta
     A->>P: spawn()
     A-->>B: 202 with stream_id
 
     loop each event
-        P->>R: MULTI: XADD IDMP, EXPIRE, heartbeat, read cancel flag
+        P->>R: XADD entry, refresh TTL and heartbeat
     end
+    P->>R: XADD final entry, status finished, release slot
+```
+
+The second diagram shows the consuming side. The reader replays the entries
+already in the stream, then follows new ones, with the same `XREAD`. When the
+connection drops, the browser reconnects with the last entry ID it got, and
+the reader starts after it.
+
+```mermaid
+sequenceDiagram
+    participant B as Rest client
+    participant A as API process
+    participant R as Redis
 
     B->>A: GET /events
-    A->>R: MULTI: meta, XINFO STREAM, first page
-    A-->>B: 200, replay, then live events (id: entry ID)
+    A->>R: read meta and first page
+    A-->>B: 200, replayed entries
     loop until the final entry
         A->>R: XREAD BLOCK after cursor
-        R-->>A: new entries, or none (ping)
-        A-->>B: events, or ": ping"
+        R-->>A: new entries
+        A-->>B: events (id: entry ID)
     end
 
     Note over B,A: connection drops, the run goes on
-    B->>A: GET /events, Last-Event-ID: cursor
-    A->>R: checks, first page after the cursor
-    A-->>B: only the entries after the cursor
-
-    P->>R: final entry (f=1), status finished, release slot
+    B->>A: GET /events, Last-Event-ID: entry ID
+    A->>R: read meta and first page after the entry ID
+    A-->>B: 200, only the entries after it
     A-->>B: final event, then close
-    B->>A: GET /events, Last-Event-ID: final
-    A-->>B: 204, EventSource stops
-
-    opt producer dies
-        Note over R: heartbeat key lapses
-        A->>R: reader writes stream.end (producer_lost)
-        A-->>B: final event, then close
-    end
 ```
 
 Four rules hold this together:

@@ -276,10 +276,10 @@ lets that write finish.
 
 ## Producers that stop
 
-A producer keeps a short-lived heartbeat key in Redis, which every append and
-every heartbeat refreshes. When a reader has waited a full heartbeat with no
-new entry, it checks that key. If the key has lapsed and the stream has no
-final event, the producer is gone, and the reader writes the final event the
+A producer keeps a short-lived heartbeat in Redis, an `alive` field in the
+run's metadata hash with its own TTL, which every append and every heartbeat
+refreshes. When a reader has waited a full heartbeat with no new entry, it
+checks that field. If the field has lapsed and the stream has no final event, the producer is gone, and the reader writes the final event the
 producer never wrote: `stream.end` with `{"reason": "producer_lost"}`. Every
 reader then stops, and reconnects get `204` instead of waiting again.
 
@@ -417,8 +417,7 @@ Every key uses the SDK's `prefix` setting (`REDIS_PREFIX`, default
 
 ```
 <prefix>:stream:{<scope>}:<id>        Stream   the events
-<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, final, writer, started
-<prefix>:stream-alive:{<scope>}:<id>  String   the producer heartbeat
+<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, writer, started, alive
 <prefix>:stream-active:{<scope>}      String   the scope's active run
 ```
 
@@ -426,7 +425,9 @@ The `{<scope>}` hash tag keeps a scope's keys in one Cluster slot, so one
 transaction starts a run and takes the slot, and one transaction ends it and
 frees the slot. It also puts all of a scope's runs on one shard, so make the
 scope one resource, such as a chat, and not one value for the whole
-application. The metadata hash outlives the stream by `stream_gone_ttl_seconds`,
+application. The `alive` field in the metadata hash is the producer heartbeat;
+it has its own TTL, `stream_alive_ttl_seconds`. The metadata hash outlives the
+stream by `stream_gone_ttl_seconds`,
 so a late reconnect gets `410` (expired) instead of `404` (unknown). The prefix
 must not contain braces.
 
@@ -446,7 +447,7 @@ Every setting is an environment variable prefixed `REDIS_`, so
 | `stream_maxlen`                 | `10000`  | Approximate entries kept per stream                                  |
 | `stream_max_event_bytes`        | `65536`  | Largest encoded event                                                |
 | `stream_heartbeat_seconds`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |
-| `stream_alive_ttl_seconds`      | `45`     | Lifetime of the producer heartbeat key; longer than the heartbeat    |
+| `stream_alive_ttl_seconds`      | `45`     | Lifetime of the producer heartbeat field; longer than the heartbeat  |
 | `stream_replay_page`            | `100`    | Entries per read                                                     |
 | `stream_max_readers`            | `256`    | Live SSE readers per process                                         |
 | `stream_max_connection_seconds` | `300`    | Longest SSE connection before the client reconnects                  |
