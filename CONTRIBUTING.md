@@ -260,23 +260,3 @@ replaces packages already attached to the release, and updates a bump pull
 request already open. Re-running the bump job also rebuilds its pull request from
 the latest branch, which resolves conflicts in `uv.lock`.
 
-
-### Explicit streaming integration
-
-`tests/integration/test_stream_injection.py` exercises injected redis-py clients,
-app-specific configuration, HTTP replay and lifecycle cleanup. Standalone uses
-`REDIS_URL`. To include a disposable multi-primary OSS Cluster or a sharded
-Enterprise database endpoint, explicitly set `STREAMS_TEST_CLUSTER_URL` or
-`STREAMS_TEST_ENTERPRISE_URL`, respectively:
-
-```bash
-uv run pytest tests/integration/test_stream_injection.py --no-cov -rs
-```
-
-Each supplied endpoint is probed independently. Missing endpoints are reported
-as skips, not passing qualification. Tests delete only their random `injected:`
-namespace. Their blocking-read synchronization uses `CLIENT LIST`, so the test
-identity needs permission for that command in addition to streaming operations.
-Use disposable test databases; do not supply production endpoints. These tests
-do not qualify failover, resharding, Sentinel, sustained capacity or real-network
-HTTP disconnects.

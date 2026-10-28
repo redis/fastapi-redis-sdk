@@ -574,47 +574,27 @@ whole process. Raises `StreamConfigurationError` when streams are not set up.
 ### `add_redis_streams()` / `FastAPIRedis.streams()`
 
 ```python
-FastAPIRedis(app).lifespan().streams(backend=None, coder=None, **options)
+FastAPIRedis(app).lifespan().streams(coder=None)
 # or, without the builder:
-add_redis_streams(app, backend=None, coder=None, **options)
+add_redis_streams(app, coder=None)
 ```
 
 | Argument | Purpose |
 |---|---|
-| `backend` | A `StreamBackend` the application built on its own clients. Without one, the backend is built on the SDK's pool. |
 | `coder` | Serializer for event payloads. Defaults to `JsonableCoder`: JSON that also takes Pydantic models, dataclasses and datetimes. |
-| `**options` | `StreamBackend` options, such as `key_prefix` or `max_readers`. |
 
-Creates the backend, or registers `backend`, then registers one handler for `StreamError` that turns
+Creates the backend, registers one handler for `StreamError` that turns
 stream errors into status codes, and marks the app so the lifespan detects
-server support at startup and cancels spawned producers at shutdown. An app
-without the lifespan enters `async with backend` itself. A
+server support at startup and cancels spawned producers at shutdown. A
 `StreamError` handler the application set first is kept, and one it sets for a
 subclass wins for that subclass. Calling it twice is a no-op. Raises
 `StreamConfigurationError` when the prefix contains braces,
-`stream_alive_ttl` is not longer than `stream_heartbeat_interval`,
-`socket_timeout` is not longer than `stream_heartbeat_interval`, `backend` comes
-with `coder` or options, or the app already has a different backend.
+`stream_alive_ttl` is not longer than `stream_heartbeat_interval`, or
+`socket_timeout` is not longer than `stream_heartbeat_interval`.
 
 ---
 
 ## `StreamBackend`
-
-```python
-StreamBackend(client, *, blocking_client=None, coder=None, key_prefix=None,
-              active_ttl=None, done_ttl=None, gone_ttl=None, maxlen=None,
-              max_event_bytes=None, heartbeat_interval=None, alive_ttl=None,
-              replay_page=None, max_readers=None, max_connection_duration=None,
-              read_retry_window=None, send_timeout=None)
-```
-
-`client` is an async `Redis` or `RedisCluster` client, or a callable that
-returns one. `blocking_client` serves the blocking reads alone; it must not
-share `client`'s pool. Each other option overrides the setting of the same name
-with a `stream_` prefix, and `key_prefix` overrides `prefix`. The settings are
-read once, for the options left out. Durations are whole seconds or a
-`timedelta`. `async with backend` starts and stops it. It never closes its
-clients.
 
 | Method | Purpose |
 |---|---|

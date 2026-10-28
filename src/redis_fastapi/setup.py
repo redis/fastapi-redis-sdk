@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from redis_fastapi.rate import Rate
     from redis_fastapi.ratelimit import Identifier, OnLimitExceeded, SkipWhen
     from redis_fastapi.sessions import CookieSpec, Session
-    from redis_fastapi.stream_backend import StreamBackend
     from redis_fastapi.types import Challenge, Coder
 
 
@@ -203,13 +202,7 @@ class FastAPIRedis:
         )
         return self
 
-    def streams(
-        self,
-        *,
-        backend: StreamBackend | None = None,
-        coder: type[Coder] | None = None,
-        **backend_options: Any,
-    ) -> FastAPIRedis:
+    def streams(self, *, coder: type[Coder] | None = None) -> FastAPIRedis:
         """Enable resumable streams.
 
         Creates the application's one :class:`~redis_fastapi.StreamBackend`,
@@ -222,19 +215,13 @@ class FastAPIRedis:
         Calling this method more than once on the same app is a no-op.
 
         Args:
-            backend: A ready-made backend, for an application that owns its
-                Redis clients.  ``.lifespan()``, if used, starts and stops it;
-                otherwise enter ``async with backend`` in your own lifespan.
             coder: Serializer for event payloads.  Defaults to
                 :class:`~redis_fastapi.types.JsonableCoder`, JSON that also
                 takes Pydantic models, dataclasses and datetimes.
-            **backend_options: Passed to :func:`add_redis_streams` -
-                ``key_prefix``, ``active_ttl``, ``heartbeat_interval`` and the
-                other :class:`~redis_fastapi.StreamBackend` options.
         """
         from redis_fastapi.streams import add_redis_streams
 
-        add_redis_streams(self._app, backend=backend, coder=coder, **backend_options)
+        add_redis_streams(self._app, coder=coder)
         return self
 
     def otel(self) -> FastAPIRedis:

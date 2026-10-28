@@ -76,82 +76,6 @@ The check confirms the command set, not the patch release. Redis 8.6.0 and
 
 ---
 
-## Your own clients and options
-
-An application, or an SDK built on this one such as Redis Iris, may own its
-Redis clients and configuration. Build the backend on those clients and
-register it:
-
-```python
-from contextlib import asynccontextmanager
-
-from fastapi import Depends, FastAPI, Request
-from redis.asyncio import Redis
-from redis_fastapi import FastAPIRedis, StreamBackend, StreamBackendDep
-
-redis_url = "redis://localhost:6379/0"
-commands = Redis.from_url(redis_url, max_connections=16, socket_timeout=30)
-readers = Redis.from_url(redis_url, max_connections=256, socket_timeout=30)
-streams = StreamBackend(
-    commands,
-    blocking_client=readers,
-    key_prefix="myapp:sse",
-    max_readers=256,
-)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        async with streams:
-            yield
-    finally:
-        await readers.aclose()
-        await commands.aclose()
-
-
-app = FastAPI(lifespan=lifespan)
-FastAPIRedis(app).streams(backend=streams)
-
-
-@app.get("/chats/{chat_id}/runs/{stream_id}/events",
-         dependencies=[Depends(require_chat_access)])
-async def events(chat_id: str, stream_id: str, request: Request,
-                 backend: StreamBackendDep):
-    return await backend.sse(stream_id, request=request, scope=f"chat:{chat_id}")
-```
-
-`require_chat_access` is your access check, as in the first example.
-
-**Clients.** `StreamBackend` takes an async redis-py `Redis` or `RedisCluster`
-client, or a callable that returns one. It never closes a client it was
-given. `blocking_client` is optional. Without it, the blocking reads share
-`client`'s pool, as with `.streams()`. A blocking client must not share
-`client`'s pool, and its `socket_timeout` must be longer than
-`heartbeat_interval`; the backend refuses to start otherwise. Both clients
-must reach the same database.
-
-**Options.** Each option overrides the setting of the same name with a
-`stream_` prefix: `max_readers` overrides `stream_max_readers`, and
-`key_prefix` overrides `prefix`. Durations are whole seconds or a
-`timedelta`. The backend reads the settings once, when it is built, and only
-for the options you leave out. Give every option and it reads no `REDIS_*`
-variable at all. The same options work without a backend of your own:
-`.streams(key_prefix="myapp:sse")`.
-
-**Starting and stopping.** Use the backend as an async context manager:
-`async with streams` checks the server's support at the start and stops
-spawned producers and live readers at the end. If the app uses `.lifespan()`,
-that lifespan does it for you, so don't also enter the backend yourself. A
-worker without FastAPI can use `async with streams` the same way.
-
-**Two apps.** Each app has its own backend, so two apps in one process can
-use different prefixes and limits. Registering a second, different backend on
-one app raises `StreamConfigurationError`, as does passing options alongside
-a backend. Pass them to the backend instead.
-
----
-
 ## Starting a run
 
 `start()` creates the run, starts your producer on it, and returns its
@@ -732,8 +656,7 @@ events.addEventListener("stream.error", (e) => {
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.
 - **Connections.** Each live reader holds a pool connection for each blocking
-  read, or a `blocking_client` connection if the backend has one. With
-  `REDIS_MAX_CONNECTIONS` set, size the pool for `stream_max_readers` plus
+  read. With `REDIS_MAX_CONNECTIONS` set, size it for `stream_max_readers` plus
   your other traffic. The driver's `socket_timeout` must be longer than
   `stream_heartbeat_interval`; `.streams()` refuses a setup where it is not.
 - **Redis failover.** Replication is asynchronous, so a failover can lose
@@ -746,9 +669,10 @@ events.addEventListener("stream.error", (e) => {
 
 ## Limitations
 
-- **Shared storage settings.** Every backend that reads or writes the same
-  streams, in a worker or an API process, must use the same database, prefix,
-  TTLs, `maxlen` and `max_event_bytes`. The key layout is internal.
+- **FastAPI applications only.** Producers and readers run inside an
+  application set up with `.streams()`. Nothing stops another process from
+  using the same keys, but that is not supported, and the key layout may
+  change.
 - **Producers do not survive a deploy.** A producer started by `spawn()` dies
   with its process. Its readers get `producer_lost`, and the user starts a new
   run.
@@ -787,9 +711,7 @@ must not contain braces.
 Every setting is an environment variable prefixed `REDIS_`, so
 `stream_active_ttl` is `REDIS_STREAM_ACTIVE_TTL`. Durations are whole
 seconds, as everywhere else in the SDK. See
-[Configuration](configuration.md) for how these are loaded. A backend
-option overrides each one: drop the `stream_` prefix, so `max_readers`
-overrides `stream_max_readers`.
+[Configuration](configuration.md) for how these are loaded.
 
 | Setting                          | Default  | Notes                                                                |
 |----------------------------------|----------|----------------------------------------------------------------------|

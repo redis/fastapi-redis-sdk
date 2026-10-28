@@ -240,7 +240,7 @@ async def sse(
     """
     await backend._require_support()
     cursor = select_cursor(request, after)
-    settings = backend._policy
+    settings = get_settings()
 
     credential_left: float | None = None
     if expires_at is not None:
@@ -316,18 +316,28 @@ async def stream_error_handler(request: Request, exc: Exception) -> Response:
     )
 
 
-def _check_socket_timeout(backend: StreamBackend) -> None:
-    """Reject a driver ``socket_timeout`` too short for the blocking reads.
+def check_stream_settings() -> None:
+    """Reject settings the feature cannot work with.
 
     Checked when the feature is enabled, not by ``RedisSettings`` itself, so
-    an application that does not use streams is never affected.  The other
-    checks run when the backend is built.
+    an application that does not use streams is never affected.
 
     Raises:
-        StreamConfigurationError: If the timeout cannot work.
+        StreamConfigurationError: If a setting cannot work.
     """
-    timeout = get_settings().socket_timeout
-    if timeout is not None and timeout <= backend._policy.stream_heartbeat_interval:
+    settings = get_settings()
+    if "{" in settings.prefix or "}" in settings.prefix:
+        raise StreamConfigurationError(
+            "The key prefix must not contain '{' or '}': Redis hashes on the "
+            "first braces in a key, which would put every stream in one slot."
+        )
+    block = settings.stream_heartbeat_interval
+    if settings.stream_alive_ttl <= block:
+        raise StreamConfigurationError(
+            "stream_alive_ttl must be longer than "
+            "stream_heartbeat_interval, or a live producer looks dead."
+        )
+    if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(
             "socket_timeout must be longer than stream_heartbeat_interval, which "
             "bounds each blocking stream read."
@@ -337,57 +347,28 @@ def _check_socket_timeout(backend: StreamBackend) -> None:
 def add_redis_streams(
     app: FastAPI,
     *,
-    backend: StreamBackend | None = None,
     coder: type[Coder] | None = None,
-    **backend_options: Any,
 ) -> StreamBackend:
     """Enable resumable streams on *app*.
 
-    Creates the application's one :class:`StreamBackend` on the SDK's
-    connection pool, or registers *backend*, one the application built on its
-    own clients.  Registers the handler that turns stream errors into status
-    codes, and marks the app so ``redis_lifespan`` starts the backend at
-    startup and stops it at shutdown.  An application that does not use
-    ``redis_lifespan`` enters ``async with backend`` in its own lifespan.
-    Calling it twice returns the same backend.
-
-    Args:
-        app: The FastAPI application.
-        backend: A ready-made backend, for an application that owns its Redis
-            clients.  The backend never closes them.
-        coder: Serializer for event payloads.  Defaults to
-            :class:`~redis_fastapi.types.JsonableCoder`.
-        **backend_options: Passed to :class:`StreamBackend` - ``key_prefix``,
-            ``active_ttl``, ``done_ttl``, ``gone_ttl``, ``maxlen``,
-            ``max_event_bytes``, ``heartbeat_interval``, ``alive_ttl``,
-            ``replay_page``, ``max_readers``, ``max_connection_duration``,
-            ``read_retry_window`` and ``send_timeout``.
+    Creates the application's one :class:`StreamBackend`, registers the
+    handler that turns stream errors into status codes, and marks the app so
+    the lifespan detects server support at startup and stops spawned
+    producers at shutdown.  Calling it twice returns the same backend.
 
     Raises:
-        StreamConfigurationError: If a setting cannot work, if *backend* comes
-            with *coder* or options, or if the app already has another backend.
+        StreamConfigurationError: If a setting cannot work.
     """
-    if backend is not None and (coder is not None or backend_options):
-        raise StreamConfigurationError(
-            "pass coder and options to the StreamBackend you build, not alongside it"
-        )
     existing: StreamBackend | None = getattr(app.state, "_redis_streams", None)
     if existing is not None:
-        if backend is not None and backend is not existing:
-            raise StreamConfigurationError("this app already has a stream backend")
         return existing
-    if backend is not None:
-        app.state._redis_streams_injected = True
-    else:
-        from redis_fastapi.deps import _get_pool_state
+    check_stream_settings()
 
-        backend = StreamBackend(
-            lambda: _get_pool_state(app).get_async_client(),
-            coder=coder,
-            **backend_options,
-        )
-        _check_socket_timeout(backend)
-        app.state._redis_streams_injected = False
+    from redis_fastapi.deps import _get_pool_state
+
+    backend = StreamBackend(
+        lambda: _get_pool_state(app).get_async_client(), coder=coder
+    )
     app.state._redis_streams = backend
     # One handler for the whole family.  Starlette picks the most specific
     # class, so an application's handler for a subclass still wins, and one

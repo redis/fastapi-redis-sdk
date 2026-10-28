@@ -64,10 +64,35 @@ from redis_fastapi.stream_backend import (
 from redis_fastapi.streams import (
     _retry_ms,
     _SSEResponse,
+    check_stream_settings,
     encode_frame,
     select_cursor,
     stream_error_handler,
 )
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("startup"), asyncio.CancelledError()])
+async def test_stream_startup_failure_closes_sdk_pool(
+    failure: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from redis_fastapi.deps import _PoolState
+    from redis_fastapi.lifespan import redis_lifespan
+
+    get_settings.cache_clear()
+    pool = AsyncMock()
+    monkeypatch.setattr(_PoolState, "build_async_pool", lambda: pool)
+    monkeypatch.setattr(
+        "redis_fastapi.lifespan._start_streams", AsyncMock(side_effect=failure)
+    )
+    app = FastAPI()
+    try:
+        with pytest.raises(type(failure)):
+            async with redis_lifespan(app):
+                pytest.fail("startup should fail")
+        pool.aclose.assert_awaited_once()
+        assert app.state._redis.async_pool is None
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -210,7 +235,7 @@ class TestNames:
 
     def test_keys_use_the_prefix_setting(self, settings_env: Any) -> None:
         settings_env(prefix="myapp")
-        keys = _keys("chat:1", "r", prefix="myapp")
+        keys = _keys("chat:1", "r")
         assert keys.stream == "myapp:stream:{chat:1}:r"
         assert keys.meta == "myapp:stream-meta:{chat:1}:r"
         assert keys.active == "myapp:stream-active:{chat:1}"
@@ -347,28 +372,22 @@ class TestProbe:
 class TestCheckStreamSettings:
     def test_defaults_pass(self, settings_env: Any) -> None:
         settings_env()
-        add_redis_streams(FastAPI())
+        check_stream_settings()
 
     def test_prefix_with_braces(self, settings_env: Any) -> None:
         settings_env(prefix="app:{x}")
         with pytest.raises(StreamConfigurationError, match="prefix"):
-            add_redis_streams(FastAPI())
+            check_stream_settings()
 
     def test_heartbeat_key_must_outlive_the_heartbeat(self, settings_env: Any) -> None:
         settings_env(stream_heartbeat_interval=10, stream_alive_ttl=10)
         with pytest.raises(StreamConfigurationError, match="alive"):
-            add_redis_streams(FastAPI())
+            check_stream_settings()
 
     def test_socket_timeout_must_exceed_the_block(self, settings_env: Any) -> None:
         settings_env(socket_timeout=5)
         with pytest.raises(StreamConfigurationError, match="socket_timeout"):
-            add_redis_streams(FastAPI())
-
-    def test_socket_timeout_is_checked_against_the_override(
-        self, settings_env: Any
-    ) -> None:
-        settings_env(socket_timeout=5)
-        add_redis_streams(FastAPI(), heartbeat_interval=2, alive_ttl=6)
+            check_stream_settings()
 
     def test_other_features_never_see_the_checks(self, settings_env: Any) -> None:
         settings_env(socket_timeout=5)
@@ -878,11 +897,7 @@ def _lost_plan() -> Any:
     from redis_fastapi.stream_backend import _ReadPlan
 
     return _ReadPlan(
-        keys=_keys("chat:1", "r1"),
-        stream_id="r1",
-        cursor=(0, 0),
-        last_seq=1,
-        generation=1,  # a backend after its first _start()
+        keys=_keys("chat:1", "r1"), stream_id="r1", cursor=(0, 0), last_seq=1
     )
 
 

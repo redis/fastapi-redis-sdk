@@ -37,7 +37,6 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from redis.asyncio import Redis as AsyncRedis
@@ -54,7 +53,6 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
     StreamBusy,
-    StreamConfigurationError,
     StreamCursorAhead,
     StreamError,
     StreamExpired,
@@ -242,98 +240,25 @@ def _seconds(value: int | timedelta) -> int:
 
 
 @dataclass(frozen=True)
-class _StreamPolicy:
-    """One backend's settings, read once when the backend is built.
-
-    The fields have the names of the ``RedisSettings`` fields they replace.
-    """
-
-    prefix: str
-    stream_active_ttl: int
-    stream_done_ttl: int
-    stream_gone_ttl: int
-    stream_maxlen: int
-    stream_max_event_bytes: int
-    stream_heartbeat_interval: int
-    stream_alive_ttl: int
-    stream_replay_page: int
-    stream_max_readers: int
-    stream_max_connection_duration: int
-    stream_read_retry_window: int
-    stream_send_timeout: int
-
-
-# Options that may be zero.  Every other number must be positive.
-_MAY_BE_ZERO = frozenset({"stream_gone_ttl", "stream_read_retry_window"})
-
-
-def _resolve_policy(key_prefix: str | None, **options: Any) -> _StreamPolicy:
-    """Build a policy from *options*, and from the settings for any left out.
-
-    The settings are read only for a missing option, so a backend given every
-    option reads no environment at all.
-
-    Raises:
-        StreamConfigurationError: If a value cannot work.
-    """
-    settings = None
-
-    def setting(name: str) -> Any:
-        nonlocal settings
-        if settings is None:
-            settings = get_settings()
-        return getattr(settings, name)
-
-    prefix = key_prefix if key_prefix is not None else setting("prefix")
-    if "{" in prefix or "}" in prefix:
-        raise StreamConfigurationError(
-            "The key prefix must not contain '{' or '}': Redis hashes on the "
-            "first braces in a key, which would put every stream in one slot."
-        )
-    values: dict[str, int] = {}
-    for option, value in options.items():
-        name = f"stream_{option}"
-        if value is None:
-            value = setting(name)
-        if isinstance(value, timedelta):
-            value = int(value.total_seconds())
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise StreamConfigurationError(
-                f"{option} must be a whole number, got {value!r}"
-            )
-        if value < (0 if name in _MAY_BE_ZERO else 1):
-            qualifier = "negative" if name in _MAY_BE_ZERO else "zero or negative"
-            raise StreamConfigurationError(
-                f"{option} must not be {qualifier}, got {value}"
-            )
-        values[name] = value
-    if values["stream_alive_ttl"] <= values["stream_heartbeat_interval"]:
-        raise StreamConfigurationError(
-            "alive_ttl must be longer than heartbeat_interval, or a live "
-            "producer looks dead."
-        )
-    return _StreamPolicy(prefix=prefix, **values)
-
-
-@dataclass(frozen=True)
 class _Keys:
     stream: str
     meta: str
     active: str
 
 
-def _active_key(scope: str, prefix: str = "redis:fastapi") -> str:
-    return f"{prefix}:stream-active:{{{scope}}}"
+def _active_key(scope: str) -> str:
+    return f"{get_settings().prefix}:stream-active:{{{scope}}}"
 
 
-def _keys(scope: str, stream_id: str, prefix: str = "redis:fastapi") -> _Keys:
+def _keys(scope: str, stream_id: str) -> _Keys:
     # Every key of a run, and the scope's active slot, hash on the scope, so
     # they share one Cluster slot and one transaction can cover them all.
+    prefix = get_settings().prefix
     tag = f"{{{scope}}}:{stream_id}"
     return _Keys(
         stream=f"{prefix}:stream:{tag}",
         meta=f"{prefix}:stream-meta:{tag}",
-        active=_active_key(scope, prefix),
+        active=_active_key(scope),
     )
 
 
@@ -489,7 +414,7 @@ class StreamWriter:
         self.scope = scope
         self.stream_id = stream_id
         self.created = created
-        self._keys = _keys(scope, stream_id, backend._policy.prefix)
+        self._keys = _keys(scope, stream_id)
         self._writer_id = writer_id
         self._exclusive = exclusive
         self._seq = seq
@@ -594,7 +519,7 @@ class StreamWriter:
         if self._final_id is not None:
             raise StreamFinished(f"stream {self.stream_id} already ended")
         seconds = _seconds(ttl)
-        gone = self._backend._policy.stream_gone_ttl
+        gone = get_settings().stream_gone_ttl
         client = self._backend._client()
         try:
             pipe = client.pipeline(transaction=True)
@@ -628,7 +553,7 @@ class StreamWriter:
                 await beat
 
     async def _beat(self) -> None:
-        settings = self._backend._policy
+        settings = get_settings()
         while True:
             await asyncio.sleep(settings.stream_heartbeat_interval)
             client = self._backend._client()
@@ -682,7 +607,7 @@ class StreamWriter:
     async def _write(
         self, type: str, payload: str, seq: int, *, final: bool
     ) -> tuple[str, bool]:
-        settings = self._backend._policy
+        settings = get_settings()
         keys = self._keys
         ttl = settings.stream_done_ttl if final else settings.stream_active_ttl
         args = _xadd(
@@ -693,7 +618,6 @@ class StreamWriter:
             seq=seq,
             final=final,
             nomkstream=self._started,
-            maxlen=settings.stream_maxlen,
         )
 
         def build(pipe: Any) -> None:
@@ -706,7 +630,6 @@ class StreamWriter:
                 final=final,
                 started=self._started,
                 exclusive=self._exclusive,
-                settings=settings,
             )
 
         # An append checks the fence after the fact, in the same transaction:
@@ -746,7 +669,6 @@ def _xadd(
     seq: int | None,
     final: bool,
     nomkstream: bool,
-    maxlen: int,
 ) -> list[Any]:
     """The ``XADD`` for one entry, shared by every path that writes one.
 
@@ -758,7 +680,7 @@ def _xadd(
     if nomkstream:
         args.append("NOMKSTREAM")
     args += ["IDMP", *idmp]
-    args += ["MAXLEN", "~", str(maxlen), "*"]
+    args += ["MAXLEN", "~", str(get_settings().stream_maxlen), "*"]
     args += [F_TYPE, type, F_DATA, payload]
     if seq is not None:
         args += [F_SEQ, str(seq)]
@@ -800,8 +722,8 @@ def _build_write(
     final: bool,
     started: bool,
     exclusive: bool,
-    settings: _StreamPolicy,
 ) -> None:
+    settings = get_settings()
     gone = settings.stream_gone_ttl
     pipe.execute_command(*args)
     if not started:
@@ -835,7 +757,6 @@ class _ReadPlan:
     stream_id: str
     cursor: Cursor
     last_seq: int | None
-    generation: int
     first: list[tuple[Any, dict[Any, Any]]] = field(default_factory=list)
 
 
@@ -870,10 +791,6 @@ class StreamReader:
         return self
 
     async def __anext__(self) -> StreamEvent:
-        plan = self._plan
-        if plan is not None and plan.generation != self._backend._generation:
-            # The backend restarted: drop what the old lifecycle buffered.
-            await self.aclose()
         while not self._buffer:
             if self._plan is None:
                 raise StopAsyncIteration
@@ -910,103 +827,27 @@ class StreamReader:
 class StreamBackend:
     """Resumable streams backed by Redis.
 
-    There is one instance per application.  ``FastAPIRedis(app).streams()``
-    creates it on the SDK's connection pool, or the application builds one on
-    its own clients and passes it as ``streams(backend=...)``.
-    :data:`~redis_fastapi.deps.StreamBackendDep` returns it.  It holds the
-    tasks started by :meth:`spawn`, the live reader count and the
-    server-support result.
-
-    Each option overrides the setting of the same name with a ``stream_``
-    prefix: *active_ttl* overrides ``stream_active_ttl``.  The settings are
-    read once, here, and only for options left out.  Durations are whole
-    seconds, or a ``timedelta``.
-
-    Use it as an async context manager to start and stop it.  ``redis_lifespan``
-    does so for the backend registered on the app.  The backend never closes
-    the clients it was given.
+    There is one instance per process.  ``FastAPIRedis(app).streams()``
+    creates it, and :data:`~redis_fastapi.deps.StreamBackendDep` returns it.
+    It holds state for the whole process: the tasks started by :meth:`spawn`,
+    the live reader count and the server-support result.
 
     Args:
-        client: An async Redis client, or a callable returning one, so the
-            backend follows a pool that is rebuilt.
-        blocking_client: A client for the blocking reads alone, so live
-            readers do not hold *client*'s connections.  It must not share
-            *client*'s pool, and its ``socket_timeout`` must be longer than
-            *heartbeat_interval*.
+        client: A callable returning the async Redis client, so the backend
+            follows the application's pool.
         coder: Serializer for event payloads.  Defaults to
             :class:`~redis_fastapi.types.JsonableCoder`.
-        key_prefix: Overrides ``prefix``, the key namespace.
-        active_ttl: Overrides ``stream_active_ttl``.
-        done_ttl: Overrides ``stream_done_ttl``.
-        gone_ttl: Overrides ``stream_gone_ttl``.
-        maxlen: Overrides ``stream_maxlen``.
-        max_event_bytes: Overrides ``stream_max_event_bytes``.
-        heartbeat_interval: Overrides ``stream_heartbeat_interval``.
-        alive_ttl: Overrides ``stream_alive_ttl``.
-        replay_page: Overrides ``stream_replay_page``.
-        max_readers: Overrides ``stream_max_readers``.
-        max_connection_duration: Overrides ``stream_max_connection_duration``.
-        read_retry_window: Overrides ``stream_read_retry_window``.
-        send_timeout: Overrides ``stream_send_timeout``.
         capabilities: Shared server-support cache.
-
-    Raises:
-        StreamConfigurationError: If a value cannot work.
     """
 
     def __init__(
         self,
-        client: AsyncClient | Callable[[], AsyncClient],
+        client: Callable[[], AsyncClient],
         *,
-        blocking_client: AsyncClient | None = None,
         coder: type[Coder] | None = None,
-        key_prefix: str | None = None,
-        active_ttl: int | timedelta | None = None,
-        done_ttl: int | timedelta | None = None,
-        gone_ttl: int | timedelta | None = None,
-        maxlen: int | None = None,
-        max_event_bytes: int | None = None,
-        heartbeat_interval: int | timedelta | None = None,
-        alive_ttl: int | timedelta | None = None,
-        replay_page: int | None = None,
-        max_readers: int | None = None,
-        max_connection_duration: int | timedelta | None = None,
-        read_retry_window: int | timedelta | None = None,
-        send_timeout: int | timedelta | None = None,
         capabilities: _StreamCapabilities | None = None,
     ) -> None:
-        if isinstance(client, (AsyncRedis, AsyncRedisCluster)):
-            self._client: Callable[[], AsyncClient] = lambda: client
-        elif callable(client):
-            self._client = client
-        else:
-            raise StreamConfigurationError(
-                "client must be an async Redis client or a callable returning one"
-            )
-        if blocking_client is not None and not isinstance(
-            blocking_client, (AsyncRedis, AsyncRedisCluster)
-        ):
-            raise StreamConfigurationError(
-                "blocking_client must be an async Redis client"
-            )
-        self._policy = _resolve_policy(
-            key_prefix,
-            active_ttl=active_ttl,
-            done_ttl=done_ttl,
-            gone_ttl=gone_ttl,
-            maxlen=maxlen,
-            max_event_bytes=max_event_bytes,
-            heartbeat_interval=heartbeat_interval,
-            alive_ttl=alive_ttl,
-            replay_page=replay_page,
-            max_readers=max_readers,
-            max_connection_duration=max_connection_duration,
-            read_retry_window=read_retry_window,
-            send_timeout=send_timeout,
-        )
-        self._blocking_client = blocking_client
-        self._running = False
-        self._generation = 0
+        self._client = client
         self._coder: type[Coder] = coder or JsonableCoder
         self._caps = capabilities if capabilities is not None else _StreamCapabilities()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -1051,7 +892,7 @@ class StreamBackend:
 
     def _encode(self, data: Any) -> str:
         payload = self._coder.encode(data)
-        limit = self._policy.stream_max_event_bytes
+        limit = get_settings().stream_max_event_bytes
         if len(payload.encode()) > limit:
             raise ValueError(
                 f"event of {len(payload.encode())} bytes exceeds "
@@ -1134,7 +975,7 @@ class StreamBackend:
         expiry.  ``EXPIRE ... NX`` sets a TTL only on a key that has none, so
         it repairs exactly that case and leaves a live meta's TTL alone.
         """
-        settings = self._policy
+        settings = get_settings()
         pipe = self._client().pipeline(transaction=True)
         pipe.hset(keys.meta, mapping=mapping)
         pipe.expire(
@@ -1170,7 +1011,7 @@ class StreamBackend:
         await self._require_support()
         check_name(scope, stream_id)
         sid = stream_id or secrets.token_urlsafe(12)
-        keys = _keys(scope, sid, self._policy.prefix)
+        keys = _keys(scope, sid)
         writer_id = _new_writer_id()
         with stream_span("redis_fastapi.streams.open"), timed_stream("open"):
             try:
@@ -1236,7 +1077,7 @@ class StreamBackend:
             StreamBusy: If the slot names another run.
             StreamStoreError: If the keys kept changing between attempts.
         """
-        settings = self._policy
+        settings = get_settings()
         client = self._client()
         watched = [keys.active, keys.meta] if exclusive else [keys.meta]
         for attempt in range(_WRITE_ATTEMPTS):
@@ -1308,7 +1149,7 @@ class StreamBackend:
         """
         await self._require_support()
         check_name(scope, stream_id)
-        keys = _keys(scope, stream_id, self._policy.prefix)
+        keys = _keys(scope, stream_id)
         client = self._client()
         try:
             pipe = client.pipeline(transaction=True)
@@ -1438,7 +1279,7 @@ class StreamBackend:
         """
         await self._require_support()
         check_name(scope, stream_id)
-        keys = _keys(scope, stream_id, self._policy.prefix)
+        keys = _keys(scope, stream_id)
         try:
             status = _text(await self._client().hget(keys.meta, M_STATUS))
             if status is None:
@@ -1463,9 +1304,7 @@ class StreamBackend:
         await self._require_support()
         check_name(scope)
         try:
-            return _text(
-                await self._client().get(_active_key(scope, self._policy.prefix))
-            )
+            return _text(await self._client().get(_active_key(scope)))
         except STORE_ERRORS as exc:
             raise StreamStoreError("could not read the active run") from exc
 
@@ -1542,11 +1381,10 @@ class StreamBackend:
         as one transaction, so the checks and the first page are one snapshot
         and no trim can fall between them.
         """
-        generation = self._generation
         check_name(scope, stream_id)
         cursor = parse_cursor(after) if after is not None else _START
-        keys = _keys(scope, stream_id, self._policy.prefix)
-        page = self._policy.stream_replay_page
+        keys = _keys(scope, stream_id)
+        page = get_settings().stream_replay_page
 
         def build(pipe: Any) -> None:
             pipe.hgetall(keys.meta)
@@ -1619,7 +1457,6 @@ class StreamBackend:
             stream_id=stream_id,
             cursor=cursor,
             last_seq=last_seq,
-            generation=generation,
             first=first,
         )
 
@@ -1633,15 +1470,13 @@ class StreamBackend:
         No blocking read runs past *deadline*, so a caller that stops there
         stops on time.  The page with the final entry is the last.
         """
-        settings = self._policy
+        settings = get_settings()
         heartbeat_ms = settings.stream_heartbeat_interval * 1000  # BLOCK is in ms
         cursor = plan.cursor
         last_seq = plan.last_seq
         pending = plan.first
         failing_since: float | None = None
         while True:
-            if self._closing or plan.generation != self._generation:
-                return
             if pending:
                 page: list[_Entry] = []
                 for raw_id, raw_fields in pending:
@@ -1670,7 +1505,7 @@ class StreamBackend:
                     continue
                 block_ms = min(block_ms, left_ms)
             try:
-                reply = await self._reader().xread(
+                reply = await self._client().xread(
                     {plan.keys.stream: _format(cursor)},
                     count=settings.stream_replay_page,
                     block=max(1, block_ms),  # BLOCK 0 would wait forever
@@ -1685,8 +1520,6 @@ class StreamBackend:
                 await asyncio.sleep(min(1.0, block_ms / 1000))
                 yield []
                 continue
-            if self._closing or plan.generation != self._generation:
-                return
             pending = _xread_entries(reply)
             if pending:
                 continue
@@ -1744,7 +1577,7 @@ class StreamBackend:
         appended has no stream yet, and gets one holding only the end.
         Returns ``None`` when the stream is gone.
         """
-        settings = self._policy
+        settings = get_settings()
         keys = plan.keys
         payload = self._encode({"reason": "producer_lost"})
         args = _xadd(
@@ -1755,7 +1588,6 @@ class StreamBackend:
             seq=None,
             final=True,
             nomkstream=started,
-            maxlen=settings.stream_maxlen,
         )
         pipe = self._client().pipeline(transaction=True)
         _build_write(
@@ -1767,7 +1599,6 @@ class StreamBackend:
             final=True,
             started=started,
             exclusive=False,
-            settings=settings,
         )
         replies = await pipe.execute()
         final_id = _text(replies[0])
@@ -1778,76 +1609,13 @@ class StreamBackend:
 
     # -- readers and lifecycle -----------------------------------------------
 
-    def _reader(self) -> AsyncClient:
-        return (
-            self._blocking_client
-            if self._blocking_client is not None
-            else self._client()
-        )
-
-    def _check_clients(self) -> None:
-        command = self._client()
-        reader = self._reader()
-        if self._blocking_client is not None:
-            command_pool = getattr(command, "connection_pool", None)
-            reader_pool = getattr(reader, "connection_pool", None)
-            if command is reader or (
-                command_pool is not None and command_pool is reader_pool
-            ):
-                raise StreamConfigurationError(
-                    "blocking_client must not share client's connection pool"
-                )
-        pool = getattr(reader, "connection_pool", None)
-        kwargs = getattr(pool, "connection_kwargs", None)
-        if not isinstance(kwargs, dict):
-            kwargs = getattr(reader, "connection_kwargs", {})
-        timeout = kwargs.get("socket_timeout") if isinstance(kwargs, dict) else None
-        if timeout is not None and timeout <= self._policy.stream_heartbeat_interval:
-            raise StreamConfigurationError(
-                "the blocking client's socket_timeout must be longer than "
-                "heartbeat_interval, which bounds each blocking read."
-            )
-
-    async def _initialize(self) -> None:
-        """Start a backend on its own clients, with its own support cache.
-
-        Detection is best-effort, as at startup on the SDK pool: an
-        unreachable Redis leaves support unknown, and the first stream call
-        asks again.
-        """
-        if self._running:
-            raise StreamConfigurationError("the stream backend is already running")
-        self._check_clients()
-        self._start(_StreamCapabilities())
-        try:
-            await self.detect()
-        except BaseException:
-            await self.aclose()
-            raise
-
-    async def __aenter__(self) -> StreamBackend:
-        await self._initialize()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.aclose()
-
     def _start(self, capabilities: _StreamCapabilities) -> None:
         """Bind to a freshly built pool.  Called by the lifespan at startup."""
-        if self._running:
-            raise StreamConfigurationError("the stream backend is already running")
         self._caps = capabilities
-        self._generation += 1
         self._closing = False
-        self._running = True
 
     def _reserve_reader(self) -> bool:
-        if self._closing or self._readers >= self._policy.stream_max_readers:
+        if self._closing or self._readers >= get_settings().stream_max_readers:
             return False
         self._readers += 1
         add_stream_readers(1)
@@ -1865,34 +1633,29 @@ class StreamBackend:
         before the connection pool closes.
         """
         self._closing = True
-        try:
-            # Let producers spawned a moment ago start first: a task cancelled
-            # before it runs never writes its final entry.
-            await asyncio.sleep(0)
-            pending = set(self._tasks)
-            self._cancel_unless_ending(pending)
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + _SHUTDOWN_GRACE_SECONDS
-            while pending:
-                _, pending = await asyncio.wait(
-                    pending, timeout=_SHUTDOWN_RETRY_SECONDS
+        # Let producers spawned a moment ago start first: a task cancelled
+        # before it runs never writes its final entry.
+        await asyncio.sleep(0)
+        pending = set(self._tasks)
+        self._cancel_unless_ending(pending)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SHUTDOWN_GRACE_SECONDS
+        while pending:
+            _, pending = await asyncio.wait(pending, timeout=_SHUTDOWN_RETRY_SECONDS)
+            if not pending:
+                break
+            if loop.time() >= deadline:
+                logger.warning(
+                    "%d stream producer(s) did not stop within %.0f s of "
+                    "shutdown; their readers will see producer_lost",
+                    len(pending),
+                    _SHUTDOWN_GRACE_SECONDS,
                 )
-                if not pending:
-                    break
-                if loop.time() >= deadline:
-                    logger.warning(
-                        "%d stream producer(s) did not stop within %.0f s of "
-                        "shutdown; their readers will see producer_lost",
-                        len(pending),
-                        _SHUTDOWN_GRACE_SECONDS,
-                    )
-                    break
-                # On Python 3.10 and 3.11 asyncio.wait_for, which redis-py uses
-                # for socket writes, can lose a cancel that arrives as the write
-                # completes.  Repeat it.
-                self._cancel_unless_ending(pending)
-        finally:
-            self._running = False
+                break
+            # On Python 3.10 and 3.11 asyncio.wait_for, which redis-py uses
+            # for socket writes, can lose a cancel that arrives as the write
+            # completes.  Repeat it.
+            self._cancel_unless_ending(pending)
 
     def _cancel_unless_ending(self, tasks: set[asyncio.Task[None]]) -> None:
         """Cancel spawned producers, except one already writing its final entry.
