@@ -290,14 +290,24 @@ reader then stops, and reconnects get `204` instead of waiting again.
 
 - **Long tool calls.** `spawn()` runs `writer.keepalive()` around your
   producer. If you run a producer yourself, wrap long waits in
-  `async with writer.keepalive():`.
+  `async with writer.keepalive():`. Each heartbeat renews the running stream's
+  payload and metadata retention as well as liveness and its owned active
+  slot, so history stays available while the producer waits without appending.
 - **Slow waits.** `writer.extend(ttl)` keeps the stream, the heartbeat and
-  the active slot for `ttl` seconds, for a run that waits on something slow.
+  its owned active slot for at least `ttl` seconds. Later heartbeats preserve
+  that longer deadline. Renewal checks ownership and running state before
+  committing: a replaced writer is fenced, finished retention is left alone,
+  and missing history is never recreated.
 - **Another process continues.** `streams.attach(stream_id, scope=...)`
   returns a writer that continues the run's sequence numbers. The old writer is
   fenced: its next append or heartbeat raises `StreamFenced`, and at most that
   one append lands after the takeover. Its `finish()` raises `StreamFenced`
   before it writes, so it can never end the new writer's run.
+
+Keep `stream_heartbeat_interval` comfortably below both `stream_active_ttl`
+and `stream_alive_ttl`: renewal cannot recover keys that expire before the
+next heartbeat. An ordinary append resets retention to `stream_active_ttl`;
+the longer deadline from `extend()` is preserved during waits without appends.
 
 A reader that cannot write, because its Redis ACL is read-only, sends a
 `stream.error` event with code `producer_lost` and closes instead.
@@ -715,7 +725,7 @@ seconds, as everywhere else in the SDK. See
 
 | Setting                          | Default  | Notes                                                                |
 |----------------------------------|----------|----------------------------------------------------------------------|
-| `stream_active_ttl`              | `600`    | TTL of a running stream, refreshed by every append                   |
+| `stream_active_ttl`              | `600`    | TTL of a running stream, refreshed by appends and producer heartbeats                   |
 | `stream_done_ttl`                | `120`    | How long a finished stream stays readable                            |
 | `stream_gone_ttl`                | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
 | `stream_maxlen`                  | `10000`  | Approximate entries kept per stream                                  |

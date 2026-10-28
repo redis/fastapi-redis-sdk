@@ -885,47 +885,41 @@ class TestProducerHeartbeat:
             for _ in range(5):
                 await asyncio.sleep(0)
 
-    async def test_a_beat_refreshes_the_heartbeat(
-        self, settings_env: Callable[..., None], fast_heartbeat: None
+    @pytest.mark.parametrize("exclusive", [False, True])
+    async def test_a_beat_renews_retention(
+        self,
+        settings_env: Callable[..., None],
+        fast_heartbeat: None,
+        monkeypatch: pytest.MonkeyPatch,
+        exclusive: bool,
     ) -> None:
         settings_env()
-        client = _Client([True, [None, "w"]])
-        await self._beats(_owned_writer(_started_backend(client), exclusive=False))
-        assert client.pipes
-        keys = _keys("chat:1", "r1")
-        for pipe in client.pipes:
-            assert pipe.commands == [
-                ("HSETEX", keys.meta, "EX", 45, "FIELDS", 1, "alive", "1"),
-                ("HMGET", keys.meta, ["cancel", "writer"]),
-            ]
-
-    async def test_a_beat_refreshes_the_active_slot(
-        self, settings_env: Callable[..., None], fast_heartbeat: None
-    ) -> None:
-        settings_env()
-        client = _Client([True, True, [None, "w"]])
-        await self._beats(_owned_writer(_started_backend(client), exclusive=True))
-        keys = _keys("chat:1", "r1")
-        assert client.pipes[0].find("SET") == (
-            "SET",
-            keys.active,
-            "r1",
-            "IFEQ",
-            "r1",
-            "EX",
-            600,
-        )
+        writer = _owned_writer(_started_backend(_Client([])), exclusive=exclusive)
+        renew = AsyncMock(return_value=False)
+        monkeypatch.setattr(writer, "_renew", renew)
+        await self._beats(writer)
+        assert renew.await_count > 0
+        assert all(call.args == (600_000, 45_000) for call in renew.await_args_list)
 
     async def test_a_beat_that_finds_another_writer_writes_no_end(
-        self, settings_env: Callable[..., None], fast_heartbeat: None
+        self,
+        settings_env: Callable[..., None],
+        fast_heartbeat: None,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         settings_env()
-        client = _Client([True, True, [None, "someone-else"]])
+        client = _Client([])
         backend = _started_backend(client)
         writer = _owned_writer(backend, exclusive=True)
 
+        async def fenced(*args: Any) -> bool:
+            writer._fenced = True
+            raise StreamFenced("replaced")
+
+        monkeypatch.setattr(writer, "_renew", fenced)
+
         async def quiet(writer: StreamWriter) -> None:
-            await asyncio.sleep(3600)  # a long tool call: no appends
+            await asyncio.sleep(3600)
 
         await asyncio.wait_for(backend.spawn(writer, quiet), 1)
         assert writer._fenced

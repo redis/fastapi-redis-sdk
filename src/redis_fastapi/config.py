@@ -341,7 +341,8 @@ class RedisSettings(BaseSettings):
         default=600,
         gt=0,
         description=(
-            "TTL of a running stream, in seconds.  Every append refreshes it, "
+            "TTL of a running stream, in seconds.  Appends and producer "
+            "heartbeats refresh it, "
             "so a producer killed mid-run leaves a stream that expires by "
             "itself."
         ),

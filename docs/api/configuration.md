@@ -42,7 +42,7 @@ Automatically reads from:
 | `warn_unbounded_cache`          | `bool`              | `True`            | -                                            | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `otel_enabled`                  | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
 | `otel_redis_enabled`            | `bool`              | `False`           | -                                            | Enable redis-py native OTel                                          |
-| `stream_active_ttl`             | `int`               | `600`             | > 0                                          | TTL of a running stream, refreshed by every append                   |
+| `stream_active_ttl`             | `int`               | `600`             | > 0                                          | TTL of a running stream, refreshed by appends and producer heartbeats                   |
 | `stream_done_ttl`               | `int`               | `120`             | > 0                                          | How long a finished stream stays readable                            |
 | `stream_gone_ttl`               | `int`               | `3600`            | >= 0                                         | How long stream metadata outlives the stream                         |
 | `stream_maxlen`                 | `int`               | `10000`           | > 0                                          | Approximate entries kept per stream                                  |
