@@ -95,9 +95,12 @@ jobs:
       matrix:
         # One entry per distinct server-side execution tier the SDK can take:
         #
-        #   8.8 - rate limiting uses the atomic INCREX command (Redis 8.8+).
+        #   8.8 - rate limiting uses the atomic INCREX command (Redis 8.8+),
+        #         and the resumable-stream tests run (Redis 8.6.2+).
         #   7.4 - latest minor of the 7.x line and the SDK's documented server
-        #         floor; rate limiting degrades to the atomic Lua EVAL script.
+        #         floor; rate limiting degrades to the atomic Lua EVAL script,
+        #         and resumable streams turn themselves off: their tests skip
+        #         and their modules are left out of coverage (noxfile.py).
         redis-version: ["8.8", "7.4"]
 
     services:

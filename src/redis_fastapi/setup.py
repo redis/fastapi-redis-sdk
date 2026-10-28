@@ -215,7 +215,9 @@ class FastAPIRedis:
         Calling this method more than once on the same app is a no-op.
 
         Args:
-            coder: Serializer for event payloads.  Defaults to JSON.
+            coder: Serializer for event payloads.  Defaults to
+                :class:`~redis_fastapi.types.JsonableCoder`, JSON that also
+                takes Pydantic models, dataclasses and datetimes.
         """
         from redis_fastapi.streams import add_redis_streams
 

@@ -56,15 +56,14 @@ def _text(value: Any) -> Any:
 async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str, Any]]:
     """The run's Redis keys, read as they are, under the SDK's key layout.
 
-    The layout is documented in the streams guide: the scope and the stream
-    ID form the hash tag, and every key uses the SDK's prefix setting.
+    The layout is documented in the streams guide: the scope is the hash
+    tag of every key, and every key uses the SDK's prefix setting.
     """
     prefix = get_settings().prefix
-    tag = f"{{{scope}:{stream_id}}}"
-    stream = f"{prefix}:stream:{tag}"
-    meta = f"{prefix}:stream-meta:{tag}"
-    alive = f"{prefix}:stream-alive:{tag}"
-    active = f"{prefix}:stream-active:{scope}"
+    tag = f"{{{scope}}}"
+    stream = f"{prefix}:stream:{tag}:{stream_id}"
+    meta = f"{prefix}:stream-meta:{tag}:{stream_id}"
+    active = f"{prefix}:stream-active:{tag}"
 
     keys: list[dict[str, Any]] = []
     if await redis.exists(stream):
@@ -81,8 +80,10 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
             )
         )
     raw_meta = await redis.hgetall(meta)
-    if raw_meta:
-        fields = {_text(k): _text(v) for k, v in raw_meta.items()}
+    fields = {_text(k): _text(v) for k, v in raw_meta.items()}
+    if "status" in fields:  # meta holding only the heartbeat is a remnant
+        # The heartbeat is meta's "alive" field, with its own TTL.
+        (alive,) = await redis.execute_command("HTTL", meta, "FIELDS", 1, "alive")
         keys.append(
             _key(
                 meta,
@@ -90,14 +91,11 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
                 {
                     "status": fields.get("status"),
                     "cancel": int(fields.get("cancel") or 0),
-                    "final": fields.get("final"),
+                    "alive TTL": alive if alive > 0 else None,
                     "TTL": await redis.ttl(meta),
                 },
             )
         )
-    alive_ms = await redis.pttl(alive)
-    if raw_meta or alive_ms > 0:
-        keys.append(_key(alive, "String", {"PTTL": alive_ms} if alive_ms > 0 else None))
     if _text(await redis.get(active)) == stream_id:
         keys.append(
             _key(active, "String", {"value": stream_id, "TTL": await redis.ttl(active)})

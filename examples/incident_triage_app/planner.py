@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from examples.incident_triage_app.tools import Service
-from redis_fastapi import AppendResult, StreamWriter
+from redis_fastapi import StreamWriter
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class _CountingWriter:
         self.stream_id = w.stream_id
         self.deltas = 0
 
-    async def append(self, type: str, data: Any) -> AppendResult:
+    async def append(self, type: str, data: Any) -> str:
         if type == "delta":
             self.deltas += 1
         return await self._w.append(type, data)

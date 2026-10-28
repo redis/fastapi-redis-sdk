@@ -1,6 +1,6 @@
 # Resumable streams: our design compared with PR #89
 
-Date: 2026-10-21, updated 2026-10-23
+Date: 2026-10-21, updated 2026-10-23, 2026-10-26 and 2026-10-27
 Status: analysis, for review
 Inputs: [`resumable-streams-design.md`](resumable-streams-design.md) and
 [PR #89](https://github.com/redis/fastapi-redis-sdk/pull/89)
@@ -39,19 +39,19 @@ the application.
 | **Redis floor** | 8.6.2, because 8.6.0 and 8.6.1 have IDMP defects. Support is detected with `COMMAND INFO XCFGSET DELEX` once per pool, as the rate limiter and sessions detect theirs, so no `INFO` permission is needed; a server without support turns the feature off (503) and the app starts. The probe cannot tell 8.6.0 and 8.6.1 from 8.6.2. | 8.6. Side-effect-free command probes check capabilities, so the SDK needs no `INFO` permission. |
 | **Authorization** | Adopted from the PR on 2026-10-23: the application's FastAPI dependency decides, and the SDK has no `owner`. Like the PR, the stream's name comes from the authorized resource: the key holds the scope and the stream ID, so an ID from another scope names no stream and gets a 404. The SDK compares nothing on read. | The application's FastAPI dependency decides. The stream name is built from the authorized resource (`chat:{chat.id}`). The SDK has no owner or scope check. |
 | **Connection deadline** | Adopted from the PR: `expires_at`, filled from the SDK session's deadline by `session_expiry(request)`, and a 5-minute cap. | An `expires_at` credential deadline, and a 5-minute cap. |
-| **TTL** | Sliding: every append refreshes it (10 min active, 2 min done, `suspend()`). | Absolute, set at `create()`, never extended. A renewal API is deferred. An expired identity is never reused. |
-| **Creation** | `open()` writes meta. The first `XADD` creates the stream; later appends use `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
+| **TTL** | Sliding: every append refreshes it (10 min active, 2 min done, `extend()`). | Absolute, set at `create()`, never extended. A renewal API is deferred. An expired identity is never reused. |
+| **Creation** | `open()` takes the active slot and writes meta in one `WATCH`/`MULTI` transaction (changed 2026-10-26), so a run is never half made. Meta marks a retried start. The first `XADD` creates the stream; later appends use `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
 | **Idempotency keys** | SDK-internal: writer ID plus sequence `q`, and one fixed pair for the final entry. Keys from the application are deferred to phase 3 (section 6.3). `attach()` fences the old writer. | Supplied by the application: a stable `producer` and an `idempotency_key` per logical event. |
-| **Append checks** | One `MULTI`: `XADD` + `EXPIRE` + `HGET` of the cancel flag. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
+| **Append checks** | One `MULTI`: `XADD` + `EXPIRE` + `HMGET` of the cancel flag and the writer. `finish()` alone checks the writer under `WATCH` first (2026-10-26), so a replaced writer cannot end the new writer's run. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
 | **Trimming and gaps** | `XADD MAXLEN ~`. One check before replay gives a 410: `max-deleted-entry-id` for `XDEL`, and `entries-added` against `length` and the first entry for trimming, which does not move that field. No cursor counts as `0-0`. A gap found later, from a jump in `q`, is a `stream.gap` event, and the reader goes on. | Bans untracked `MAXLEN`. The backend trims in a guarded transaction and advances a `history_floor` in meta. |
-| **Terminal state** | Changed 2026-10-23: one end marker, `f=1`, on a final entry whose type and data the application chooses. `finish()` writes it in one append and records `final` in meta. The writer refuses later appends, and readers ignore anything after the first final entry. When the SDK ends a run itself, `spawn()` writes `stream.end` with the reason in its data. | `finish()` writes the final event and seals the log in one `WATCH`/`MULTI` step. Finality is SDK metadata, so the application keeps its own event names. |
-| **404 versus 410** | Adopted 2026-10-23: meta outlives the stream by `stream_expiry_window` (1 h), and a `started` flag tells an expired stream from one not started yet. 410 within the window, 404 after it. | Settled: meta outlives payload by 24 h, so a known expired stream returns 410. |
+| **Terminal state** | Changed 2026-10-23: one end marker, `f=1`, on a final entry whose type and data the application chooses. `finish()` writes it in one append and sets `status=finished` in the same transaction; meta records no final entry ID (changed 2026-10-26). The writer refuses later appends, and readers ignore anything after the first final entry. When the SDK ends a run itself, `spawn()` writes `stream.end` with the reason in its data. | `finish()` writes the final event and seals the log in one `WATCH`/`MULTI` step. Finality is SDK metadata, so the application keeps its own event names. |
+| **404 versus 410** | Adopted 2026-10-23: meta outlives the stream by `stream_gone_ttl` (1 h), and a `started` flag tells an expired stream from one not started yet. 410 within the window, 404 after it. | Settled: meta outlives payload by 24 h, so a known expired stream returns 410. |
 | **Errors after headers** | Decided 2026-10-23: no action field. A passing problem (Redis down past a retry bound, shutdown, the connection cap) closes with no event, and `EventSource` resumes. A stream that is over ends: a reader writes `stream.end` for a dead producer, or a vanished stream gets 410 or 404 on reconnect. Only `stream.error` `credential_expired` remains, as a hint, plus `producer_lost` for a read-only reader. The `stream.` prefix is reserved. | A `redis.stream.control` event with no ID and an action (`reload`, `reconnect`, `reauthenticate`). The `redis.stream.` prefix is reserved. |
 | **Status codes** | 422 bad or repeated cursor, 404, 410 expired or truncated, 409 busy and `cursor_ahead`, 503 overload, 204 for a cursor at or past the final entry. A cursor before trimmed history stays 410, where the PR uses 409 `history_unavailable`. | 422 bad cursor, 409 `history_unavailable` and `cursor_ahead`, 410 expired, 503 overload or Redis unavailable, 204 for a sealed log already read to the end. |
 | **Cursor rules** | Adopted 2026-10-23: handler value, then `Last-Event-ID`, then query; validated at the boundary (no `$`, `+`, `-`, bare `<ms>`, or parts above 2^64 − 1); numeric comparison; `0-0` allowed; duplicates rejected; a cursor above `last-generated-id` gets 409. | Explicit order: handler value, then `Last-Event-ID`, then query. Numeric comparison, `0-0` allowed, duplicate values rejected, a cursor past the tail rejected. |
 | **Admission** | `stream_max_readers` (256) live readers per process; 503 over the limit. | 1,000 subscribers and 256 active streams per process; 503 `stream_capacity_exceeded` over either. |
-| **Slow consumers** | Adopted 2026-10-23: a send timeout (`stream_send_timeout_seconds`, 10 s) closes a reader whose client stops reading. No queue, because the reader pulls from Redis only when it can send. | A 10 s send timeout disconnects a blocked subscriber. |
-| **Key names** | `<prefix>:stream:{<scope>:<id>}` and siblings, with `<prefix>` from the SDK's `prefix` setting, as every other feature uses (adopted 2026-10-23). No layout version. Scopes and IDs are limited to characters that cannot break the hash tag, so no encoding is needed. | `settings.pattern_prefix("streams")`, a layout version (`v1`), base64url-encoded names, and an optional `key_builder`. |
+| **Slow consumers** | Adopted 2026-10-23: a send timeout (`stream_send_timeout`, 10 s) closes a reader whose client stops reading. No queue, because the reader pulls from Redis only when it can send. | A 10 s send timeout disconnects a blocked subscriber. |
+| **Key names** | `<prefix>:stream:{<scope>}:<id>` and siblings, all hashed on the scope so the active slot shares their Cluster slot (changed 2026-10-26), with `<prefix>` from the SDK's `prefix` setting, as every other feature uses (adopted 2026-10-23). No layout version. Scopes and IDs are limited to characters that cannot break the hash tag, so no encoding is needed. | `settings.pattern_prefix("streams")`, a layout version (`v1`), base64url-encoded names, and an optional `key_builder`. |
 
 ## 3. Public API differences in phase 1
 
@@ -63,9 +63,9 @@ the relay settings and the separate blocking client, which section 6 covers.
 | Item | Ours | PR #89 |
 |---|---|---|
 | Fluent setup | `FastAPIRedis.streams()` | `FastAPIRedis(app).streams(...)`; same idea. |
-| Functional setup | None. | `add_redis_streams(app, backend=None, manage_lifespan=True, ...)`. Registers an injected backend; `manage_lifespan=False` leaves startup and shutdown to the application. |
+| Functional setup | `add_redis_streams(app, *, coder=None)`, the same as `.streams()`, as every feature has its `add_redis_*` function. No injected backend and no `manage_lifespan`. | `add_redis_streams(app, backend=None, manage_lifespan=True, ...)`. Registers an injected backend; `manage_lifespan=False` leaves startup and shutdown to the application. |
 | Settings | New `stream_*` fields on `RedisSettings`. | The same fields on `RedisSettings`, plus `StreamSettings`, a model that never reads the environment. Used for direct construction in workers. |
-| Construction | Not public in phase 1. `.streams()` creates one backend per process at startup, and `get_stream_backend` returns it. Only FastAPI applications write and read (design section 2). | `StreamBackend(command_client, settings=...)` with an application-owned client. The backend is an async context manager and has `initialize()` for append-only workers. |
+| Construction | Not supported in phase 1. `StreamBackend` is exported for type hints, and its constructor has the shape of the other backends (`client`, `coder`, `capabilities`), but `.streams()` creates the one backend per process at startup, and `get_stream_backend` returns it. Only FastAPI applications write and read (design section 2). | `StreamBackend(command_client, settings=...)` with an application-owned client. The backend is an async context manager and has `initialize()` for append-only workers. |
 | Dependency | `StreamBackendDep`, `get_stream_backend` | Same names. |
 | Key customization | None. | `key_builder(stream, *, prefix)`. |
 | Packaging | No new extra. | A `streams` extra for FastAPI 0.135+ (`fastapi.sse.EventSourceResponse`). |
@@ -75,20 +75,20 @@ the relay settings and the separate blocking client, which section 6 covers.
 | Item | Ours | PR #89 |
 |---|---|---|
 | Stream identity | The pair (`scope`, `stream_id`). The application builds the scope from the authorized resource; the SDK generates the ID, or the caller passes one (for example an idempotency key). One stream per turn. | One application-chosen `stream` string, for example `chat:{id}`. One stream per chat. |
-| Create | `await open(*, scope, stream_id=None, exclusive=True) -> StreamWriter` | `await create(stream, *, ttl) -> None` |
+| Create | `await start(fn, *, scope, stream_id=None, exclusive=True) -> StreamWriter` opens the run and spawns `fn` only for a new one (2026-10-26). `await open(...)` and `spawn()` remain for a route that does work between them. | `await create(stream, *, ttl) -> None` |
 | Writer object | `StreamWriter` with `stream_id`. Every write goes through it. | None. Every write is a backend method that takes the stream name. |
-| Append | `await writer.append(type, data) -> AppendResult` (entry ID and cancel flag). Data goes through the SDK's `Coder`. | `await append(stream, *, event, data, producer, idempotency_key) -> str` (the cursor). JSON only. |
-| Finish | `await writer.finish(type, data=None) -> str` writes the application's final event with the end marker and returns its ID. Later appends raise `StreamFinished`. | `await finish(stream, *, event, data, producer, idempotency_key)` writes the application's final event and seals. |
+| Append | `await writer.append(type, data) -> str` (the entry ID; changed 2026-10-26, was `AppendResult`). The cancel flag is `writer.cancelled`. Data goes through the SDK's `Coder`; the default, `JsonableCoder` (2026-10-27), also takes Pydantic models, dataclasses and datetimes. | `await append(stream, *, event, data, producer, idempotency_key) -> str` (the cursor). JSON only. |
+| Finish | `await writer.finish(type, data=None) -> str` writes the application's final event with the end marker and returns its ID. Later appends raise `StreamFinished`. A writer that `attach()` replaced raises `StreamFenced` and writes nothing. | `await finish(stream, *, event, data, producer, idempotency_key)` writes the application's final event and seals. |
 | Fail | None. A failure is the data of the final event; `spawn()` writes `stream.end` with `{"reason": "error"}`. | None. |
 | Continue elsewhere | `await attach(stream_id, *, scope) -> StreamWriter` | Not needed: any process can append with the same `producer`. |
-| Extend TTL | `await writer.suspend(ttl)` | None. A renewal API is deferred. |
+| Extend TTL | `await writer.extend(ttl)` (renamed from `suspend()` on 2026-10-26: it pauses nothing). Only the run's own writer may call it. | None. A renewal API is deferred. |
 | Heartbeat | `writer.keepalive()` | None. |
 
 ### 3.3 Reading
 
 | Item | Ours | PR #89 |
 |---|---|---|
-| Core read | `follow(stream_id, *, scope, after=None) -> AsyncIterator[StreamEvent]` | `subscribe(stream, *, after=None)`: an async context manager that yields an async iterator and releases resources on every exit path. |
+| Core read | `await follow(stream_id, *, scope, after=None) -> StreamReader` (changed 2026-10-26). The checks run at the `await`, before any event, as `sse()` runs them before the first byte. The `StreamReader` is an async iterator and its own async context manager, and reads nothing until iterated. | `subscribe(stream, *, after=None)`: an async context manager that yields an async iterator and releases resources on every exit path. |
 | SSE | `backend.sse(stream_id, *, request, scope, after=None, expires_at=None) -> Response`, a plain method. | `await sse_response(request, *, backend, stream, after=None, expires_at=None)`, a module function. The route declares `response_class=EventSourceResponse`. |
 | Session deadline | `session_expiry(request) -> datetime \| None` reads the SDK session's absolute deadline. | None. The application supplies `expires_at` itself. |
 | Event model | `StreamEvent(id, type, data, final)`. `id` is `None` for the reader's own events. | `StreamEvent` with `id`, `event`, `data`, and finality as separate metadata. |
@@ -105,26 +105,26 @@ The PR has no equivalent for any of them.
 
 | Item | Ours | PR #89 |
 |---|---|---|
-| Exceptions | `StreamError`, `StreamNotFound`, `StreamExpired`, `StreamBusy`, `StreamFinished`, `StreamFenced`, `StreamInvalidCursor`, `StreamCursorAhead`, `StreamStoreError`, `StreamConfigurationError`. | A typed `StreamError` family with stable codes: `stream_not_found`, `stream_expired`, `history_unavailable`, `cursor_ahead`, `invalid_stream_request`, `stream_capacity_exceeded`, `stream_unavailable`, and a conflict on `create()`. |
-| Status codes | See section 2. | See section 2. |
+| Exceptions | `StreamError`, `StreamNotFound`, `StreamExpired`, `StreamBusy`, `StreamFinished`, `StreamFenced`, `StreamInvalidCursor`, `StreamInvalidName`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Since 2026-10-26 each class carries its status and a stable `code` (`stream_not_found`, `stream_expired`, `cursor_ahead`, `invalid_stream_name`, `stream_unavailable` and so on), one handler serves the family, and the body is `{"detail", "code"}`; the reader cap answers `stream_capacity_exceeded`. | A typed `StreamError` family with stable codes: `stream_not_found`, `stream_expired`, `history_unavailable`, `cursor_ahead`, `invalid_stream_request`, `stream_capacity_exceeded`, `stream_unavailable`, and a conflict on `create()`. |
+| Status codes | See section 2. A bad scope or stream ID is 422 on every route (2026-10-26); it was a 500 on write and a 404 on read. | See section 2. |
 | Error after headers | Mostly none: the connection closes, or the stream ends with `stream.end`. `event: stream.error`, no `id`, only for `credential_expired` at `expires_at` and for a read-only reader's `producer_lost`. | `event: redis.stream.control`, no `id`, data holds a code and an action. `reauthenticate` at `expires_at`. |
-| Sealed and fully read | 204 for a cursor at or past `final`. Adopted. | 204, which stops `EventSource` retries. |
+| Sealed and fully read | 204 for a cursor at or past the final entry, decided from the stream: the cursor's own entry is final, or the run has finished and nothing after the cursor is final. Adopted. | 204, which stops `EventSource` retries. |
 | Cursor input | Handler `after`, then `Last-Event-ID`, then `?after=`, read by `sse()` itself. Duplicates rejected. Adopted. | Handler `after`, then `Last-Event-ID`, then `?after=`. Duplicates rejected. |
 
 ### 3.6 Configuration
 
 | Setting | Ours | PR #89 |
 |---|---|---|
-| TTL | `stream_ttl_active` 600 s, `stream_ttl_done` 120 s, sliding. | A `ttl` per `create()` call, absolute. |
-| Expiry recognition | `stream_expiry_window` 3,600 s: meta kept that long after the stream. Adopted. | Meta kept 24 h after the payload deadline. |
+| TTL | `stream_active_ttl` 600 s, `stream_done_ttl` 120 s, sliding. Renamed from `stream_ttl_active` and `stream_ttl_done`. On 2026-10-26 every stream duration became a float named `*_seconds`; on 2026-10-28 they went back to `int` seconds with no suffix, as every other SDK duration is (`default_ttl`, `session_idle_ttl`). No real use needs sub-second TTLs. | A `ttl` per `create()` call, absolute. |
+| Expiry recognition | `stream_gone_ttl` 3,600 s, renamed from `stream_expiry_window`: meta kept that long after the stream. Adopted. | Meta kept 24 h after the payload deadline. |
 | Entry cap | `stream_maxlen` 10,000. | 10,000 application events; same. |
 | Event size | `stream_max_event_bytes` 65,536. | 64 KiB; same. |
-| Heartbeat | `stream_heartbeat_seconds` 15. | 15 s keepalive comment; same. |
-| Producer liveness | `stream_alive_ttl_seconds` 45. | None. |
+| Heartbeat | `stream_heartbeat_interval` 15. | 15 s keepalive comment; same. |
+| Producer liveness | `stream_alive_ttl` 45. | None. |
 | Replay page | `stream_replay_page` 100. | Byte and entry budgets per read (section 6). |
 | Admission | `stream_max_readers` 256. | 1,000 subscribers and 256 active streams. |
-| Connection lifetime | `stream_max_connection_seconds` 300, or less with `expires_at`. Adopted. | 5 min, or less with `expires_at`. |
-| Send timeout | `stream_send_timeout_seconds` 10 s. Adopted. | 10 s. |
+| Connection lifetime | `stream_max_connection_duration` 300, or less with `expires_at`. Adopted. | 5 min, or less with `expires_at`. |
+| Send timeout | `stream_send_timeout` 10 s. Adopted. | 10 s. |
 
 ## 4. The trade-offs that matter
 
@@ -213,11 +213,11 @@ Ranked by how much harm the gap does in our design today.
 3. ~~**Credential deadline, connection lifetime and access.**~~ Adopted in the
    design on 2026-10-23 (design section 5.6, decision 2). `sse()` takes
    `expires_at`, `session_expiry(request)` fills it from the SDK session, and
-   `stream_max_connection_seconds` (default 300) caps every connection. The
+   `stream_max_connection_duration` (default 300) caps every connection. The
    SDK dropped `owner`; the application's dependency decides access, and the
    stream key is derived from the authorized scope.
 4. ~~**404 versus 410.*~~* Adopted in the design on 2026-10-23 (design sections
-   6.1 and 7.2, decision 3). Meta outlives the stream by `stream_expiry_window`
+   6.1 and 7.2, decision 3). Meta outlives the stream by `stream_gone_ttl`
    (1 h), and the first append sets `started=1` in meta. A flag, not a payload
    deadline, tells an expired stream from one not started yet, so no process
    compares clocks. Within the window a reconnect gets 410, and after it 404.
@@ -296,44 +296,98 @@ installed redis-py.
     longer than 128 characters. The SSE encoder writes a payload with line
     breaks as several `data:` lines, so a custom `Coder` cannot break a frame
     either.~~
-13. ~~**The redis-py floor.** Settled on 2026-10-23 (design section 11). The
-    writer sends `XADD … IDMP`, `DELEX … IFEQ` and `SET … IFEQ` with
-    `execute_command`, as the session store sends `HSETEX`, so the feature
-    needs no newer redis-py than the SDK's `redis>=6.0.0`. Server support is
-    detected as in item 10, and the feature turns off when it is missing.~~
+13. ~~**The redis-py floor.** Settled on 2026-10-23 (design section 11), and
+    revised on 2026-10-26. The writer sends `XADD … IDMP`, `DELEX … IFEQ` and
+    `SET … IFEQ` with `execute_command`, as the session store sends `HSETEX`.
+    The 2026-10-23 decision kept the SDK's `redis>=6.0.0`, which was wrong:
+    every stream write runs in a transaction, and async `RedisCluster`
+    supports transactions only from redis-py 6.2. The floor is now
+    `redis>=6.2.0`. Server support is detected as in item 10, and the feature
+    turns off when it is missing.~~
 14. ~~**Cluster and Sentinel are claimed but not tested.** Settled on
     2026-10-23 (design section 13). Goal 8 stays. Before the first release, a
     one-off local check runs the stream tests against a Cluster with at least
     three primaries and a Sentinel setup with a failover. It is not part of
     the pipeline and is not committed; its result is recorded in the design,
     and it is repeated by hand when a change touches keys, transactions or
-    connection handling.~~
+    connection handling. A partial check ran on 2026-10-26 (design section
+    13); it found that the reader's first page failed on Cluster, which is
+    fixed.~~
 
-Considered from the PR's API and not suggested: `subscribe()` as a context
-manager in place of `follow()` (deferred item 1 in section 6.1 gets the safety without the API
-change); `sse_response()` as a module function (with FastAPI as the only
-supported host, `sse()` on the backend is enough); `add_redis_streams()`,
-`StreamSettings` and `key_builder` (out of phase 1, design section 2);
+Considered from the PR's API and not suggested: `subscribe()` in place of
+`follow()` (`follow()` now returns a reader that is its own context manager,
+section 5.3); `sse_response()` as a module function (with FastAPI as the only
+supported host, `sse()` on the backend is enough); an injectable backend for
+`add_redis_streams()`, `StreamSettings` and `key_builder` (out of phase 1,
+design section 2);
 `create()` with conflict detection (`open()` covers our case); and 409
 `history_unavailable` in place of our 410 (the client does the same thing for
 both).
 
 ### 5.2 Keep our design
 
-- **Sliding TTL and `suspend()`.** An absolute TTL cannot cover a turn that
+- **Sliding TTL and `extend()`.** An absolute TTL cannot cover a turn that
   waits on a slow tool. It also makes the application manage a new stream
   identity each time a delivery window ends. The stream TTL also stays
   independent of the session TTL (section 4).
 - **Redis's own stream fields** over `history_floor`. `max-deleted-entry-id`
   and `entries-added` against `length` need no trim transaction and no ban on
   `MAXLEN`. The trimming test is conservative, not exact (section 4).
-- **One `MULTI` per append** over `WATCH` with retries.
+- **One `MULTI` per append** over `WATCH` with retries. Only `open()` and
+  `finish()` use `WATCH`, each once per run.
 - **`open()`** over `create()` with a bootstrap entry.
 - **Run control:** `spawn()`, `cancel()`, the active slot and
   `producer_lost`. These are our goals 5 and 6. The PR leaves them to the
   application.
 - **The 8.6.2 floor.** We should tell the PR author about the IDMP fixes in
   8.6.2.
+
+### 5.3 API changes from the implementation review, 2026-10-26
+
+A review of the implementation against this comparison changed the API before
+the first release, while it is still cheap to change. Each item is in the
+design (sections 7 and 8) and the guide.
+
+1. **`start(fn, scope, stream_id)`** opens a run and spawns `fn` only when the
+   run is new. Every caller had to write `if writer.created: spawn(...)`, and
+   one who forgot replaced the real task in the backend's table with one whose
+   first append was fenced. `spawn()` now refuses such a handle with
+   `ValueError`.
+2. **`follow()` is a coroutine** that returns a `StreamReader`. Its checks
+   used to run at the first `anext()`, too late for a WebSocket handler, which
+   must close with a code before it accepts. The reader is an async context
+   manager, which gives the safety of the PR's `subscribe()` without its
+   extra layer.
+3. **`append()` returns the entry ID**, as `finish()` does. `AppendResult` is
+   gone; `writer.cancelled` already held the flag.
+4. **`suspend()` is `extend()`**, and refuses a writer that does not own the
+   stream.
+5. **One `StreamError` handler, with stable codes**, from deferred item 5. The
+   old per-subclass registration replaced any handler the application had set.
+6. **`StreamInvalidName` (422)** for a bad scope or stream ID on every route,
+   and a cursor pattern that accepts only ASCII digits, at most 20 per part.
+7. **Setting names**: `stream_active_ttl`, `stream_done_ttl`
+   and `stream_gone_ttl`, so every duration reads the same way.
+8. **`StreamEvent` has only its four documented fields.** The stored payload
+   no longer rides on it as a private field.
+
+The same review fixed defects behind the API: a cancel or a shutdown no longer
+interrupts a final write that is under way; a replaced writer cannot end the
+new run; a reconnect at the final entry gets 204 even when meta lacks the
+final ID (since 2026-10-26 meta has no such field, and the heartbeat is a meta
+field with its own TTL, not a key); a reader ending a lost producer never recreates an expired stream;
+Redis error text no longer reaches the response body; the SSE `retry:` hint
+is 1 to 3 seconds, not the 15-second heartbeat; a replay page is one send; and
+`expires_at` and the connection cap no longer wait for the next heartbeat.
+
+### 5.4 Default coder, 2026-10-27
+
+`JsonableCoder` is the streams default. Producers often hold Pydantic models
+or dataclasses, on which `JsonCoder` raised `TypeError`. The new coder
+converts what `json.dumps` cannot encode with
+`pydantic_core.to_jsonable_python`, and readers decode plain JSON. Caching and
+sessions keep `JsonCoder`. The PR has no producer side, so this does not
+change the comparison above.
 
 ## 6. Future step: phase 2 and phase 3 differences
 
@@ -346,7 +400,7 @@ These differences do not affect the phase 1 API. We return to them when phase
 |---|---|---|
 | **Reader model** | One `XREAD BLOCK` per reader in phase 1. Shared relay buckets are a later option (section 6.2). | Part of its first release: 16 fixed relay buckets per process. Each bucket runs one multi-stream `XREAD BLOCK` and copies events to bounded per-subscriber queues. Replay runs on separate, bounded reads, at most 8 at a time. |
 | **Replay to live** | No splice: one loop does both. | An explicit handoff: replay up to a boundary, join the relay, drop duplicates in an overlap buffer, restart on overflow. |
-| **Cluster keys** | Hash tag per stream: `{<scope>:<id>}`. | Hash tag per bucket: `{streams:v1:bucket:N}`, chosen by SHA-256 modulo B. Changing B means moving to a new namespace. |
+| **Cluster keys** | Hash tag per scope: `{<scope>}`, shared by the scope's runs and its active slot. | Hash tag per bucket: `{streams:v1:bucket:N}`, chosen by SHA-256 modulo B. Changing B means moving to a new namespace. |
 | **`MAXCOUNT`/`MAXSIZE`** | Phase 2, on Redis 8.10 or later. | Optional. Probes select them where the server accepts them; elsewhere the SDK enforces 256-entry and 1 MiB budgets per read with rotating groups of keys. |
 | **IDMP retention** | Server defaults. `XCFGSET` per stream in phase 2, if the defaults prove too large. | `XCFGSET` at creation: 24 h and 10,000 IDs per producer, the Redis 8.6 maximum. |
 | **Slow-consumer queues** | No queues in model A. | 256 events and 1 MiB per subscriber; past either, the subscriber is disconnected. |
@@ -358,7 +412,9 @@ These differences do not affect the phase 1 API. We return to them when phase
 **Deferred from the second review.** These items came from the second review
 of the PR (2026-10-23). None is critical for phase 1; each waits for phase 2.
 
-1. **`follow()` left open after an early exit.** `follow()` is an async
+1. ~~**`follow()` left open after an early exit.**~~ Done on 2026-10-26
+   (section 5.3, item 2): `follow()` returns a `StreamReader` that is an async
+   context manager. The original note: `follow()` is an async
    generator. A caller that leaves its `async for` early (a WebSocket handler
    that breaks out of the loop, for example) does not close it, so whatever it
    holds stays held until garbage collection. The PR's `subscribe()` is an
@@ -381,17 +437,21 @@ of the PR (2026-10-23). None is critical for phase 1; each waits for phase 2.
    connection cap. The design says a shutdown closes readers but names no
    trigger, and the lifespan's shutdown may only run after those connections
    have closed; this needs checking with uvicorn. Without a trigger, every
-   deploy waits up to `stream_max_connection_seconds`. The PR's shutdown
+   deploy waits up to `stream_max_connection_duration`. The PR's shutdown
    "stops admission, closes subscriptions within a grace period". Fix: on the
    server's shutdown signal, stop admitting readers (503) and close live ones
    with no event, so clients reconnect elsewhere; the docs recommend the
    server's graceful-shutdown timeout.
-4. **Redis failures before the first byte.** The design maps unknown,
+4. ~~**Redis failures before the first byte.**~~ Done: the first round trip
+   raises `StreamStoreError`, answered with 503 `stream_unavailable` and
+   `Retry-After`, and since 2026-10-26 its text is fixed, never Redis's own.
+   The original note: The design maps unknown,
    expired, busy and bad-cursor cases to status codes, but not a Redis outage
    during the reader's first round trip. The PR answers 503
    `stream_unavailable` and never exposes keys or raw Redis exceptions. Fix:
    the same, with `Retry-After`.
-5. **Error bodies with a stable code.** Our handlers return a free-text
+5. ~~**Error bodies with a stable code.**~~ Done on 2026-10-26 (section 5.3,
+   item 5). The original note: Our handlers return a free-text
    `detail`. The PR's typed errors carry stable codes (`stream_not_found`,
    `stream_expired`, `cursor_ahead` and so on). A fetch-based client, or a
    page that probes after `EventSource` fails, can then branch on the code,
@@ -438,8 +498,9 @@ the 8.10 `MAXCOUNT`/`MAXSIZE` caps, or SDK-side budgets that rebuild them on
 older servers. Model A's connection count follows live readers, which is
 roughly concurrent running turns times tabs, not online users. So it scales to
 the tens of thousands of readers most users of this SDK will run. On
-connection-capped managed Redis the limits apply per shard, so our `{<id>}`
-hash tag turns adding shards into the scale-out path without any code change.
+connection-capped managed Redis the limits apply per shard, so our `{<scope>}`
+hash tag turns adding shards into the scale-out path without any code change,
+as long as readers spread over many scopes.
 Model B saves only about readers-per-worker ÷ B connections. With many small
 workers (one per pod), that saving often shrinks to little or nothing, so model
 B earns its complexity only in dense deployments. We therefore commit to a few

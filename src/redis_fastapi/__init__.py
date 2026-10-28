@@ -46,6 +46,7 @@ from redis_fastapi.exceptions import (
     StreamFenced,
     StreamFinished,
     StreamInvalidCursor,
+    StreamInvalidName,
     StreamNotFound,
     StreamStoreError,
     StreamUnsupported,
@@ -88,9 +89,9 @@ from redis_fastapi.sessions import (
 )
 from redis_fastapi.setup import FastAPIRedis
 from redis_fastapi.stream_backend import (
-    AppendResult,
     StreamBackend,
     StreamEvent,
+    StreamReader,
     StreamWriter,
 )
 from redis_fastapi.streams import add_redis_streams, session_expiry
@@ -99,6 +100,7 @@ from redis_fastapi.types import (
     Challenge,
     Coder,
     Encryptor,
+    JsonableCoder,
     JsonCoder,
     KeyBuilder,
     OnReject,
@@ -108,7 +110,6 @@ from redis_fastapi.types import (
 )
 
 __all__ = [
-    "AppendResult",
     "AsyncRedisDep",
     "CacheBackend",
     "CacheBackendDep",
@@ -121,6 +122,7 @@ __all__ = [
     "FastAPIRedis",
     "Identifier",
     "JsonCoder",
+    "JsonableCoder",
     "KeyBuilder",
     "LoadedSession",
     "OnReject",
@@ -161,8 +163,10 @@ __all__ = [
     "StreamFenced",
     "StreamFinished",
     "StreamInvalidCursor",
+    "StreamInvalidName",
     "StreamNotFound",
     "StreamStoreError",
+    "StreamReader",
     "StreamUnsupported",
     "StreamWriter",
     "SyncCacheBackend",

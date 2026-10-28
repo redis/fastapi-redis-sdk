@@ -28,7 +28,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "redis>=6.0.0",
+    "redis>=6.2.0",
     "fastapi>=0.115.0",
     # 2.7.0 for the NoDecode annotation, which config.py needs to accept a
     # comma-separated REDIS_SESSION_PRINCIPAL_KEYS.
@@ -154,6 +154,9 @@ omit = [
     "*/__pycache__/*",
     "*/venv/*",
     "*/.venv/*",
+    # Empty unless the integration session finds a Redis without stream
+    # support (noxfile.py); then the stream modules are not expected to run.
+    "${COV_OMIT_STREAMS-}",
 ]
 
 [tool.coverage.report]

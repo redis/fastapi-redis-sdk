@@ -22,9 +22,7 @@ async def run_agent(writer: StreamWriter) -> None:
 @app.post("/chats/{chat_id}/runs", status_code=202,
           dependencies=[Depends(require_chat_access)])
 async def start(chat_id: str, run_id: str, streams: StreamBackendDep) -> dict:
-    writer = await streams.open(scope=f"chat:{chat_id}", stream_id=run_id)
-    if writer.created:
-        streams.spawn(writer, run_agent)
+    writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_id)
     return {"stream_id": writer.stream_id}
 
 
@@ -80,30 +78,46 @@ The check confirms the command set, not the patch release. Redis 8.6.0 and
 
 ## Starting a run
 
-`open()` creates the run and returns a `StreamWriter`:
+`start()` creates the run, starts your producer on it, and returns its
+`StreamWriter`:
 
 ```python
-writer = await streams.open(scope="chat:42", stream_id=run_id)
+writer = await streams.start(run_agent, scope="chat:42", stream_id=run_id)
 ```
 
 - **`scope`** names what the run belongs to, usually the resource your access
   check just authorized, such as a chat. It is part of every key (see
   [Access](#access)).
 - **`stream_id`** is optional. Let the browser generate one before it sends
-  the request, and a retried `POST` finds the same run: `open()` returns a
-  writer whose `created` is `False`. Start a producer only when `created` is
-  `True`. Without a `stream_id`, the SDK generates one.
+  the request, and a retried `POST` finds the same run: `start()` starts no
+  second producer, and the writer it returns has `created` set to `False`.
+  This holds while the run goes on and for
+  `stream_done_ttl + stream_gone_ttl` after it ends; later,
+  the same ID starts a new run. Without a `stream_id`, the SDK generates one.
 - **One active run per scope.** By default a run takes the scope's slot, and a
   second `open()` in the same scope raises `StreamBusy` (`409`), whose
   `stream_id` names the running one. Pass `exclusive=False` to allow several
   runs at once.
 
 Scopes may use letters, digits and `_ . : -`, up to 200 characters. Stream IDs
-may use letters, digits and `_ -`, up to 64.
+may use letters, digits and `_ -`, up to 64. Any other value raises
+`StreamInvalidName`, answered with `422`, on every method.
+
+To do something between creating the run and starting the producer, such as
+spending a budget only for a new run, call `open()` and `spawn()` yourself:
+
+```python
+writer = await streams.open(scope="chat:42", stream_id=run_id)
+if writer.created:  # False for a retried start: the run already has a producer
+    streams.spawn(writer, run_agent)
+```
+
+`spawn()` refuses a writer whose `created` is `False` with `ValueError`.
 
 ### Producing
 
-`spawn()` runs your producer as a task the backend owns. It keeps a reference
+`spawn()`, which `start()` calls, runs your producer as a task the backend
+owns. It keeps a reference
 so the task is not garbage-collected, refreshes the producer heartbeat while
 it runs, and cancels it at shutdown.
 
@@ -117,12 +131,18 @@ async def run_agent(writer: StreamWriter) -> None:
     await writer.finish("message", {"id": message_id})   # optional
 ```
 
-`append(type, data)` stores one event. The type is any name you choose, up to
+`append(type, data)` stores one event and returns its entry ID. The type is
+any name you choose, up to
 128 characters with no line breaks; names starting with `stream.` belong to
-the SDK. The data goes through the payload coder, JSON by default, and may be
-at most `stream_max_event_bytes`. A timeout or a dropped connection is retried
-with the same idempotency key, so a retried append never stores the event
-twice.
+the SDK. The data goes through the payload coder and may be at most
+`stream_max_event_bytes`. The default coder, `JsonableCoder`, writes JSON and
+also takes Pydantic models, dataclasses and datetimes, which is what agent
+SDKs hand you; readers get plain JSON back. A timeout or a dropped connection
+is retried with the same idempotency key, so a retried append never stores
+the event twice.
+
+For the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph, see
+[Agent SDK recipes](#agent-sdk-recipes).
 
 ### Ending
 
@@ -166,23 +186,32 @@ A cursor must be a full entry ID such as `1700000000000-0`. `0-0` means the
 whole stream. The special IDs `$`, `+` and `-`, a bare timestamp, and a
 repeated header or query parameter are refused with `422`.
 
-The response sends a `: ping` comment every `stream_heartbeat_seconds`, sets
+The response sends a `: ping` comment every `stream_heartbeat_interval`, sets
 `Cache-Control: no-store` and `X-Accel-Buffering: no`, and closes after the
-final event. Never put the SSE route behind `cache()`, and exclude it from
+final event. Its `retry:` hint asks the browser to reconnect after one to three
+seconds, chosen at random per connection, so clients that a deploy closed at
+the same moment do not all return at once. Never put the SSE route behind `cache()`, and exclude it from
 compression middleware that buffers the body.
 
 ### Reading without HTTP
 
-`follow()` is the same read as an async iterator, for code that is not an SSE
-response:
+`follow()` is the same read for code that is not an SSE response. It runs
+every check when you await it, so a WebSocket handler can refuse a bad request
+before it accepts the connection, and it returns a `StreamReader`:
 
 ```python
-async with contextlib.aclosing(streams.follow(stream_id, scope=scope)) as events:
-    async for event in events:
-        print(event.id, event.type, event.data, event.final)
+reader = await streams.follow(stream_id, scope=scope, after=cursor)
+await websocket.accept()
+async with reader:
+    async for event in reader:
+        await websocket.send_json({"id": event.id, "type": event.type,
+                                   "data": event.data})
 ```
 
-Use `aclosing()` if you might leave the loop early, so the read closes at once.
+`async with` closes the read at once if you leave the loop early. A reader
+whose cursor is at or past the final event is empty. A `follow()` reader takes
+no reader slot, so `stream_max_readers` does not limit it; bound such readers
+yourself.
 
 ---
 
@@ -224,7 +253,7 @@ return await streams.sse(stream_id, request=request, scope=scope,
 `session_expiry()` returns the absolute deadline of the SDK session. With
 other credentials, pass your own, for example a JWT's `exp`. At the deadline
 the response sends a `stream.error` event with code `credential_expired` and
-closes. Every connection also closes after `stream_max_connection_seconds`,
+closes. Every connection also closes after `stream_max_connection_duration`,
 with no event. The browser then reconnects through your dependency, so a
 revoked session keeps reading for at most that long.
 
@@ -244,31 +273,300 @@ async def stop(chat_id: str, stream_id: str, streams: StreamBackendDep) -> None:
 `cancel()` sets a flag in Redis and returns `False` if the run had already
 ended. A producer started by `spawn()` in the same process is cancelled at
 once; one in another process sees the flag at its next append or heartbeat. A
-producer you run yourself reads `AppendResult.cancelled` and calls `finish()`.
+producer you run yourself checks `writer.cancelled` after each append and calls
+`finish()`. A cancel that arrives while the producer writes its final event
+lets that write finish.
 
 ---
 
 ## Producers that stop
 
-A producer keeps a short-lived heartbeat key in Redis, which every append and
-every heartbeat refreshes. When a reader has waited a full heartbeat with no
-new entry, it checks that key. If the key has lapsed and the stream has no
-final event, the producer is gone, and the reader writes the final event the
+A producer keeps a short-lived heartbeat in Redis, an `alive` field in the
+run's metadata hash with its own TTL, which every append and every heartbeat
+refreshes. When a reader has waited a full heartbeat with no new entry, it
+checks that field. If the field has lapsed and the stream has no final event, the producer is gone, and the reader writes the final event the
 producer never wrote: `stream.end` with `{"reason": "producer_lost"}`. Every
 reader then stops, and reconnects get `204` instead of waiting again.
 
 - **Long tool calls.** `spawn()` runs `writer.keepalive()` around your
   producer. If you run a producer yourself, wrap long waits in
   `async with writer.keepalive():`.
-- **Slow waits.** `writer.suspend(ttl)` extends the stream, the heartbeat and
-  the active slot, for a run that waits on something slow.
+- **Slow waits.** `writer.extend(ttl)` keeps the stream, the heartbeat and
+  the active slot for `ttl` seconds, for a run that waits on something slow.
 - **Another process continues.** `streams.attach(stream_id, scope=...)`
   returns a writer that continues the run's sequence numbers. The old writer is
   fenced: its next append or heartbeat raises `StreamFenced`, and at most that
-  one append lands after the takeover.
+  one append lands after the takeover. Its `finish()` raises `StreamFenced`
+  before it writes, so it can never end the new writer's run.
 
 A reader that cannot write, because its Redis ACL is read-only, sends a
 `stream.error` event with code `producer_lost` and closes instead.
+
+---
+
+## Agent SDK recipes
+
+Agent SDKs such as the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph
+run the agent loop and give you its events as an async iterator. They have no
+server of their own, so you host them in your FastAPI application, and a
+producer is a short loop that turns their events into appends.
+
+Each recipe below maps its SDK's events to the same four event types, so the
+browser code is the same whichever SDK you use:
+
+| Type          | Data                            | Written with |
+|---------------|---------------------------------|--------------|
+| `delta`       | `{"text": ...}`                 | `append()`   |
+| `tool_call`   | `{"id": ..., "name": ..., "args": ...}` | `append()` |
+| `tool_result` | `{"id": ..., "output": ...}`    | `append()`   |
+| `message`     | `{"text": ...}`, the whole answer | `finish()` |
+
+Each recipe returns a producer for one turn. Start it from your route as any
+other producer:
+
+```python
+@app.post("/chats/{chat_id}/runs/{run_id}", status_code=202,
+          dependencies=[Depends(require_chat_access)])
+async def start(chat_id: str, run_id: str, body: Prompt,
+                streams: StreamBackendDep) -> dict:
+    writer = await streams.start(run_turn(body.text),
+                                 scope=f"chat:{chat_id}", stream_id=run_id)
+    return {"stream_id": writer.stream_id}
+```
+
+Each recipe is also a complete app in
+[`examples/agent_sdks/`](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/agent_sdks),
+with the start, events and cancel routes. These SDKs often rename and reshape
+their events, so check a recipe against the version you run. Checked with
+`openai-agents` 0.24, `pydantic-ai-slim` 2.54, `google-adk` 2.7, and
+`langgraph` 1.2 with `langchain-core` 1.7.
+
+### Rules for every SDK
+
+- **Map events, do not store them whole.** An SDK event often holds the agent
+  and its tools, which no coder can encode. The ones that can be encoded are
+  large: an ADK event is about 1.6 KB for a three-word chunk, and PydanticAI's
+  final event holds the whole message history. Pick the fields the browser
+  needs. Values such as a tool's Pydantic or dataclass result can go in as
+  they are, because the default coder encodes them.
+- **Send deltas, not snapshots.** Every event must fit in
+  `stream_max_event_bytes`. A large tool result, such as retrieved documents,
+  is better sent as a summary.
+- **Cancel works as it is.** `cancel()` cancels the producer task, and the
+  cancel reaches the model call or tool the SDK is waiting on. `spawn()` then
+  writes `stream.end` with `{"reason": "cancelled"}`. This holds for all four
+  SDKs.
+- **Errors end the stream.** An exception from the SDK, such as a provider
+  error, ends the stream with `{"reason": "error", "code": "producer_error"}`.
+- **A pause for a person ends the turn.** When the agent waits for an
+  approval or an answer, end the turn with
+  `finish("turn.interrupted", ...)`, and start the answer as a new turn with a
+  new stream ID. A stream left open while a person decides needs `extend()`
+  against its TTL, and holds the scope's active slot all that time. The
+  LangGraph recipe shows the pattern; the OpenAI Agents SDK
+  (`result.interruptions`), PydanticAI (deferred tools) and ADK (long-running
+  tools) work the same way.
+- **The conversation lives elsewhere.** One stream carries one turn. Keep the
+  conversation in the SDK's own session or checkpoint store.
+
+Not covered in this release: producers in sync code (CrewAI, ADK's sync
+`Runner.run`), and durable execution, where the SDK appends from a Temporal,
+DBOS or Prefect worker. Both need a writer outside the FastAPI process (see
+[Limitations](#limitations)).
+
+### OpenAI Agents SDK
+
+```python
+import json
+
+from agents import Agent, Runner
+from openai.types.responses import ResponseTextDeltaEvent
+
+agent = Agent(name="triage", instructions="...", tools=[latency])
+
+
+def run_turn(prompt: str):
+    async def produce(writer: StreamWriter) -> None:
+        result = Runner.run_streamed(agent, prompt)
+        async for event in result.stream_events():
+            if event.type == "raw_response_event":
+                if isinstance(event.data, ResponseTextDeltaEvent):
+                    await writer.append("delta", {"text": event.data.delta})
+            elif event.type == "run_item_stream_event":
+                if event.name == "tool_called":
+                    call = event.item.raw_item
+                    await writer.append("tool_call", {
+                        "id": call.call_id,
+                        "name": call.name,
+                        "args": json.loads(call.arguments or "{}"),
+                    })
+                elif event.name == "tool_output":
+                    await writer.append("tool_result", {
+                        "id": event.item.raw_item["call_id"],
+                        "output": event.item.output,
+                    })
+        await writer.finish("message", {"text": str(result.final_output)})
+
+    return produce
+```
+
+- Text arrives as raw Responses API events, and tool calls and their results
+  as run items. Every other event can be left out.
+- `result.final_output` is set once the loop ends.
+- When the producer is cancelled, `stream_events()` cancels the run and the
+  tool it waits on. No `result.cancel()` is needed.
+
+### PydanticAI
+
+```python
+from pydantic_ai import (
+    Agent, AgentRunResultEvent, FunctionToolCallEvent, FunctionToolResultEvent,
+    PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta,
+)
+
+agent = Agent(model, tools=[latency])
+
+
+def run_turn(prompt: str):
+    async def produce(writer: StreamWriter) -> None:
+        async with agent.run_stream_events(prompt) as events:
+            async for event in events:
+                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                    if event.part.content:
+                        await writer.append("delta", {"text": event.part.content})
+                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                    await writer.append("delta", {"text": event.delta.content_delta})
+                elif isinstance(event, FunctionToolCallEvent):
+                    await writer.append("tool_call", {
+                        "id": event.part.tool_call_id,
+                        "name": event.part.tool_name,
+                        "args": event.part.args_as_dict(),
+                    })
+                elif isinstance(event, FunctionToolResultEvent):
+                    await writer.append("tool_result", {
+                        "id": event.part.tool_call_id,
+                        "output": event.part.content,
+                    })
+                elif isinstance(event, AgentRunResultEvent):
+                    await writer.finish("message", {"text": event.result.output})
+
+    return produce
+```
+
+- `run_stream_events()` is an async context manager; use it with `async with`.
+- The first text of a reply comes in `PartStartEvent`, and only the rest in
+  `PartDeltaEvent`. Read both, or the answer loses its first chunk.
+- `AgentRunResultEvent` holds the whole message history. Send only its
+  `output`.
+- A tool may return a Pydantic model or a dataclass; the default coder
+  encodes it.
+
+### Google ADK
+
+```python
+from google.adk.agents import LlmAgent
+from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.runners import Runner
+from google.genai import types
+
+runner = Runner(app_name="triage",
+                agent=LlmAgent(name="triage", model=model, tools=[latency]),
+                session_service=session_service)
+
+
+def run_turn(prompt: str, *, user_id: str, session_id: str):
+    async def produce(writer: StreamWriter) -> None:
+        message = types.Content(role="user", parts=[types.Part(text=prompt)])
+        config = RunConfig(streaming_mode=StreamingMode.SSE)
+        answer = ""
+        async for event in runner.run_async(user_id=user_id, session_id=session_id,
+                                            new_message=message, run_config=config):
+            if event.partial:
+                # A chunk of the answer.  The final, non-partial event repeats
+                # the whole text, so only chunks become deltas.
+                parts = event.content.parts if event.content else None
+                for part in parts or []:
+                    if part.text and not part.thought:
+                        await writer.append("delta", {"text": part.text})
+                continue
+            for call in event.get_function_calls():
+                await writer.append("tool_call",
+                                    {"id": call.id, "name": call.name, "args": call.args})
+            for response in event.get_function_responses():
+                await writer.append("tool_result",
+                                    {"id": response.id, "output": response.response})
+            if event.is_final_response() and event.content and event.content.parts:
+                answer = "".join(part.text or "" for part in event.content.parts
+                                 if not part.thought)
+        await writer.finish("message", {"text": answer})
+
+    return produce
+```
+
+- Without `StreamingMode.SSE`, ADK sends no partial events, and the answer
+  arrives in one piece.
+- The last, non-partial event repeats the whole answer. Sending it as a delta
+  would show the answer twice.
+- Leave out `thought` parts unless your interface shows the model's
+  reasoning.
+- The ADK session must exist before the turn starts. Create it in the start
+  route, or keep one per chat.
+
+### LangGraph
+
+```python
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+
+graph = builder.compile(checkpointer=checkpointer)
+
+
+def run_turn(inputs, config=None):
+    async def produce(writer: StreamWriter) -> None:
+        answer = ""
+        async for mode, chunk in graph.astream(inputs, config,
+                                               stream_mode=["messages", "updates"]):
+            if mode == "messages":
+                message, _metadata = chunk
+                if isinstance(message, AIMessageChunk) and message.text:
+                    await writer.append("delta", {"text": message.text})
+                continue
+            if "__interrupt__" in chunk:
+                # The graph waits for a person.  End this turn; the answer
+                # resumes the graph as a new turn, on a new stream.
+                interrupts = [item.value for item in chunk["__interrupt__"]]
+                await writer.finish("turn.interrupted", {"interrupts": interrupts})
+                return
+            for update in chunk.values():
+                for message in (update or {}).get("messages", []):
+                    if isinstance(message, ToolMessage):
+                        await writer.append("tool_result", {
+                            "id": message.tool_call_id, "output": message.content})
+                    elif isinstance(message, AIMessage) and message.tool_calls:
+                        for call in message.tool_calls:
+                            await writer.append("tool_call", {
+                                "id": call["id"], "name": call["name"],
+                                "args": call["args"]})
+                    elif isinstance(message, AIMessage):
+                        answer = message.text
+        await writer.finish("message", {"text": answer})
+
+    return produce
+```
+
+Start a turn with `run_turn({"messages": [("user", text)]}, thread)` and
+resume after an interrupt with `run_turn(Command(resume=answer), thread)`,
+where `thread` is `{"configurable": {"thread_id": chat_id}}`. Each is its own
+run with its own stream ID; the checkpointer carries the graph between them.
+
+- Use the `messages` and `updates` stream modes. Tokens come from `messages`;
+  tool calls, tool results and interrupts from `updates`. Avoid `values`: it
+  sends the whole state after every step.
+- `message.text` joins the text blocks of a message, so it also works for
+  providers that send content as a list of blocks.
+- On Python 3.10, a node must pass its `config` on to the model
+  (`await model.ainvoke(messages, config)`); without it the `messages` mode
+  gets the whole reply at once instead of its tokens. `interrupt()` in an
+  async graph needs Python 3.11 or later.
 
 ---
 
@@ -284,15 +582,20 @@ dependency answers `401` or `403` before the SDK runs.
 | `404`  | No such stream in this scope                                             | `StreamNotFound`          |
 | `409`  | The scope has an active run; the cursor is past the stream's last entry  | `StreamBusy`, `StreamCursorAhead` |
 | `410`  | The stream expired, or entries after the cursor were removed             | `StreamExpired`           |
-| `422`  | A malformed or repeated cursor                                           | `StreamInvalidCursor`     |
+| `422`  | A malformed or repeated cursor; a scope or stream ID outside the rules   | `StreamInvalidCursor`, `StreamInvalidName` |
 | `503`  | Too many live readers; Redis unavailable; the server lacks support       | -, `StreamStoreError`, `StreamUnsupported` |
 
-`StreamError` is the base of every stream exception.
+`StreamError` is the base of every stream exception. The body is
+`{"detail": ..., "code": ...}`, where `code` is a stable name such as
+`stream_not_found`, `stream_expired` or `cursor_ahead` (see the
+[API reference](../api/reference.md#stream-errors) for the full list), and a
+`503` carries `Retry-After`. Branch on `code`, not on `detail`. A handler you
+register for `StreamError`, or for one of its subclasses, takes precedence.
 
 After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:
 
-- **Passing**: Redis down for longer than `stream_read_retry_seconds`, a
+- **Passing**: Redis down for longer than `stream_read_retry_window`, a
   shutdown, the connection cap, a client that stops reading. The response
   closes with no event, and `EventSource` reconnects and resumes from
   `Last-Event-ID`. A shorter Redis failure never reaches the client: the reader
@@ -349,13 +652,13 @@ events.addEventListener("stream.error", (e) => {
 - **Live readers.** At most `stream_max_readers` per process; over the limit a
   new reader gets `503` with `Retry-After`. A reader takes its slot when its
   response starts, and every way the response ends frees it.
-- **Slow clients.** A send that waits longer than `stream_send_timeout_seconds`
+- **Slow clients.** A send that waits longer than `stream_send_timeout`
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.
 - **Connections.** Each live reader holds a pool connection for each blocking
   read. With `REDIS_MAX_CONNECTIONS` set, size it for `stream_max_readers` plus
   your other traffic. The driver's `socket_timeout` must be longer than
-  `stream_heartbeat_seconds`; `.streams()` refuses a setup where it is not.
+  `stream_heartbeat_interval`; `.streams()` refuses a setup where it is not.
 - **Redis failover.** Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
   loss gets `409`; one behind it sees a `stream.gap`.
@@ -375,6 +678,8 @@ events.addEventListener("stream.error", (e) => {
   run.
 - **SSE only.** There is no WebSocket reader; `follow()` is the starting point
   for one.
+- **Async producers only.** A producer in sync code, such as CrewAI or ADK's
+  sync `Runner.run`, has no writer yet.
 
 ---
 
@@ -384,39 +689,44 @@ Every key uses the SDK's `prefix` setting (`REDIS_PREFIX`, default
 `redis:fastapi`):
 
 ```
-<prefix>:stream:{<scope>:<id>}        Stream   the events
-<prefix>:stream-meta:{<scope>:<id>}   Hash     status, cancel, final, writer, started
-<prefix>:stream-alive:{<scope>:<id>}  String   the producer heartbeat
-<prefix>:stream-active:<scope>        String   the scope's active run
+<prefix>:stream:{<scope>}:<id>        Stream   the events
+<prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, writer, started, alive
+<prefix>:stream-active:{<scope>}      String   the scope's active run
 ```
 
-The `{<scope>:<id>}` hash tag keeps a stream's keys in one Cluster slot. The
-metadata hash outlives the stream by `stream_expiry_window`, so a late
-reconnect gets `410` (expired) instead of `404` (unknown). The prefix must not
-contain braces.
+The `{<scope>}` hash tag keeps a scope's keys in one Cluster slot, so one
+transaction starts a run and takes the slot, and one transaction ends it and
+frees the slot. It also puts all of a scope's runs on one shard, so make the
+scope one resource, such as a chat, and not one value for the whole
+application. The `alive` field in the metadata hash is the producer heartbeat;
+it has its own TTL, `stream_alive_ttl`. The metadata hash outlives the
+stream by `stream_gone_ttl`,
+so a late reconnect gets `410` (expired) instead of `404` (unknown). The prefix
+must not contain braces.
 
 ---
 
 ## Settings
 
 Every setting is an environment variable prefixed `REDIS_`, so
-`stream_ttl_active` is `REDIS_STREAM_TTL_ACTIVE`. See
+`stream_active_ttl` is `REDIS_STREAM_ACTIVE_TTL`. Durations are whole
+seconds, as everywhere else in the SDK. See
 [Configuration](configuration.md) for how these are loaded.
 
-| Setting                         | Default  | Notes                                                                |
-|---------------------------------|----------|----------------------------------------------------------------------|
-| `stream_ttl_active`             | `600`    | TTL of a running stream, refreshed by every append                   |
-| `stream_ttl_done`               | `120`    | How long a finished stream stays readable                            |
-| `stream_expiry_window`          | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
-| `stream_maxlen`                 | `10000`  | Approximate entries kept per stream                                  |
-| `stream_max_event_bytes`        | `65536`  | Largest encoded event                                                |
-| `stream_heartbeat_seconds`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |
-| `stream_alive_ttl_seconds`      | `45`     | Lifetime of the producer heartbeat key; longer than the heartbeat    |
-| `stream_replay_page`            | `100`    | Entries per read                                                     |
-| `stream_max_readers`            | `256`    | Live SSE readers per process                                         |
-| `stream_max_connection_seconds` | `300`    | Longest SSE connection before the client reconnects                  |
-| `stream_read_retry_seconds`     | `30`     | How long a reader retries a failing Redis read                       |
-| `stream_send_timeout_seconds`   | `10`     | Longest wait for one send to a client                                |
+| Setting                          | Default  | Notes                                                                |
+|----------------------------------|----------|----------------------------------------------------------------------|
+| `stream_active_ttl`              | `600`    | TTL of a running stream, refreshed by every append                   |
+| `stream_done_ttl`                | `120`    | How long a finished stream stays readable                            |
+| `stream_gone_ttl`                | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
+| `stream_maxlen`                  | `10000`  | Approximate entries kept per stream                                  |
+| `stream_max_event_bytes`         | `65536`  | Largest encoded event                                                |
+| `stream_heartbeat_interval`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |
+| `stream_alive_ttl`               | `45`     | Lifetime of the producer heartbeat field; longer than the heartbeat  |
+| `stream_replay_page`             | `100`    | Entries per read                                                     |
+| `stream_max_readers`             | `256`    | Live SSE readers per process                                         |
+| `stream_max_connection_duration` | `300`    | Longest SSE connection before the client reconnects                  |
+| `stream_read_retry_window`       | `30`     | How long a reader retries a failing Redis read                       |
+| `stream_send_timeout`            | `10`     | Longest wait for one send to a client                                |
 
 ---
 

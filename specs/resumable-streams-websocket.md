@@ -451,7 +451,7 @@ Rules:
    - *In-process wait.* The producer task stays alive. If its process dies,
      readers see `producer_lost`.
    - *Suspended wait.* The producer saves its own state (for example a
-     LangGraph checkpoint), writes `writer.suspend(ttl)` and exits. A later
+     LangGraph checkpoint), writes `writer.extend(ttl)` and exits. A later
      process calls `attach()` and continues on the same stream. Saving agent
      state stays the application's job.
 6. **No answer.** When the timeout passes, `ask()` raises `InputTimeout`. The
@@ -472,7 +472,7 @@ the meta hash. `cancel()` sets it. `append()` reads it in the same transaction
 | | Design today: `cancel` flag | Proposal: control stream |
 |---|---|---|
 | What it carries | One bit | Any message: an answer, a cancel, later commands |
-| How the producer learns | Polls. Free on each append, because the read rides in the same round trip. Otherwise every `stream_heartbeat_seconds` | Blocks on `XREAD BLOCK`, or polls the stream on each append |
+| How the producer learns | Polls. Free on each append, because the read rides in the same round trip. Otherwise every `stream_heartbeat_interval` | Blocks on `XREAD BLOCK`, or polls the stream on each append |
 | Latency | The next append while output flows. Up to 15 s during silence | About 3 ms to wake a blocked reader (measured, loopback). The next append, if the producer only polls |
 | Redis cost | None extra | One blocked connection per run that is waiting. Nothing while it only polls |
 | Several messages, order | No | Yes, in order |
@@ -490,7 +490,7 @@ Three points follow:
    milliseconds. The delay shows up only in silence: a long tool call, or a
    run waiting for a person. I have corrected the earlier wording above.
 2. **Blocking doubles as the heartbeat.** Inside `ask()`, the producer can loop
-   on `XREAD BLOCK <heartbeat>`. Each timeout refreshes the `alive` key, so no
+   on `XREAD BLOCK <heartbeat>`. Each timeout refreshes meta's `alive` field, so no
    separate heartbeat task is needed while waiting.
 3. **The cost to watch is held connections.** A person may take minutes to
    answer, and each waiting run holds one Redis connection. Polling the control

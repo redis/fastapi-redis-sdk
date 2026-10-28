@@ -10,13 +10,16 @@ not in fakeredis, so it is covered by the integration suite.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+import dataclasses
+import json
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.crc import key_slot
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -26,7 +29,10 @@ from redis_fastapi import (
     FastAPIRedis,
     StreamBackend,
     StreamConfigurationError,
+    StreamError,
+    StreamEvent,
     StreamInvalidCursor,
+    StreamInvalidName,
     StreamUnsupported,
     add_redis_streams,
     get_stream_backend,
@@ -45,7 +51,9 @@ from redis_fastapi.exceptions import (
 )
 from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
+    StreamWriter,
     _keys,
+    _seconds,
     _StreamCapabilities,
     _xread_entries,
     check_event_type,
@@ -54,6 +62,7 @@ from redis_fastapi.stream_backend import (
     probe_streams_support,
 )
 from redis_fastapi.streams import (
+    _retry_ms,
     _SSEResponse,
     check_stream_settings,
     encode_frame,
@@ -121,6 +130,19 @@ class TestParseCursor:
         with pytest.raises(ValueError):
             parse_cursor("$")
 
+    def test_rejects_non_ascii_digits(self) -> None:
+        # \d would accept these, and int() would read them as 12-0.
+        with pytest.raises(StreamInvalidCursor):
+            parse_cursor("\u0661\u0662-\u0660")
+
+    def test_rejects_huge_numbers_as_invalid_not_as_a_crash(self) -> None:
+        # Past 4,300 digits int() raises a plain ValueError, which would be a
+        # 500; the length bound refuses it first.
+        with pytest.raises(StreamInvalidCursor):
+            parse_cursor("9" * 5000 + "-0")
+        with pytest.raises(StreamInvalidCursor):
+            parse_cursor("1" + "0" * 20 + "-0")
+
 
 class TestSelectCursor:
     def test_handler_value_wins(self) -> None:
@@ -166,30 +188,33 @@ class TestNames:
         "scope", ["", "x" * 201, "chat:{42}", "a b", "a\nb", "ä", "a/b"]
     )
     def test_invalid_scopes(self, scope: str) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(StreamInvalidName):
             check_name(scope)
 
     @pytest.mark.parametrize("stream_id", ["", "x" * 65, "a:b", "a{b", "a.b", "a b"])
     def test_invalid_ids(self, stream_id: str) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(StreamInvalidName):
             check_name("chat:1", stream_id)
+
+    def test_an_invalid_name_is_a_value_error_and_a_422(self) -> None:
+        assert issubclass(StreamInvalidName, ValueError)
+        assert StreamInvalidName.status_code == 422
 
     def test_scope_and_id_pairs_never_share_a_key(self) -> None:
         # ":" is allowed in a scope but not in an ID, so the split is unique.
         assert _keys("a:b", "c").stream != _keys("a", "b-c").stream
 
-    def test_keys_share_a_cluster_slot(self) -> None:
+    def test_keys_share_a_cluster_slot_with_the_active_slot(self) -> None:
         keys = _keys("chat:42", "run1")
-        slots = {key_slot(k.encode()) for k in (keys.stream, keys.meta, keys.alive)}
+        slots = {key_slot(k.encode()) for k in (keys.stream, keys.meta, keys.active)}
         assert len(slots) == 1
 
     def test_keys_use_the_prefix_setting(self, settings_env: Any) -> None:
         settings_env(prefix="myapp")
         keys = _keys("chat:1", "r")
-        assert keys.stream == "myapp:stream:{chat:1:r}"
-        assert keys.meta == "myapp:stream-meta:{chat:1:r}"
-        assert keys.alive == "myapp:stream-alive:{chat:1:r}"
-        assert keys.active == "myapp:stream-active:chat:1"
+        assert keys.stream == "myapp:stream:{chat:1}:r"
+        assert keys.meta == "myapp:stream-meta:{chat:1}:r"
+        assert keys.active == "myapp:stream-active:{chat:1}"
 
 
 class TestEventTypes:
@@ -218,6 +243,21 @@ class TestEncodeFrame:
     def test_line_breaks_become_several_data_lines(self) -> None:
         frame = encode_frame("t", "one\ntwo\r\nthree\rfour")
         assert frame == ("event: t\ndata: one\ndata: two\ndata: three\ndata: four\n\n")
+
+    def test_retry_hint_is_short_and_spread(self) -> None:
+        values = {_retry_ms() for _ in range(200)}
+        assert all(1000 <= value <= 3000 for value in values)
+        assert len(values) > 1
+
+
+class TestEventShape:
+    def test_only_the_documented_fields(self) -> None:
+        names = [f.name for f in dataclasses.fields(StreamEvent)]
+        assert names == ["id", "type", "data", "final"]
+
+    def test_replace_keeps_the_new_data(self) -> None:
+        event = dataclasses.replace(StreamEvent("1-0", "t", {"a": 1}), data={"b": 2})
+        assert dataclasses.asdict(event)["data"] == {"b": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +356,7 @@ class TestCheckStreamSettings:
             check_stream_settings()
 
     def test_heartbeat_key_must_outlive_the_heartbeat(self, settings_env: Any) -> None:
-        settings_env(stream_heartbeat_seconds=10, stream_alive_ttl_seconds=10)
+        settings_env(stream_heartbeat_interval=10, stream_alive_ttl=10)
         with pytest.raises(StreamConfigurationError, match="alive"):
             check_stream_settings()
 
@@ -343,7 +383,19 @@ class TestSetup:
         app = FastAPI()
         FastAPIRedis(app).lifespan().streams().streams()
         assert isinstance(app.state._redis_streams, StreamBackend)
-        assert StreamNotFound in app.exception_handlers
+        assert app.exception_handlers[StreamError] is stream_error_handler
+        # One handler for the family, not one per subclass.
+        assert StreamNotFound not in app.exception_handlers
+
+    def test_an_application_handler_is_kept(self, settings_env: Any) -> None:
+        settings_env()
+
+        async def own(request: Request, exc: Exception) -> Any:
+            return None
+
+        app = FastAPI(exception_handlers={StreamError: own})
+        add_redis_streams(app)
+        assert app.exception_handlers[StreamError] is own
 
     def test_bad_settings_fail_at_setup(self, settings_env: Any) -> None:
         settings_env(prefix="{bad}")
@@ -368,9 +420,11 @@ class TestErrorHandler:
             (StreamFinished("x"), 409),
             (StreamFenced("x"), 409),
             (StreamInvalidCursor("x"), 422),
+            (StreamInvalidName("x"), 422),
             (StreamCredentialExpired("x"), 401),
             (StreamUnsupported("x"), 503),
             (StreamStoreError("x"), 503),
+            (StreamConfigurationError("x"), 500),
         ],
     )
     async def test_status(self, exc: Exception, status: int) -> None:
@@ -378,6 +432,22 @@ class TestErrorHandler:
         assert response.status_code == status
         if status == 503:
             assert response.headers["Retry-After"]
+
+    @pytest.mark.parametrize(
+        ("exc", "code"),
+        [
+            (StreamNotFound("x"), "stream_not_found"),
+            (StreamExpired("x"), "stream_expired"),
+            (StreamBusy("r1"), "stream_busy"),
+            (StreamCursorAhead("x"), "cursor_ahead"),
+            (StreamInvalidCursor("x"), "invalid_cursor"),
+            (StreamInvalidName("x"), "invalid_stream_name"),
+            (StreamStoreError("x"), "stream_unavailable"),
+        ],
+    )
+    async def test_body_has_a_stable_code(self, exc: Exception, code: str) -> None:
+        response = await stream_error_handler(_request(), exc)
+        assert json.loads(bytes(response.body)) == {"detail": str(exc), "code": code}
 
     def test_busy_names_the_run(self) -> None:
         assert StreamBusy("r1").stream_id == "r1"
@@ -456,6 +526,7 @@ class TestReaderSlots:
         await _response(backend, _frames(1))(_SCOPE, _never, send)
         assert sent[0]["status"] == 503
         assert (b"retry-after", b"5") in sent[0]["headers"]
+        assert json.loads(sent[1]["body"])["code"] == "stream_capacity_exceeded"
         assert backend.readers == 0
 
     async def test_cancellation_releases_the_slot(self) -> None:
@@ -542,8 +613,9 @@ class TestUnsupported:
         with pytest.raises(StreamUnsupported):
             await backend.sse("r", request=_request(), scope="chat:1")
         with pytest.raises(StreamUnsupported):
-            async for _ in backend.follow("r", scope="chat:1"):
-                pass
+            await backend.follow("r", scope="chat:1")
+        with pytest.raises(StreamUnsupported):
+            await backend.start(_noop, scope="chat:1")
 
     async def test_detection_runs_once(self, settings_env: Any) -> None:
         settings_env()
@@ -579,17 +651,25 @@ class TestWriterValidation:
         settings_env()
         backend = StreamBackend(lambda: MagicMock())
         backend._start(_StreamCapabilities(supported=True))
-        with pytest.raises(ValueError):
+        with pytest.raises(StreamInvalidName):
             await backend.open(scope="bad scope")
-        with pytest.raises(ValueError):
+        with pytest.raises(StreamInvalidName):
             await backend.open(scope="ok", stream_id="bad:id")
+        with pytest.raises(StreamInvalidName):
+            await backend.attach("bad:id", scope="ok")
 
-    async def test_unknown_id_shapes_are_not_found(self, settings_env: Any) -> None:
+    async def test_invalid_names_on_every_path_are_the_same_error(
+        self, settings_env: Any
+    ) -> None:
         settings_env()
         backend = StreamBackend(lambda: MagicMock())
         backend._start(_StreamCapabilities(supported=True))
-        with pytest.raises(StreamNotFound):
+        with pytest.raises(StreamInvalidName):
             await backend.cancel("../x", scope="chat:1")
+        with pytest.raises(StreamInvalidName):
+            await backend.follow("../x", scope="chat:1")
+        with pytest.raises(StreamInvalidName):
+            await backend.active("bad scope")
 
     def test_oversized_event(self, settings_env: Any) -> None:
         settings_env(stream_max_event_bytes=10)
@@ -602,13 +682,58 @@ class TestWriterValidation:
         assert StreamBackend(lambda: MagicMock())._decode(b"not json") == "not json"
 
 
-class TestSuspendSeconds:
-    def test_timedelta_and_int(self) -> None:
-        from redis_fastapi.stream_backend import _seconds
-
+class TestDurations:
+    def test_seconds_from_int_or_timedelta(self) -> None:
         assert _seconds(timedelta(minutes=2)) == 120
         assert _seconds(30) == 30
+        assert _seconds(timedelta(milliseconds=500)) == 1
         assert _seconds(0) == 1
+
+    def test_settings_take_whole_seconds_only(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env(stream_heartbeat_interval=0.5)
+        with pytest.raises(ValidationError):
+            get_settings()
+
+
+async def _noop(writer: StreamWriter) -> None:
+    return None
+
+
+class TestSpawnGuards:
+    def _writer(self, backend: StreamBackend, *, created: bool) -> StreamWriter:
+        if not created:
+            return backend._handle("chat:1", "r1", True)
+        return StreamWriter(
+            backend,
+            scope="chat:1",
+            stream_id="r1",
+            writer_id="w",
+            exclusive=True,
+            created=True,
+        )
+
+    async def test_a_retry_handle_is_refused(self, settings_env: Any) -> None:
+        settings_env()
+        backend = StreamBackend(lambda: MagicMock())
+        with pytest.raises(ValueError, match="created"):
+            backend.spawn(self._writer(backend, created=False), _noop)
+        assert not backend._spawned
+
+    async def test_a_writer_is_spawned_once(self, settings_env: Any) -> None:
+        settings_env()
+        backend = StreamBackend(lambda: MagicMock())
+        writer = self._writer(backend, created=True)
+        writer._task = asyncio.get_running_loop().create_future()  # type: ignore[assignment]
+        with pytest.raises(ValueError, match="already runs"):
+            backend.spawn(writer, _noop)
+
+    async def test_a_retry_handle_cannot_extend(self, settings_env: Any) -> None:
+        settings_env()
+        backend = StreamBackend(lambda: MagicMock())
+        with pytest.raises(StreamFenced):
+            await self._writer(backend, created=False).extend(60)
 
 
 class TestHistoryLost:
@@ -665,3 +790,235 @@ class TestHistoryLost:
         from redis_fastapi.stream_backend import _history_lost
 
         assert not _history_lost(None, (0, 0), own_present=False)
+
+
+# ---------------------------------------------------------------------------
+# The producer heartbeat and the lost producer, against a recording client
+# ---------------------------------------------------------------------------
+
+
+class _Pipe:
+    """Records the commands a transaction queues, and replies as scripted."""
+
+    def __init__(self, replies: list[Any]) -> None:
+        self.commands: list[tuple[Any, ...]] = []
+        self._replies = replies
+
+    def execute_command(self, *args: Any) -> None:
+        self.commands.append(args)
+
+    def __getattr__(self, name: str) -> Any:
+        def queue(*args: Any, **kwargs: Any) -> None:
+            self.commands.append((name.upper(), *args, *kwargs.items()))
+
+        return queue
+
+    async def execute(self) -> list[Any]:
+        return self._replies
+
+    def find(self, name: str) -> tuple[Any, ...] | None:
+        return next((c for c in self.commands if c[0] == name), None)
+
+
+class _Client:
+    """Hands out recording pipelines; every one replies with *replies*."""
+
+    def __init__(self, replies: list[Any]) -> None:
+        self.replies = replies
+        self.pipes: list[_Pipe] = []
+        self.hmget = AsyncMock()
+        self.xread = AsyncMock()
+
+    def pipeline(self, transaction: bool = True) -> _Pipe:
+        pipe = _Pipe(self.replies)
+        self.pipes.append(pipe)
+        return pipe
+
+
+def _started_backend(client: _Client) -> StreamBackend:
+    backend = StreamBackend(lambda: client)
+    backend._start(_StreamCapabilities(supported=True))
+    return backend
+
+
+def _owned_writer(backend: StreamBackend, *, exclusive: bool) -> StreamWriter:
+    return StreamWriter(
+        backend,
+        scope="chat:1",
+        stream_id="r1",
+        writer_id="w",
+        exclusive=exclusive,
+        created=True,
+        seq=1,
+        started=True,
+    )
+
+
+@pytest.fixture()
+def fast_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make only the heartbeat's own wait return at once.
+
+    Every other sleep, a producer's included, keeps its real length.
+    """
+    real_sleep = asyncio.sleep
+    interval = get_settings().stream_heartbeat_interval
+
+    async def sleep(delay: float, *args: Any) -> Any:
+        return await real_sleep(0 if delay == interval else delay, *args)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+
+def _lost_plan() -> Any:
+    from redis_fastapi.stream_backend import _ReadPlan
+
+    return _ReadPlan(
+        keys=_keys("chat:1", "r1"), stream_id="r1", cursor=(0, 0), last_seq=1
+    )
+
+
+class TestProducerHeartbeat:
+    """What ``keepalive()`` sends on each beat, and what it does with the reply."""
+
+    async def _beats(self, writer: StreamWriter) -> None:
+        async with writer.keepalive():
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+    async def test_a_beat_refreshes_the_heartbeat(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, [None, "w"]])
+        await self._beats(_owned_writer(_started_backend(client), exclusive=False))
+        assert client.pipes
+        keys = _keys("chat:1", "r1")
+        for pipe in client.pipes:
+            assert pipe.commands == [
+                ("HSETEX", keys.meta, "EX", 45, "FIELDS", 1, "alive", "1"),
+                ("HMGET", keys.meta, ["cancel", "writer"]),
+            ]
+
+    async def test_a_beat_refreshes_the_active_slot(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, True, [None, "w"]])
+        await self._beats(_owned_writer(_started_backend(client), exclusive=True))
+        keys = _keys("chat:1", "r1")
+        assert client.pipes[0].find("SET") == (
+            "SET",
+            keys.active,
+            "r1",
+            "IFEQ",
+            "r1",
+            "EX",
+            600,
+        )
+
+    async def test_a_beat_that_finds_another_writer_writes_no_end(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, True, [None, "someone-else"]])
+        backend = _started_backend(client)
+        writer = _owned_writer(backend, exclusive=True)
+
+        async def quiet(writer: StreamWriter) -> None:
+            await asyncio.sleep(3600)  # a long tool call: no appends
+
+        await asyncio.wait_for(backend.spawn(writer, quiet), 1)
+        assert writer._fenced
+        assert all(pipe.find("XADD") is None for pipe in client.pipes)
+
+
+class TestLostProducer:
+    """A reader that finds the heartbeat gone writes the final entry itself."""
+
+    _FINAL_REPLY = ["9-0", 1, True, True, True, 1, [None, "w"]]
+
+    async def test_a_quiet_read_ends_the_stream_for_a_lost_producer(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        client.hmget.return_value = ["running", "1", None]
+        keys = _keys("chat:1", "r1")
+        lost = {"t": "stream.end", "d": '{"reason": "producer_lost"}', "f": "1"}
+        client.xread.side_effect = [[], [[keys.stream, [("9-0", lost)]]]]
+        backend = _started_backend(client)
+        pages = [page async for page in backend._pages(_lost_plan())]
+        assert pages[-1][-1].final and pages[-1][-1].type == "stream.end"
+        (pipe,) = client.pipes
+        xadd = pipe.find("XADD")
+        assert xadd is not None
+        assert xadd[2:6] == ("NOMKSTREAM", "IDMP", "end", "final")
+        assert xadd[-6:] == (
+            "t",
+            "stream.end",
+            "d",
+            '{"reason": "producer_lost"}',
+            "f",
+            "1",
+        )
+        assert ("HSET", keys.meta, "status", "finished") in pipe.commands
+        assert ("EXPIRE", keys.stream, 120) in pipe.commands
+        assert ("EXPIRE", keys.meta, 120 + 3600) in pipe.commands
+        assert ("DELEX", keys.active, "IFEQ", "r1") in pipe.commands  # slot freed
+
+    async def test_the_writer_and_the_reader_write_the_same_final_entry(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        # Both send the IDMP pair (end, final), so Redis keeps one final entry
+        # however the two race.
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        backend = _started_backend(client)
+        await backend._end_lost(_lost_plan(), started=True)
+        writer_pipe = _Pipe([])
+
+        async def transaction(build: Any, owner: Any = None) -> list[Any]:
+            build(writer_pipe)
+            return self._FINAL_REPLY
+
+        backend._transaction = transaction  # type: ignore[method-assign]
+        await _owned_writer(backend, exclusive=True).finish("message", {})
+        for pipe in (client.pipes[0], writer_pipe):
+            xadd = pipe.find("XADD")
+            assert xadd is not None and xadd[3:6] == ("IDMP", "end", "final")
+
+    async def test_a_lost_producer_never_recreates_an_expired_stream(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client([None, 1, True, True, True, 1, [None, None]])
+        client.hmget.return_value = ["running", "1", None]
+        backend = _started_backend(client)
+        assert await backend._check_producer(_lost_plan()) == "gone"
+        xadd = client.pipes[0].find("XADD")
+        assert xadd is not None and xadd[2] == "NOMKSTREAM"
+
+    async def test_a_lost_producer_that_never_appended_gets_an_end(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        client.hmget.return_value = ["running", None, None]
+        backend = _started_backend(client)
+        assert await backend._check_producer(_lost_plan()) == "ended"
+        pipe = client.pipes[0]
+        xadd = pipe.find("XADD")
+        assert xadd is not None and "NOMKSTREAM" not in xadd
+        assert ("HSET", _keys("chat:1", "r1").meta, "started", "1") in pipe.commands
+
+    @pytest.mark.parametrize(
+        "meta", [["running", "1", "1"], ["finished", "1", None]], ids=["alive", "done"]
+    )
+    async def test_a_live_or_finished_producer_is_left_alone(
+        self, settings_env: Callable[..., None], meta: list[Any]
+    ) -> None:
+        settings_env()
+        client = _Client([])
+        client.hmget.return_value = meta
+        assert await _started_backend(client)._check_producer(_lost_plan()) == "quiet"
+        assert client.pipes == []

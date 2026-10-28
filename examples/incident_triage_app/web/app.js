@@ -496,7 +496,7 @@ function stat(name, v, history) {
   let kind = "", value, unit = "", sub = "", text = false;
   if (v === null) value = "—";
   else if (name === "TTL") [value, unit] = [v.toLocaleString("en-US"), "s"];
-  else if (name === "PTTL") [value, unit] = [v.toLocaleString("en-US"), "ms"];
+  else if (name.endsWith(" TTL") && typeof v === "number") [value, unit] = [v.toLocaleString("en-US"), "s"];
   else if (typeof v === "number") value = v.toLocaleString("en-US");
   else if (/ s of /.test(v)) {
     const [n, of] = v.split(" s of ");
