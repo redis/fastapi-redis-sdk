@@ -837,3 +837,44 @@ async def test_optional_read_probe_falls_back_per_bucket(deployment, monkeypatch
     assert negotiated._store.native_read_limits == backend._store.native_read_limits - {
         0
     }
+
+
+@pytest.mark.parametrize(
+    "reply_mode",
+    [
+        pytest.param({}, id="default"),
+        pytest.param({"protocol": 2}, id="resp2"),
+        pytest.param({"protocol": 3}, id="resp3-legacy"),
+        pytest.param({"protocol": 3, "legacy_responses": False}, id="resp3-modern"),
+    ],
+)
+@pytest.mark.parametrize("decode_responses", [False, True], ids=["bytes", "text"])
+async def test_client_reply_modes_replay_live_and_final_cursor(
+    deployment, reply_mode, decode_responses
+):
+    backend, *_ = deployment
+    await backend.create("compatibility", ttl=60)
+    first = await publish(backend, "compatibility", 1)
+    async with backend:
+        async with backend.subscribe("compatibility", after=first) as events:
+            pending = asyncio.create_task(anext(events))
+            live = await publish(backend, "compatibility", 2)
+            event = await asyncio.wait_for(pending, 5)
+            assert event.id == live and event.data == {"n": 2}
+        final = await publish(backend, "compatibility", 3, final=True)
+        async with backend.subscribe("compatibility", after=live) as events:
+            assert [(event.id, event.final) async for event in events] == [
+                (final, True)
+            ]
+        async with backend.subscribe("compatibility", after=final) as events:
+            assert [event async for event in events] == []
+
+
+async def test_wrong_type_metadata_is_a_stream_error(deployment):
+    backend, *_ = deployment
+    await backend.create("corrupt-metadata", ttl=60)
+    _, meta = backend._store.keys("corrupt-metadata")
+    await backend._store.client.delete(meta)
+    await backend._store.client.set(meta, "invalid-metadata")
+    with pytest.raises(StreamError):
+        await backend._store.read("corrupt-metadata")

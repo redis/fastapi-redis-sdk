@@ -17,7 +17,12 @@ from redis_fastapi import (
     get_stream_backend,
     sse_response,
 )
-from redis_fastapi.stream_backend import StreamEvent, _normalize, parse_cursor
+from redis_fastapi.stream_backend import (
+    StreamEvent,
+    _normalize,
+    _normalize_xread,
+    parse_cursor,
+)
 from redis_fastapi.streams import _cursor, _frame
 from redis_fastapi.telemetry import disable_telemetry, record_stream
 
@@ -244,3 +249,30 @@ def test_long_key_prefix_is_charged_to_live_read_budget():
                 prefix="x" * 2000, stream_max_event_bytes=64, stream_read_maxbytes=576
             ),
         )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        [[b"stream", [(b"1-0", {b"data": b"{}"})]]],
+        {b"stream": [[(b"1-0", {b"data": b"{}"})]]},
+        {b"stream": [(b"1-0", {b"data": b"{}"})]},
+        {"stream": [["1-0", {"data": "{}"}]]},
+    ],
+)
+def test_xread_reply_shapes(reply):
+    assert _normalize_xread(reply) == {"stream": [["1-0", {"data": "{}"}]]}
+
+
+@pytest.mark.parametrize("reply", [None, [], {}, {"stream": []}, {"stream": [[]]}])
+def test_xread_empty_reply(reply):
+    assert _normalize_xread(reply) == {}
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [42, {"stream": None}, {"stream": [["bad", {}]]}, [["stream"]], {"stream": [42]}],
+)
+def test_xread_invalid_reply(reply):
+    with pytest.raises(StreamError, match="Invalid Redis stream reply"):
+        _normalize_xread(reply)

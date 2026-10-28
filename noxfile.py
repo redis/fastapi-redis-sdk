@@ -167,6 +167,13 @@ def streams(session: nox.Session) -> None:
         session, "--extra", "streams", "--extra", "otel",
         "--no-default-groups", "--group", "test",
     )
+    client_version = os.getenv("STREAMS_REDIS_PY_VERSION", "8.0.1")
+    if client_version not in {"8.0.1", "8.1.0"}:
+        session.error("STREAMS_REDIS_PY_VERSION must be 8.0.1 or 8.1.0")
+    session.run_install(
+        "uv", "pip", "install", f"redis=={client_version}",
+        env={"VIRTUAL_ENV": session.virtualenv.location},
+    )
     session.run(
         "pytest", "tests/streams", "tests/unit/test_stream_boundaries.py",
         "-o", "addopts=", "--cov=redis_fastapi.stream_backend",

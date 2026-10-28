@@ -235,6 +235,21 @@ Connections end by that deadline or the configured connection lifetime, whicheve
 comes first. This bounds reauthorization latency; it is not immediate revocation.
 Do not mutate sessions after headers or apply `cache()`/`cache_put()` to SSE routes.
 
+## Client compatibility
+
+The streams extra requires redis-py `>=8.0.1,<9`. Tests cover redis-py 8.0.1 and
+8.1.0 with the protocol unset, explicit RESP2, and explicit RESP3 with both
+legacy and modern responses. Each mode is exercised with binary and decoded
+responses on standalone Redis and a three-primary OSS Cluster. XREAD replies
+are normalized before live delivery.
+
+These tests do not qualify Cluster failure recovery. The upstream
+[watched-transaction retry fix](https://github.com/redis/redis-py/pull/4486)
+is not included in the tested released clients. Before qualifying Cluster
+recovery, select a released client containing that fix and rerun transaction,
+network-loss, and failover tests. Do not treat a successful normal-operation
+Cluster test as that qualification.
+
 ## Resources and settings
 
 The environment-managed setup uses the normal `REDIS_` prefix. `.streams(stream_...=...)` overrides

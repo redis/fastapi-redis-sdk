@@ -156,10 +156,12 @@ async def deployment(topology, request):
     prefix = f"stream-spike:{uuid.uuid4().hex}"
     relay_name = prefix + ":relay"
     kwargs = {
-        "decode_responses": True,
+        "decode_responses": request.node.callspec.params.get("decode_responses", True),
         "socket_connect_timeout": 2,
         "socket_timeout": 3,
     }
+
+    kwargs.update(request.node.callspec.params.get("reply_mode", {}))
 
     def client(*, blocking=False):
         options = dict(kwargs, max_connections=4 if blocking else 16)

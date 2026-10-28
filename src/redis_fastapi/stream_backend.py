@@ -96,6 +96,39 @@ def _normalize(value: Any) -> Any:
     return value
 
 
+def _normalize_xread(value: Any) -> dict[str, list[Any]]:
+    """Normalize RESP2 and legacy/modern RESP3 XREAD replies from redis-py."""
+    value = _normalize(value)
+    if value is None:
+        return {}
+    batches = value.items() if isinstance(value, dict) else value
+    result: dict[str, list[Any]] = {}
+    try:
+        for key, entries in batches:
+            if (
+                not isinstance(key, str)
+                or key in result
+                or not isinstance(entries, list)
+            ):
+                raise ValueError
+            # RESP3 legacy callbacks wrap the entries in an extra list.
+            if (
+                len(entries) == 1
+                and isinstance(entries[0], list)
+                and (not entries[0] or isinstance(entries[0][0], list))
+            ):
+                entries = entries[0]
+            for entry in entries:
+                if not isinstance(entry, list) or len(entry) != 2:
+                    raise ValueError
+                parse_cursor(entry[0])
+            if entries:
+                result[key] = entries
+    except (TypeError, ValueError) as error:
+        raise StreamError("Invalid Redis stream reply") from error
+    return result
+
+
 @dataclass(frozen=True)
 class StreamEvent:
     id: str
@@ -484,8 +517,19 @@ class _StreamStore:
     async def read(self, stream: str, after: str = "0-0", count: int = 32) -> _Batch:
         position = parse_cursor(after)
         key, meta = self.keys(stream)
+        # Explicit fields avoid redis-py's RESP2 Cluster HGETALL callback, which
+        # cannot accept the transaction's routing kwargs in 8.0.1/8.1.0.
+        fields = (
+            "version",
+            "ttl",
+            "deadline",
+            "floor",
+            "ready",
+            "idmp_duration",
+            "idmp_maxsize",
+        )
         async with self.client.pipeline(transaction=True) as pipe:
-            pipe.hgetall(meta)
+            pipe.hmget(meta, fields)
             pipe.type(key)
             pipe.pttl(meta)
             pipe.pexpiretime(key)
@@ -498,6 +542,14 @@ class _StreamStore:
             state, kind, now, payload_expiry, meta_expiry, rows, last, info = (
                 _normalize(await pipe.execute(raise_on_error=False))
             )
+        self.results([state])
+        if not isinstance(state, list) or len(state) != len(fields):
+            raise StreamError("Invalid stream metadata")
+        state = {
+            name: value
+            for name, value in zip(fields, state, strict=True)
+            if value is not None
+        }
         self._validate(state, kind, now, payload_expiry, meta_expiry)
         self.results([rows, last, info])
         # XDEL records its highest removed ID in the Stream itself, atomically

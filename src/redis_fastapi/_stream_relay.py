@@ -16,7 +16,7 @@ from redis_fastapi.stream_backend import (
     StreamError,
     StreamEvent,
     StreamSlowConsumer,
-    _normalize,
+    _normalize_xread,
     _StreamStore,
     parse_cursor,
 )
@@ -321,7 +321,7 @@ class _StreamRelay:
                     )
                 record_stream("read_batches", bucket=bucket)
                 self.batches += 1
-                returned = dict(_normalize(response) or [])
+                returned = _normalize_xread(response)
                 for state, key in zip(states, keys, strict=True):
                     try:
                         batch = await self.store.read(
