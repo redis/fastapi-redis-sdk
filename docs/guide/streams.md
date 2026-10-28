@@ -134,10 +134,15 @@ async def run_agent(writer: StreamWriter) -> None:
 `append(type, data)` stores one event and returns its entry ID. The type is
 any name you choose, up to
 128 characters with no line breaks; names starting with `stream.` belong to
-the SDK. The data goes through the payload coder, JSON by default, and may be
-at most `stream_max_event_bytes`. A timeout or a dropped connection is retried
-with the same idempotency key, so a retried append never stores the event
-twice.
+the SDK. The data goes through the payload coder and may be at most
+`stream_max_event_bytes`. The default coder, `JsonableCoder`, writes JSON and
+also takes Pydantic models, dataclasses and datetimes, which is what agent
+SDKs hand you; readers get plain JSON back. A timeout or a dropped connection
+is retried with the same idempotency key, so a retried append never stores
+the event twice.
+
+For the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph, see
+[Agent SDK recipes](#agent-sdk-recipes).
 
 ### Ending
 
@@ -299,6 +304,272 @@ A reader that cannot write, because its Redis ACL is read-only, sends a
 
 ---
 
+## Agent SDK recipes
+
+Agent SDKs such as the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph
+run the agent loop and give you its events as an async iterator. They have no
+server of their own, so you host them in your FastAPI application, and a
+producer is a short loop that turns their events into appends.
+
+Each recipe below maps its SDK's events to the same four event types, so the
+browser code is the same whichever SDK you use:
+
+| Type          | Data                            | Written with |
+|---------------|---------------------------------|--------------|
+| `delta`       | `{"text": ...}`                 | `append()`   |
+| `tool_call`   | `{"id": ..., "name": ..., "args": ...}` | `append()` |
+| `tool_result` | `{"id": ..., "output": ...}`    | `append()`   |
+| `message`     | `{"text": ...}`, the whole answer | `finish()` |
+
+Each recipe returns a producer for one turn. Start it from your route as any
+other producer:
+
+```python
+@app.post("/chats/{chat_id}/runs/{run_id}", status_code=202,
+          dependencies=[Depends(require_chat_access)])
+async def start(chat_id: str, run_id: str, body: Prompt,
+                streams: StreamBackendDep) -> dict:
+    writer = await streams.start(run_turn(body.text),
+                                 scope=f"chat:{chat_id}", stream_id=run_id)
+    return {"stream_id": writer.stream_id}
+```
+
+Each recipe is also a complete app in
+[`examples/agent_sdks/`](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/agent_sdks),
+with the start, events and cancel routes. These SDKs often rename and reshape
+their events, so check a recipe against the version you run. Checked with
+`openai-agents` 0.24, `pydantic-ai-slim` 2.54, `google-adk` 2.7, and
+`langgraph` 1.2 with `langchain-core` 1.7.
+
+### Rules for every SDK
+
+- **Map events, do not store them whole.** An SDK event often holds the agent
+  and its tools, which no coder can encode. The ones that can be encoded are
+  large: an ADK event is about 1.6 KB for a three-word chunk, and PydanticAI's
+  final event holds the whole message history. Pick the fields the browser
+  needs. Values such as a tool's Pydantic or dataclass result can go in as
+  they are, because the default coder encodes them.
+- **Send deltas, not snapshots.** Every event must fit in
+  `stream_max_event_bytes`. A large tool result, such as retrieved documents,
+  is better sent as a summary.
+- **Cancel works as it is.** `cancel()` cancels the producer task, and the
+  cancel reaches the model call or tool the SDK is waiting on. `spawn()` then
+  writes `stream.end` with `{"reason": "cancelled"}`. This holds for all four
+  SDKs.
+- **Errors end the stream.** An exception from the SDK, such as a provider
+  error, ends the stream with `{"reason": "error", "code": "producer_error"}`.
+- **A pause for a person ends the turn.** When the agent waits for an
+  approval or an answer, end the turn with
+  `finish("turn.interrupted", ...)`, and start the answer as a new turn with a
+  new stream ID. A stream left open while a person decides needs `extend()`
+  against its TTL, and holds the scope's active slot all that time. The
+  LangGraph recipe shows the pattern; the OpenAI Agents SDK
+  (`result.interruptions`), PydanticAI (deferred tools) and ADK (long-running
+  tools) work the same way.
+- **The conversation lives elsewhere.** One stream carries one turn. Keep the
+  conversation in the SDK's own session or checkpoint store.
+
+Not covered in this release: producers in sync code (CrewAI, ADK's sync
+`Runner.run`), and durable execution, where the SDK appends from a Temporal,
+DBOS or Prefect worker. Both need a writer outside the FastAPI process (see
+[Limitations](#limitations)).
+
+### OpenAI Agents SDK
+
+```python
+import json
+
+from agents import Agent, Runner
+from openai.types.responses import ResponseTextDeltaEvent
+
+agent = Agent(name="triage", instructions="...", tools=[latency])
+
+
+def run_turn(prompt: str):
+    async def produce(writer: StreamWriter) -> None:
+        result = Runner.run_streamed(agent, prompt)
+        async for event in result.stream_events():
+            if event.type == "raw_response_event":
+                if isinstance(event.data, ResponseTextDeltaEvent):
+                    await writer.append("delta", {"text": event.data.delta})
+            elif event.type == "run_item_stream_event":
+                if event.name == "tool_called":
+                    call = event.item.raw_item
+                    await writer.append("tool_call", {
+                        "id": call.call_id,
+                        "name": call.name,
+                        "args": json.loads(call.arguments or "{}"),
+                    })
+                elif event.name == "tool_output":
+                    await writer.append("tool_result", {
+                        "id": event.item.raw_item["call_id"],
+                        "output": event.item.output,
+                    })
+        await writer.finish("message", {"text": str(result.final_output)})
+
+    return produce
+```
+
+- Text arrives as raw Responses API events, and tool calls and their results
+  as run items. Every other event can be left out.
+- `result.final_output` is set once the loop ends.
+- When the producer is cancelled, `stream_events()` cancels the run and the
+  tool it waits on. No `result.cancel()` is needed.
+
+### PydanticAI
+
+```python
+from pydantic_ai import (
+    Agent, AgentRunResultEvent, FunctionToolCallEvent, FunctionToolResultEvent,
+    PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta,
+)
+
+agent = Agent(model, tools=[latency])
+
+
+def run_turn(prompt: str):
+    async def produce(writer: StreamWriter) -> None:
+        async with agent.run_stream_events(prompt) as events:
+            async for event in events:
+                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                    if event.part.content:
+                        await writer.append("delta", {"text": event.part.content})
+                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                    await writer.append("delta", {"text": event.delta.content_delta})
+                elif isinstance(event, FunctionToolCallEvent):
+                    await writer.append("tool_call", {
+                        "id": event.part.tool_call_id,
+                        "name": event.part.tool_name,
+                        "args": event.part.args_as_dict(),
+                    })
+                elif isinstance(event, FunctionToolResultEvent):
+                    await writer.append("tool_result", {
+                        "id": event.part.tool_call_id,
+                        "output": event.part.content,
+                    })
+                elif isinstance(event, AgentRunResultEvent):
+                    await writer.finish("message", {"text": event.result.output})
+
+    return produce
+```
+
+- `run_stream_events()` is an async context manager; use it with `async with`.
+- The first text of a reply comes in `PartStartEvent`, and only the rest in
+  `PartDeltaEvent`. Read both, or the answer loses its first chunk.
+- `AgentRunResultEvent` holds the whole message history. Send only its
+  `output`.
+- A tool may return a Pydantic model or a dataclass; the default coder
+  encodes it.
+
+### Google ADK
+
+```python
+from google.adk.agents import LlmAgent
+from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.runners import Runner
+from google.genai import types
+
+runner = Runner(app_name="triage",
+                agent=LlmAgent(name="triage", model=model, tools=[latency]),
+                session_service=session_service)
+
+
+def run_turn(prompt: str, *, user_id: str, session_id: str):
+    async def produce(writer: StreamWriter) -> None:
+        message = types.Content(role="user", parts=[types.Part(text=prompt)])
+        config = RunConfig(streaming_mode=StreamingMode.SSE)
+        answer = ""
+        async for event in runner.run_async(user_id=user_id, session_id=session_id,
+                                            new_message=message, run_config=config):
+            if event.partial:
+                # A chunk of the answer.  The final, non-partial event repeats
+                # the whole text, so only chunks become deltas.
+                parts = event.content.parts if event.content else None
+                for part in parts or []:
+                    if part.text and not part.thought:
+                        await writer.append("delta", {"text": part.text})
+                continue
+            for call in event.get_function_calls():
+                await writer.append("tool_call",
+                                    {"id": call.id, "name": call.name, "args": call.args})
+            for response in event.get_function_responses():
+                await writer.append("tool_result",
+                                    {"id": response.id, "output": response.response})
+            if event.is_final_response() and event.content and event.content.parts:
+                answer = "".join(part.text or "" for part in event.content.parts
+                                 if not part.thought)
+        await writer.finish("message", {"text": answer})
+
+    return produce
+```
+
+- Without `StreamingMode.SSE`, ADK sends no partial events, and the answer
+  arrives in one piece.
+- The last, non-partial event repeats the whole answer. Sending it as a delta
+  would show the answer twice.
+- Leave out `thought` parts unless your interface shows the model's
+  reasoning.
+- The ADK session must exist before the turn starts. Create it in the start
+  route, or keep one per chat.
+
+### LangGraph
+
+```python
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+
+graph = builder.compile(checkpointer=checkpointer)
+
+
+def run_turn(inputs, config=None):
+    async def produce(writer: StreamWriter) -> None:
+        answer = ""
+        async for mode, chunk in graph.astream(inputs, config,
+                                               stream_mode=["messages", "updates"]):
+            if mode == "messages":
+                message, _metadata = chunk
+                if isinstance(message, AIMessageChunk) and message.text:
+                    await writer.append("delta", {"text": message.text})
+                continue
+            if "__interrupt__" in chunk:
+                # The graph waits for a person.  End this turn; the answer
+                # resumes the graph as a new turn, on a new stream.
+                interrupts = [item.value for item in chunk["__interrupt__"]]
+                await writer.finish("turn.interrupted", {"interrupts": interrupts})
+                return
+            for update in chunk.values():
+                for message in (update or {}).get("messages", []):
+                    if isinstance(message, ToolMessage):
+                        await writer.append("tool_result", {
+                            "id": message.tool_call_id, "output": message.content})
+                    elif isinstance(message, AIMessage) and message.tool_calls:
+                        for call in message.tool_calls:
+                            await writer.append("tool_call", {
+                                "id": call["id"], "name": call["name"],
+                                "args": call["args"]})
+                    elif isinstance(message, AIMessage):
+                        answer = message.text
+        await writer.finish("message", {"text": answer})
+
+    return produce
+```
+
+Start a turn with `run_turn({"messages": [("user", text)]}, thread)` and
+resume after an interrupt with `run_turn(Command(resume=answer), thread)`,
+where `thread` is `{"configurable": {"thread_id": chat_id}}`. Each is its own
+run with its own stream ID; the checkpointer carries the graph between them.
+
+- Use the `messages` and `updates` stream modes. Tokens come from `messages`;
+  tool calls, tool results and interrupts from `updates`. Avoid `values`: it
+  sends the whole state after every step.
+- `message.text` joins the text blocks of a message, so it also works for
+  providers that send content as a list of blocks.
+- On Python 3.10, a node must pass its `config` on to the model
+  (`await model.ainvoke(messages, config)`); without it the `messages` mode
+  gets the whole reply at once instead of its tokens. `interrupt()` in an
+  async graph needs Python 3.11 or later.
+
+---
+
 ## Errors and status codes
 
 Before the first byte, a problem is an ordinary status code. Your own
@@ -407,6 +678,8 @@ events.addEventListener("stream.error", (e) => {
   run.
 - **SSE only.** There is no WebSocket reader; `follow()` is the starting point
   for one.
+- **Async producers only.** A producer in sync code, such as CrewAI or ADK's
+  sync `Runner.run`, has no writer yet.
 
 ---
 

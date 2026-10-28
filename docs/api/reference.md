@@ -581,7 +581,7 @@ add_redis_streams(app, coder=None)
 
 | Argument | Purpose |
 |---|---|
-| `coder` | Serializer for event payloads. Defaults to `JsonCoder`. |
+| `coder` | Serializer for event payloads. Defaults to `JsonableCoder`: JSON that also takes Pydantic models, dataclasses and datetimes. |
 
 Creates the backend, registers one handler for `StreamError` that turns
 stream errors into status codes, and marks the app so the lifespan detects

@@ -171,6 +171,14 @@ class Coder(Protocol):
 
 Default `Coder` implementation using `json.dumps` / `json.loads`.
 
+### `JsonableCoder`
+
+The default `Coder` for resumable streams. It writes JSON as `JsonCoder` does,
+and converts a value `json.dumps` cannot encode, such as a Pydantic model, a
+dataclass or a datetime, with `pydantic_core.to_jsonable_python` first.
+Decoding returns plain JSON values. A value neither can encode raises
+`ValueError`.
+
 ### `pydantic_model_coder()`
 
 ```python

@@ -1,6 +1,6 @@
 # Resumable streams: our design compared with PR #89
 
-Date: 2026-10-21, updated 2026-10-23 and 2026-10-26
+Date: 2026-10-21, updated 2026-10-23, 2026-10-26 and 2026-10-27
 Status: analysis, for review
 Inputs: [`resumable-streams-design.md`](resumable-streams-design.md) and
 [PR #89](https://github.com/redis/fastapi-redis-sdk/pull/89)
@@ -77,7 +77,7 @@ the relay settings and the separate blocking client, which section 6 covers.
 | Stream identity | The pair (`scope`, `stream_id`). The application builds the scope from the authorized resource; the SDK generates the ID, or the caller passes one (for example an idempotency key). One stream per turn. | One application-chosen `stream` string, for example `chat:{id}`. One stream per chat. |
 | Create | `await start(fn, *, scope, stream_id=None, exclusive=True) -> StreamWriter` opens the run and spawns `fn` only for a new one (2026-10-26). `await open(...)` and `spawn()` remain for a route that does work between them. | `await create(stream, *, ttl) -> None` |
 | Writer object | `StreamWriter` with `stream_id`. Every write goes through it. | None. Every write is a backend method that takes the stream name. |
-| Append | `await writer.append(type, data) -> str` (the entry ID; changed 2026-10-26, was `AppendResult`). The cancel flag is `writer.cancelled`. Data goes through the SDK's `Coder`. | `await append(stream, *, event, data, producer, idempotency_key) -> str` (the cursor). JSON only. |
+| Append | `await writer.append(type, data) -> str` (the entry ID; changed 2026-10-26, was `AppendResult`). The cancel flag is `writer.cancelled`. Data goes through the SDK's `Coder`; the default, `JsonableCoder` (2026-10-27), also takes Pydantic models, dataclasses and datetimes. | `await append(stream, *, event, data, producer, idempotency_key) -> str` (the cursor). JSON only. |
 | Finish | `await writer.finish(type, data=None) -> str` writes the application's final event with the end marker and returns its ID. Later appends raise `StreamFinished`. A writer that `attach()` replaced raises `StreamFenced` and writes nothing. | `await finish(stream, *, event, data, producer, idempotency_key)` writes the application's final event and seals. |
 | Fail | None. A failure is the data of the final event; `spawn()` writes `stream.end` with `{"reason": "error"}`. | None. |
 | Continue elsewhere | `await attach(stream_id, *, scope) -> StreamWriter` | Not needed: any process can append with the same `producer`. |
@@ -379,6 +379,15 @@ field with its own TTL, not a key); a reader ending a lost producer never recrea
 Redis error text no longer reaches the response body; the SSE `retry:` hint
 is 1 to 3 seconds, not the 15-second heartbeat; a replay page is one send; and
 `expires_at` and the connection cap no longer wait for the next heartbeat.
+
+### 5.4 Default coder, 2026-10-27
+
+`JsonableCoder` is the streams default. Producers often hold Pydantic models
+or dataclasses, on which `JsonCoder` raised `TypeError`. The new coder
+converts what `json.dumps` cannot encode with
+`pydantic_core.to_jsonable_python`, and readers decode plain JSON. Caching and
+sessions keep `JsonCoder`. The PR has no producer side, so this does not
+change the comparison above.
 
 ## 6. Future step: phase 2 and phase 3 differences
 

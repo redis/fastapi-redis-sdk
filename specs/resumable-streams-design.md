@@ -1,6 +1,6 @@
 # Resumable streams: proposed design
 
-Date: 2026-10-15, updated 2026-10-23
+Date: 2026-10-15, updated 2026-10-23 and 2026-10-27
 Status: proposal, for review
 Inputs: [`resumable-streams-research.md`](resumable-streams-research.md), the
 Redis Open Source release notes for 7.4 through 8.10, the Redis command pages
@@ -433,7 +433,7 @@ for its payload:
 | Field | Meaning |
 |---|---|
 | `t` | Event type, chosen by the application. Types that start with `stream.` are reserved for the SDK: `stream.end` for a run the SDK ends itself, and `stream.gap` and `stream.error` for the reader's own events, which are never stored. `append()` and `finish()` reject any type with that prefix, and any type that is empty, longer than 128 characters, or contains CR, LF or NUL (section 9). |
-| `d` | Payload, encoded by the SDK's `Coder` (JSON by default). |
+| `d` | Payload, encoded by the SDK's `Coder`. The default is `JsonableCoder` (changed 2026-10-27, was `JsonCoder`): JSON that converts a value `json.dumps` cannot encode, such as a Pydantic model, a dataclass or a datetime, with `pydantic_core.to_jsonable_python` first. Readers decode plain JSON. Caching and sessions keep `JsonCoder`. |
 | `q` | Producer sequence number, starting at 1. `attach()` continues it, so a stream's `q` values have no holes. The reader uses that to detect gaps (section 7.2). |
 | `f` | `1` on the final entry only (section 5.2). Absent on every other entry. |
 

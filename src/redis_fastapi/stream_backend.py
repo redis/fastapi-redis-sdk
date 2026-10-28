@@ -70,7 +70,7 @@ from redis_fastapi.telemetry import (
     stream_span,
     timed_stream,
 )
-from redis_fastapi.types import Coder, JsonCoder
+from redis_fastapi.types import Coder, JsonableCoder
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -449,8 +449,9 @@ class StreamWriter:
         twice.
 
         Raises:
-            ValueError: If *type* is invalid or reserved, or the encoded event
-                is larger than ``stream_max_event_bytes``.
+            ValueError: If *type* is invalid or reserved, the default coder cannot
+                encode *data*, or the encoded event is larger than
+                ``stream_max_event_bytes``.
             StreamFinished: If the final entry was already written.
             StreamExpired: If the stream expired, for example after a pause
                 longer than its TTL.
@@ -836,7 +837,8 @@ class StreamBackend:
     Args:
         client: A callable returning the async Redis client, so the backend
             follows the application's pool.
-        coder: Serializer for event payloads.  Defaults to :class:`JsonCoder`.
+        coder: Serializer for event payloads.  Defaults to
+            :class:`~redis_fastapi.types.JsonableCoder`.
         capabilities: Shared server-support cache.
     """
 
@@ -848,7 +850,7 @@ class StreamBackend:
         capabilities: _StreamCapabilities | None = None,
     ) -> None:
         self._client = client
-        self._coder: type[Coder] = coder or JsonCoder
+        self._coder: type[Coder] = coder or JsonableCoder
         self._caps = capabilities if capabilities is not None else _StreamCapabilities()
         self._tasks: set[asyncio.Task[None]] = set()
         self._spawned: dict[tuple[str, str], asyncio.Task[None]] = {}
