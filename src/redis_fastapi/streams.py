@@ -367,17 +367,16 @@ def add_redis_streams(
         StreamConfigurationError: If a setting cannot work, if *backend* comes
             with *coder* or options, or if the app already has another backend.
     """
+    if backend is not None and (coder is not None or backend_options):
+        raise StreamConfigurationError(
+            "pass coder and options to the StreamBackend you build, not alongside it"
+        )
     existing: StreamBackend | None = getattr(app.state, "_redis_streams", None)
     if existing is not None:
         if backend is not None and backend is not existing:
             raise StreamConfigurationError("this app already has a stream backend")
         return existing
     if backend is not None:
-        if coder is not None or backend_options:
-            raise StreamConfigurationError(
-                "pass coder and options to the StreamBackend you build, not "
-                "alongside it"
-            )
         app.state._redis_streams_injected = True
     else:
         from redis_fastapi.deps import _get_pool_state

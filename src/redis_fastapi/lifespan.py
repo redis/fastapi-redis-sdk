@@ -184,6 +184,7 @@ async def _start_streams(app: FastAPI, ps: _PoolState) -> Any:
         return backend
     from redis_fastapi.stream_backend import _StreamCapabilities
 
+    backend._check_clients()
     ps.stream_capabilities = _StreamCapabilities()
     backend._start(ps.stream_capabilities)
     try:
@@ -240,9 +241,9 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if getattr(app.state, "_redis_caching", False):
         await _check_cache_eviction_safety(ps)
 
-    streams = await _start_streams(app, ps)
-
+    streams = None
     try:
+        streams = await _start_streams(app, ps)
         yield
     finally:
         if streams is not None:

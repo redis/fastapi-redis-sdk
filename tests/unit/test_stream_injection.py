@@ -134,6 +134,20 @@ def test_backend_with_options_rejected(
         add_redis_streams(FastAPI(), backend=backend, **extra)
 
 
+@pytest.mark.parametrize(
+    "extra", [{"coder": object}, {"key_prefix": "x"}, {"max_readers": 2}]
+)
+def test_repeated_backend_with_options_rejected(
+    extra: dict[str, Any], fresh_settings: Any
+) -> None:
+    app = FastAPI()
+    backend = StreamBackend(Redis(socket_timeout=30))
+    add_redis_streams(app, backend=backend)
+    with pytest.raises(StreamConfigurationError, match="alongside"):
+        add_redis_streams(app, backend=backend, **extra)
+    assert app.state._redis_streams is backend
+
+
 def test_builder_passes_options(fresh_settings: Any) -> None:
     app = FastAPI()
     FastAPIRedis(app).streams(key_prefix="built", max_readers=3)
@@ -179,6 +193,20 @@ async def test_reader_socket_timeout_validated(fresh_settings: Any) -> None:
             pytest.fail("startup should fail")
     await reader.aclose()
     await command.aclose()
+
+
+async def test_builder_reader_socket_timeout_validated(fresh_settings: Any) -> None:
+    from redis_fastapi.lifespan import redis_lifespan
+
+    reader = Redis(socket_timeout=1)
+    app = FastAPI()
+    FastAPIRedis(app).streams(blocking_client=reader)
+    with pytest.raises(StreamConfigurationError, match="socket_timeout"):
+        async with redis_lifespan(app):
+            pytest.fail("startup should fail")
+    assert app.state._redis.async_pool is None
+    assert not app.state._redis_streams._running
+    await reader.aclose()
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("startup"), asyncio.CancelledError()])
@@ -229,5 +257,30 @@ async def test_redis_lifespan_runs_an_injected_backend(
         assert backend._caps is not app.state._redis.stream_capabilities
         assert backend._caps is not caps
     assert events == ["start", "stop"]
+    assert not backend._running
+    await client.aclose()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("startup"), asyncio.CancelledError()])
+async def test_redis_lifespan_cleans_pool_when_injected_startup_fails(
+    failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+    fresh_settings: Any,
+) -> None:
+    from redis_fastapi.deps import _PoolState
+    from redis_fastapi.lifespan import redis_lifespan
+
+    client = Redis(socket_timeout=30)
+    backend = StreamBackend(client)
+    pool = AsyncMock()
+    monkeypatch.setattr(_PoolState, "build_async_pool", lambda: pool)
+    monkeypatch.setattr(backend, "detect", AsyncMock(side_effect=failure))
+    app = FastAPI()
+    add_redis_streams(app, backend=backend)
+    with pytest.raises(type(failure)):
+        async with redis_lifespan(app):
+            pytest.fail("startup should fail")
+    pool.aclose.assert_awaited_once()
+    assert app.state._redis.async_pool is None
     assert not backend._running
     await client.aclose()
