@@ -42,18 +42,18 @@ Automatically reads from:
 | `warn_unbounded_cache`          | `bool`              | `True`            | -                                            | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `otel_enabled`                  | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
 | `otel_redis_enabled`            | `bool`              | `False`           | -                                            | Enable redis-py native OTel                                          |
-| `stream_active_ttl_seconds`     | `float`             | `600`             | > 0                                          | TTL of a running stream, refreshed by every append                   |
-| `stream_done_ttl_seconds`       | `float`             | `120`             | > 0                                          | How long a finished stream stays readable                            |
-| `stream_gone_ttl_seconds`       | `float`             | `3600`            | >= 0                                         | How long stream metadata outlives the stream                         |
+| `stream_active_ttl`             | `int`               | `600`             | > 0                                          | TTL of a running stream, refreshed by every append                   |
+| `stream_done_ttl`               | `int`               | `120`             | > 0                                          | How long a finished stream stays readable                            |
+| `stream_gone_ttl`               | `int`               | `3600`            | >= 0                                         | How long stream metadata outlives the stream                         |
 | `stream_maxlen`                 | `int`               | `10000`           | > 0                                          | Approximate entries kept per stream                                  |
 | `stream_max_event_bytes`        | `int`               | `65536`           | > 0                                          | Largest encoded event                                                |
-| `stream_heartbeat_seconds`      | `float`             | `15`              | > 0                                          | SSE ping, read bound, producer heartbeat                             |
-| `stream_alive_ttl_seconds`      | `float`             | `45`              | > heartbeat                                  | Lifetime of the producer heartbeat field                             |
+| `stream_heartbeat_interval`     | `int`               | `15`              | > 0                                          | SSE ping, read bound, producer heartbeat                             |
+| `stream_alive_ttl`              | `int`               | `45`              | > heartbeat                                  | Lifetime of the producer heartbeat field                             |
 | `stream_replay_page`            | `int`               | `100`             | > 0                                          | Entries per stream read                                              |
 | `stream_max_readers`            | `int`               | `256`             | > 0                                          | Live SSE readers per process                                         |
-| `stream_max_connection_seconds` | `float`             | `300`             | > 0                                          | Longest SSE connection                                               |
-| `stream_read_retry_seconds`     | `float`             | `30`              | >= 0                                         | How long a reader retries a failing read                             |
-| `stream_send_timeout_seconds`   | `float`             | `10`              | > 0                                          | Longest wait for one send to a client                                |
+| `stream_max_connection_duration` | `int`              | `300`             | > 0                                          | Longest SSE connection                                               |
+| `stream_read_retry_window`      | `int`               | `30`              | >= 0                                         | How long a reader retries a failing read                             |
+| `stream_send_timeout`           | `int`               | `10`              | > 0                                          | Longest wait for one send to a client                                |
 
 The `stream_*` fields are checked when `.streams()` runs, not by the model
 itself: an application without resumable streams never sees those checks. See

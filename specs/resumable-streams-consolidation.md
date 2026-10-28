@@ -42,15 +42,15 @@ the application.
 | **TTL** | Sliding: every append refreshes it (10 min active, 2 min done, `extend()`). | Absolute, set at `create()`, never extended. A renewal API is deferred. An expired identity is never reused. |
 | **Creation** | `open()` takes the active slot and writes meta in one `WATCH`/`MULTI` transaction (changed 2026-10-26), so a run is never half made. Meta marks a retried start. The first `XADD` creates the stream; later appends use `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
 | **Idempotency keys** | SDK-internal: writer ID plus sequence `q`, and one fixed pair for the final entry. Keys from the application are deferred to phase 3 (section 6.3). `attach()` fences the old writer. | Supplied by the application: a stable `producer` and an `idempotency_key` per logical event. |
-| **Append checks** | One `MULTI`: `XADD` + `PEXPIRE` + `HMGET` of the cancel flag and the writer. `finish()` alone checks the writer under `WATCH` first (2026-10-26), so a replaced writer cannot end the new writer's run. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
+| **Append checks** | One `MULTI`: `XADD` + `EXPIRE` + `HMGET` of the cancel flag and the writer. `finish()` alone checks the writer under `WATCH` first (2026-10-26), so a replaced writer cannot end the new writer's run. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
 | **Trimming and gaps** | `XADD MAXLEN ~`. One check before replay gives a 410: `max-deleted-entry-id` for `XDEL`, and `entries-added` against `length` and the first entry for trimming, which does not move that field. No cursor counts as `0-0`. A gap found later, from a jump in `q`, is a `stream.gap` event, and the reader goes on. | Bans untracked `MAXLEN`. The backend trims in a guarded transaction and advances a `history_floor` in meta. |
 | **Terminal state** | Changed 2026-10-23: one end marker, `f=1`, on a final entry whose type and data the application chooses. `finish()` writes it in one append and sets `status=finished` in the same transaction; meta records no final entry ID (changed 2026-10-26). The writer refuses later appends, and readers ignore anything after the first final entry. When the SDK ends a run itself, `spawn()` writes `stream.end` with the reason in its data. | `finish()` writes the final event and seals the log in one `WATCH`/`MULTI` step. Finality is SDK metadata, so the application keeps its own event names. |
-| **404 versus 410** | Adopted 2026-10-23: meta outlives the stream by `stream_gone_ttl_seconds` (1 h), and a `started` flag tells an expired stream from one not started yet. 410 within the window, 404 after it. | Settled: meta outlives payload by 24 h, so a known expired stream returns 410. |
+| **404 versus 410** | Adopted 2026-10-23: meta outlives the stream by `stream_gone_ttl` (1 h), and a `started` flag tells an expired stream from one not started yet. 410 within the window, 404 after it. | Settled: meta outlives payload by 24 h, so a known expired stream returns 410. |
 | **Errors after headers** | Decided 2026-10-23: no action field. A passing problem (Redis down past a retry bound, shutdown, the connection cap) closes with no event, and `EventSource` resumes. A stream that is over ends: a reader writes `stream.end` for a dead producer, or a vanished stream gets 410 or 404 on reconnect. Only `stream.error` `credential_expired` remains, as a hint, plus `producer_lost` for a read-only reader. The `stream.` prefix is reserved. | A `redis.stream.control` event with no ID and an action (`reload`, `reconnect`, `reauthenticate`). The `redis.stream.` prefix is reserved. |
 | **Status codes** | 422 bad or repeated cursor, 404, 410 expired or truncated, 409 busy and `cursor_ahead`, 503 overload, 204 for a cursor at or past the final entry. A cursor before trimmed history stays 410, where the PR uses 409 `history_unavailable`. | 422 bad cursor, 409 `history_unavailable` and `cursor_ahead`, 410 expired, 503 overload or Redis unavailable, 204 for a sealed log already read to the end. |
 | **Cursor rules** | Adopted 2026-10-23: handler value, then `Last-Event-ID`, then query; validated at the boundary (no `$`, `+`, `-`, bare `<ms>`, or parts above 2^64 − 1); numeric comparison; `0-0` allowed; duplicates rejected; a cursor above `last-generated-id` gets 409. | Explicit order: handler value, then `Last-Event-ID`, then query. Numeric comparison, `0-0` allowed, duplicate values rejected, a cursor past the tail rejected. |
 | **Admission** | `stream_max_readers` (256) live readers per process; 503 over the limit. | 1,000 subscribers and 256 active streams per process; 503 `stream_capacity_exceeded` over either. |
-| **Slow consumers** | Adopted 2026-10-23: a send timeout (`stream_send_timeout_seconds`, 10 s) closes a reader whose client stops reading. No queue, because the reader pulls from Redis only when it can send. | A 10 s send timeout disconnects a blocked subscriber. |
+| **Slow consumers** | Adopted 2026-10-23: a send timeout (`stream_send_timeout`, 10 s) closes a reader whose client stops reading. No queue, because the reader pulls from Redis only when it can send. | A 10 s send timeout disconnects a blocked subscriber. |
 | **Key names** | `<prefix>:stream:{<scope>}:<id>` and siblings, all hashed on the scope so the active slot shares their Cluster slot (changed 2026-10-26), with `<prefix>` from the SDK's `prefix` setting, as every other feature uses (adopted 2026-10-23). No layout version. Scopes and IDs are limited to characters that cannot break the hash tag, so no encoding is needed. | `settings.pattern_prefix("streams")`, a layout version (`v1`), base64url-encoded names, and an optional `key_builder`. |
 
 ## 3. Public API differences in phase 1
@@ -115,16 +115,16 @@ The PR has no equivalent for any of them.
 
 | Setting | Ours | PR #89 |
 |---|---|---|
-| TTL | `stream_active_ttl_seconds` 600 s, `stream_done_ttl_seconds` 120 s, sliding. Renamed on 2026-10-26 from `stream_ttl_active` and `stream_ttl_done`: every stream duration is now a float named `*_seconds`. | A `ttl` per `create()` call, absolute. |
-| Expiry recognition | `stream_gone_ttl_seconds` 3,600 s, renamed from `stream_expiry_window`: meta kept that long after the stream. Adopted. | Meta kept 24 h after the payload deadline. |
+| TTL | `stream_active_ttl` 600 s, `stream_done_ttl` 120 s, sliding. Renamed from `stream_ttl_active` and `stream_ttl_done`. On 2026-10-26 every stream duration became a float named `*_seconds`; on 2026-10-28 they went back to `int` seconds with no suffix, as every other SDK duration is (`default_ttl`, `session_idle_ttl`). No real use needs sub-second TTLs. | A `ttl` per `create()` call, absolute. |
+| Expiry recognition | `stream_gone_ttl` 3,600 s, renamed from `stream_expiry_window`: meta kept that long after the stream. Adopted. | Meta kept 24 h after the payload deadline. |
 | Entry cap | `stream_maxlen` 10,000. | 10,000 application events; same. |
 | Event size | `stream_max_event_bytes` 65,536. | 64 KiB; same. |
-| Heartbeat | `stream_heartbeat_seconds` 15. | 15 s keepalive comment; same. |
-| Producer liveness | `stream_alive_ttl_seconds` 45. | None. |
+| Heartbeat | `stream_heartbeat_interval` 15. | 15 s keepalive comment; same. |
+| Producer liveness | `stream_alive_ttl` 45. | None. |
 | Replay page | `stream_replay_page` 100. | Byte and entry budgets per read (section 6). |
 | Admission | `stream_max_readers` 256. | 1,000 subscribers and 256 active streams. |
-| Connection lifetime | `stream_max_connection_seconds` 300, or less with `expires_at`. Adopted. | 5 min, or less with `expires_at`. |
-| Send timeout | `stream_send_timeout_seconds` 10 s. Adopted. | 10 s. |
+| Connection lifetime | `stream_max_connection_duration` 300, or less with `expires_at`. Adopted. | 5 min, or less with `expires_at`. |
+| Send timeout | `stream_send_timeout` 10 s. Adopted. | 10 s. |
 
 ## 4. The trade-offs that matter
 
@@ -213,11 +213,11 @@ Ranked by how much harm the gap does in our design today.
 3. ~~**Credential deadline, connection lifetime and access.**~~ Adopted in the
    design on 2026-10-23 (design section 5.6, decision 2). `sse()` takes
    `expires_at`, `session_expiry(request)` fills it from the SDK session, and
-   `stream_max_connection_seconds` (default 300) caps every connection. The
+   `stream_max_connection_duration` (default 300) caps every connection. The
    SDK dropped `owner`; the application's dependency decides access, and the
    stream key is derived from the authorized scope.
 4. ~~**404 versus 410.*~~* Adopted in the design on 2026-10-23 (design sections
-   6.1 and 7.2, decision 3). Meta outlives the stream by `stream_gone_ttl_seconds`
+   6.1 and 7.2, decision 3). Meta outlives the stream by `stream_gone_ttl`
    (1 h), and the first append sets `started=1` in meta. A flag, not a payload
    deadline, tells an expired stream from one not started yet, so no process
    compares clocks. Within the window a reconnect gets 410, and after it 404.
@@ -366,8 +366,8 @@ design (sections 7 and 8) and the guide.
    old per-subclass registration replaced any handler the application had set.
 6. **`StreamInvalidName` (422)** for a bad scope or stream ID on every route,
    and a cursor pattern that accepts only ASCII digits, at most 20 per part.
-7. **Setting names**: `stream_active_ttl_seconds`, `stream_done_ttl_seconds`
-   and `stream_gone_ttl_seconds`, so every duration reads the same way.
+7. **Setting names**: `stream_active_ttl`, `stream_done_ttl`
+   and `stream_gone_ttl`, so every duration reads the same way.
 8. **`StreamEvent` has only its four documented fields.** The stored payload
    no longer rides on it as a private field.
 
@@ -437,7 +437,7 @@ of the PR (2026-10-23). None is critical for phase 1; each waits for phase 2.
    connection cap. The design says a shutdown closes readers but names no
    trigger, and the lifespan's shutdown may only run after those connections
    have closed; this needs checking with uvicorn. Without a trigger, every
-   deploy waits up to `stream_max_connection_seconds`. The PR's shutdown
+   deploy waits up to `stream_max_connection_duration`. The PR's shutdown
    "stops admission, closes subscriptions within a grace period". Fix: on the
    server's shutdown signal, stop admitting readers (503) and close live ones
    with no event, so clients reconnect elsewhere; the docs recommend the

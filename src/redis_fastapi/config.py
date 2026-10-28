@@ -337,7 +337,7 @@ class RedisSettings(BaseSettings):
     )
 
     # -- Resumable streams -----------------------------------------------------
-    stream_active_ttl_seconds: float = Field(
+    stream_active_ttl: int = Field(
         default=600,
         gt=0,
         description=(
@@ -346,7 +346,7 @@ class RedisSettings(BaseSettings):
             "itself."
         ),
     )
-    stream_done_ttl_seconds: float = Field(
+    stream_done_ttl: int = Field(
         default=120,
         gt=0,
         description=(
@@ -354,7 +354,7 @@ class RedisSettings(BaseSettings):
             "still reconnect and read a finished stream."
         ),
     )
-    stream_gone_ttl_seconds: float = Field(
+    stream_gone_ttl: int = Field(
         default=3600,
         ge=0,
         description=(
@@ -375,21 +375,22 @@ class RedisSettings(BaseSettings):
         gt=0,
         description="Largest accepted encoded event, in bytes.",
     )
-    stream_heartbeat_seconds: float = Field(
+    stream_heartbeat_interval: int = Field(
         default=15,
         gt=0,
         description=(
-            "SSE ping interval.  Also bounds each blocking read, and sets how "
-            "often a producer refreshes its heartbeat and checks for cancel."
+            "SSE ping interval, in seconds.  Also bounds each blocking read, "
+            "and sets how often a producer refreshes its heartbeat and checks "
+            "for cancel."
         ),
     )
-    stream_alive_ttl_seconds: float = Field(
+    stream_alive_ttl: int = Field(
         default=45,
         gt=0,
         description=(
-            "Lifetime of a producer's heartbeat field.  When it lapses with no "
-            "final entry, a reader ends the stream as producer_lost.  Must be "
-            "longer than stream_heartbeat_seconds."
+            "Lifetime of a producer's heartbeat field, in seconds.  When it "
+            "lapses with no final entry, a reader ends the stream as "
+            "producer_lost.  Must be longer than stream_heartbeat_interval."
         ),
     )
     stream_replay_page: int = Field(
@@ -405,27 +406,27 @@ class RedisSettings(BaseSettings):
             "reader gets 503 with Retry-After."
         ),
     )
-    stream_max_connection_seconds: float = Field(
+    stream_max_connection_duration: int = Field(
         default=300,
         gt=0,
         description=(
-            "Longest SSE connection.  The browser then reconnects and the "
+            "Longest SSE connection, in seconds.  The browser then reconnects and the "
             "application's access check runs again."
         ),
     )
-    stream_read_retry_seconds: float = Field(
+    stream_read_retry_window: int = Field(
         default=30,
         ge=0,
         description=(
-            "How long a reader retries a failing Redis read, still sending "
-            "pings, before it closes and lets the client reconnect."
+            "How long a reader retries a failing Redis read, in seconds, "
+            "still sending pings, before it closes and lets the client reconnect."
         ),
     )
-    stream_send_timeout_seconds: float = Field(
+    stream_send_timeout: int = Field(
         default=10,
         gt=0,
         description=(
-            "Longest wait for one send to a client.  Past it the reader "
+            "Longest wait for one send to a client, in seconds.  Past it the reader "
             "closes and frees its slot."
         ),
     )

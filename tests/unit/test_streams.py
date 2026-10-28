@@ -12,13 +12,14 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.crc import key_slot
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -52,7 +53,7 @@ from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
     _keys,
-    _ms,
+    _seconds,
     _StreamCapabilities,
     _xread_entries,
     check_event_type,
@@ -355,7 +356,7 @@ class TestCheckStreamSettings:
             check_stream_settings()
 
     def test_heartbeat_key_must_outlive_the_heartbeat(self, settings_env: Any) -> None:
-        settings_env(stream_heartbeat_seconds=10, stream_alive_ttl_seconds=10)
+        settings_env(stream_heartbeat_interval=10, stream_alive_ttl=10)
         with pytest.raises(StreamConfigurationError, match="alive"):
             check_stream_settings()
 
@@ -682,11 +683,18 @@ class TestWriterValidation:
 
 
 class TestDurations:
-    def test_milliseconds_from_seconds_or_timedelta(self) -> None:
-        assert _ms(timedelta(minutes=2)) == 120_000
-        assert _ms(30) == 30_000
-        assert _ms(0.25) == 250
-        assert _ms(0) == 1
+    def test_seconds_from_int_or_timedelta(self) -> None:
+        assert _seconds(timedelta(minutes=2)) == 120
+        assert _seconds(30) == 30
+        assert _seconds(timedelta(milliseconds=500)) == 1
+        assert _seconds(0) == 1
+
+    def test_settings_take_whole_seconds_only(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env(stream_heartbeat_interval=0.5)
+        with pytest.raises(ValidationError):
+            get_settings()
 
 
 async def _noop(writer: StreamWriter) -> None:
@@ -782,3 +790,235 @@ class TestHistoryLost:
         from redis_fastapi.stream_backend import _history_lost
 
         assert not _history_lost(None, (0, 0), own_present=False)
+
+
+# ---------------------------------------------------------------------------
+# The producer heartbeat and the lost producer, against a recording client
+# ---------------------------------------------------------------------------
+
+
+class _Pipe:
+    """Records the commands a transaction queues, and replies as scripted."""
+
+    def __init__(self, replies: list[Any]) -> None:
+        self.commands: list[tuple[Any, ...]] = []
+        self._replies = replies
+
+    def execute_command(self, *args: Any) -> None:
+        self.commands.append(args)
+
+    def __getattr__(self, name: str) -> Any:
+        def queue(*args: Any, **kwargs: Any) -> None:
+            self.commands.append((name.upper(), *args, *kwargs.items()))
+
+        return queue
+
+    async def execute(self) -> list[Any]:
+        return self._replies
+
+    def find(self, name: str) -> tuple[Any, ...] | None:
+        return next((c for c in self.commands if c[0] == name), None)
+
+
+class _Client:
+    """Hands out recording pipelines; every one replies with *replies*."""
+
+    def __init__(self, replies: list[Any]) -> None:
+        self.replies = replies
+        self.pipes: list[_Pipe] = []
+        self.hmget = AsyncMock()
+        self.xread = AsyncMock()
+
+    def pipeline(self, transaction: bool = True) -> _Pipe:
+        pipe = _Pipe(self.replies)
+        self.pipes.append(pipe)
+        return pipe
+
+
+def _started_backend(client: _Client) -> StreamBackend:
+    backend = StreamBackend(lambda: client)
+    backend._start(_StreamCapabilities(supported=True))
+    return backend
+
+
+def _owned_writer(backend: StreamBackend, *, exclusive: bool) -> StreamWriter:
+    return StreamWriter(
+        backend,
+        scope="chat:1",
+        stream_id="r1",
+        writer_id="w",
+        exclusive=exclusive,
+        created=True,
+        seq=1,
+        started=True,
+    )
+
+
+@pytest.fixture()
+def fast_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make only the heartbeat's own wait return at once.
+
+    Every other sleep, a producer's included, keeps its real length.
+    """
+    real_sleep = asyncio.sleep
+    interval = get_settings().stream_heartbeat_interval
+
+    async def sleep(delay: float, *args: Any) -> Any:
+        return await real_sleep(0 if delay == interval else delay, *args)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+
+def _lost_plan() -> Any:
+    from redis_fastapi.stream_backend import _ReadPlan
+
+    return _ReadPlan(
+        keys=_keys("chat:1", "r1"), stream_id="r1", cursor=(0, 0), last_seq=1
+    )
+
+
+class TestProducerHeartbeat:
+    """What ``keepalive()`` sends on each beat, and what it does with the reply."""
+
+    async def _beats(self, writer: StreamWriter) -> None:
+        async with writer.keepalive():
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+    async def test_a_beat_refreshes_the_heartbeat(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, [None, "w"]])
+        await self._beats(_owned_writer(_started_backend(client), exclusive=False))
+        assert client.pipes
+        keys = _keys("chat:1", "r1")
+        for pipe in client.pipes:
+            assert pipe.commands == [
+                ("HSETEX", keys.meta, "EX", 45, "FIELDS", 1, "alive", "1"),
+                ("HMGET", keys.meta, ["cancel", "writer"]),
+            ]
+
+    async def test_a_beat_refreshes_the_active_slot(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, True, [None, "w"]])
+        await self._beats(_owned_writer(_started_backend(client), exclusive=True))
+        keys = _keys("chat:1", "r1")
+        assert client.pipes[0].find("SET") == (
+            "SET",
+            keys.active,
+            "r1",
+            "IFEQ",
+            "r1",
+            "EX",
+            600,
+        )
+
+    async def test_a_beat_that_finds_another_writer_writes_no_end(
+        self, settings_env: Callable[..., None], fast_heartbeat: None
+    ) -> None:
+        settings_env()
+        client = _Client([True, True, [None, "someone-else"]])
+        backend = _started_backend(client)
+        writer = _owned_writer(backend, exclusive=True)
+
+        async def quiet(writer: StreamWriter) -> None:
+            await asyncio.sleep(3600)  # a long tool call: no appends
+
+        await asyncio.wait_for(backend.spawn(writer, quiet), 1)
+        assert writer._fenced
+        assert all(pipe.find("XADD") is None for pipe in client.pipes)
+
+
+class TestLostProducer:
+    """A reader that finds the heartbeat gone writes the final entry itself."""
+
+    _FINAL_REPLY = ["9-0", 1, True, True, True, 1, [None, "w"]]
+
+    async def test_a_quiet_read_ends_the_stream_for_a_lost_producer(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        client.hmget.return_value = ["running", "1", None]
+        keys = _keys("chat:1", "r1")
+        lost = {"t": "stream.end", "d": '{"reason": "producer_lost"}', "f": "1"}
+        client.xread.side_effect = [[], [[keys.stream, [("9-0", lost)]]]]
+        backend = _started_backend(client)
+        pages = [page async for page in backend._pages(_lost_plan())]
+        assert pages[-1][-1].final and pages[-1][-1].type == "stream.end"
+        (pipe,) = client.pipes
+        xadd = pipe.find("XADD")
+        assert xadd is not None
+        assert xadd[2:6] == ("NOMKSTREAM", "IDMP", "end", "final")
+        assert xadd[-6:] == (
+            "t",
+            "stream.end",
+            "d",
+            '{"reason": "producer_lost"}',
+            "f",
+            "1",
+        )
+        assert ("HSET", keys.meta, "status", "finished") in pipe.commands
+        assert ("EXPIRE", keys.stream, 120) in pipe.commands
+        assert ("EXPIRE", keys.meta, 120 + 3600) in pipe.commands
+        assert ("DELEX", keys.active, "IFEQ", "r1") in pipe.commands  # slot freed
+
+    async def test_the_writer_and_the_reader_write_the_same_final_entry(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        # Both send the IDMP pair (end, final), so Redis keeps one final entry
+        # however the two race.
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        backend = _started_backend(client)
+        await backend._end_lost(_lost_plan(), started=True)
+        writer_pipe = _Pipe([])
+
+        async def transaction(build: Any, owner: Any = None) -> list[Any]:
+            build(writer_pipe)
+            return self._FINAL_REPLY
+
+        backend._transaction = transaction  # type: ignore[method-assign]
+        await _owned_writer(backend, exclusive=True).finish("message", {})
+        for pipe in (client.pipes[0], writer_pipe):
+            xadd = pipe.find("XADD")
+            assert xadd is not None and xadd[3:6] == ("IDMP", "end", "final")
+
+    async def test_a_lost_producer_never_recreates_an_expired_stream(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client([None, 1, True, True, True, 1, [None, None]])
+        client.hmget.return_value = ["running", "1", None]
+        backend = _started_backend(client)
+        assert await backend._check_producer(_lost_plan()) == "gone"
+        xadd = client.pipes[0].find("XADD")
+        assert xadd is not None and xadd[2] == "NOMKSTREAM"
+
+    async def test_a_lost_producer_that_never_appended_gets_an_end(
+        self, settings_env: Callable[..., None]
+    ) -> None:
+        settings_env()
+        client = _Client(self._FINAL_REPLY)
+        client.hmget.return_value = ["running", None, None]
+        backend = _started_backend(client)
+        assert await backend._check_producer(_lost_plan()) == "ended"
+        pipe = client.pipes[0]
+        xadd = pipe.find("XADD")
+        assert xadd is not None and "NOMKSTREAM" not in xadd
+        assert ("HSET", _keys("chat:1", "r1").meta, "started", "1") in pipe.commands
+
+    @pytest.mark.parametrize(
+        "meta", [["running", "1", "1"], ["finished", "1", None]], ids=["alive", "done"]
+    )
+    async def test_a_live_or_finished_producer_is_left_alone(
+        self, settings_env: Callable[..., None], meta: list[Any]
+    ) -> None:
+        settings_env()
+        client = _Client([])
+        client.hmget.return_value = meta
+        assert await _started_backend(client)._check_producer(_lost_plan()) == "quiet"
+        assert client.pipes == []

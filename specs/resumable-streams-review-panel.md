@@ -44,7 +44,7 @@ No blocker is open. The most important open items, in order:
 
 1. **Shutdown under uvicorn.** uvicorn runs the lifespan shutdown only after
    open responses end, so `aclose()` cannot close live readers. A deploy can
-   wait up to `stream_max_connection_seconds` for SSE responses. The guide
+   wait up to `stream_max_connection_duration` for SSE responses. The guide
    promises a prompt close, and gives two different outcomes for a deploy.
    No test runs a real server.
 2. **The Starlette floor.** On FastAPI 0.115 (Starlette 0.37–0.38) the
@@ -74,7 +74,7 @@ replay-bytes counter, and content outside the brief.
 
 | Where | Claim | Evidence | Anchor |
 |---|---|---|---|
-| `lifespan.py:238-246`; `stream_backend.py:1503, 1633-1663`; `docs/guide/streams.md:122, 405-407` | Under uvicorn, readers do not close at shutdown as the docs promise, and a deploy can wait on them. | uvicorn waits for open responses before it runs the lifespan shutdown. Readers stop on `_closing`, which only `aclose()` sets, so they end on their own, up to `stream_max_connection_seconds` (300 s). Producers can die without a final entry if the process is killed first. The guide says `spawn()` cancels producers at shutdown (reason `cancelled`), and also that readers get `producer_lost` on a deploy; it does not say when each applies. No test runs a real server. Raised by three reviewers. | Design §7.2 and test 22 |
+| `lifespan.py:238-246`; `stream_backend.py:1503, 1633-1663`; `docs/guide/streams.md:122, 405-407` | Under uvicorn, readers do not close at shutdown as the docs promise, and a deploy can wait on them. | uvicorn waits for open responses before it runs the lifespan shutdown. Readers stop on `_closing`, which only `aclose()` sets, so they end on their own, up to `stream_max_connection_duration` (300 s). Producers can die without a final entry if the process is killed first. The guide says `spawn()` cancels producers at shutdown (reason `cancelled`), and also that readers get `producer_lost` on a deploy; it does not say when each applies. No test runs a real server. Raised by three reviewers. | Design §7.2 and test 22 |
 | `streams.py:176-212` | On the FastAPI 0.115 floor (Starlette 0.37–0.38), the slow-consumer exit escapes as an unhandled ASGI error. | Those versions run `stream_response` in a plain anyio task group, so `_SlowConsumer` arrives wrapped in an `ExceptionGroup`, which `except _SlowConsumer` does not catch. uvicorn reports `spec_version` 2.3, so this is the production path. The slot is still released. CI never installs the floors. | Platform baseline |
 
 ### API and structure
@@ -145,12 +145,12 @@ shutdown runs only after they end?
 - **A (recommended):** Document it. Tell users to set uvicorn's
   `--timeout-graceful-shutdown`, and give the outcome for each path: a
   graceful stop within the grace ends with `cancelled`, a killed process
-  with `producer_lost`. Optionally lower the `stream_max_connection_seconds`
+  with `producer_lost`. Optionally lower the `stream_max_connection_duration`
   default.
 - **B:** Detect the server's shutdown before the lifespan runs, for example
   with an SDK signal handler. Readers close at once. This is not portable
   across servers, and it can conflict with uvicorn's own handlers.
-- **C:** Accept that readers end at `stream_max_connection_seconds` and say
+- **C:** Accept that readers end at `stream_max_connection_duration` and say
   so. This needs the least work, but a deploy can wait up to 300 s.
 
 Also: which outcome should the guide promise for a deploy, `cancelled` or

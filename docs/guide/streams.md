@@ -92,7 +92,7 @@ writer = await streams.start(run_agent, scope="chat:42", stream_id=run_id)
   the request, and a retried `POST` finds the same run: `start()` starts no
   second producer, and the writer it returns has `created` set to `False`.
   This holds while the run goes on and for
-  `stream_done_ttl_seconds + stream_gone_ttl_seconds` after it ends; later,
+  `stream_done_ttl + stream_gone_ttl` after it ends; later,
   the same ID starts a new run. Without a `stream_id`, the SDK generates one.
 - **One active run per scope.** By default a run takes the scope's slot, and a
   second `open()` in the same scope raises `StreamBusy` (`409`), whose
@@ -186,7 +186,7 @@ A cursor must be a full entry ID such as `1700000000000-0`. `0-0` means the
 whole stream. The special IDs `$`, `+` and `-`, a bare timestamp, and a
 repeated header or query parameter are refused with `422`.
 
-The response sends a `: ping` comment every `stream_heartbeat_seconds`, sets
+The response sends a `: ping` comment every `stream_heartbeat_interval`, sets
 `Cache-Control: no-store` and `X-Accel-Buffering: no`, and closes after the
 final event. Its `retry:` hint asks the browser to reconnect after one to three
 seconds, chosen at random per connection, so clients that a deploy closed at
@@ -253,7 +253,7 @@ return await streams.sse(stream_id, request=request, scope=scope,
 `session_expiry()` returns the absolute deadline of the SDK session. With
 other credentials, pass your own, for example a JWT's `exp`. At the deadline
 the response sends a `stream.error` event with code `credential_expired` and
-closes. Every connection also closes after `stream_max_connection_seconds`,
+closes. Every connection also closes after `stream_max_connection_duration`,
 with no event. The browser then reconnects through your dependency, so a
 revoked session keeps reading for at most that long.
 
@@ -595,7 +595,7 @@ register for `StreamError`, or for one of its subclasses, takes precedence.
 After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:
 
-- **Passing**: Redis down for longer than `stream_read_retry_seconds`, a
+- **Passing**: Redis down for longer than `stream_read_retry_window`, a
   shutdown, the connection cap, a client that stops reading. The response
   closes with no event, and `EventSource` reconnects and resumes from
   `Last-Event-ID`. A shorter Redis failure never reaches the client: the reader
@@ -652,13 +652,13 @@ events.addEventListener("stream.error", (e) => {
 - **Live readers.** At most `stream_max_readers` per process; over the limit a
   new reader gets `503` with `Retry-After`. A reader takes its slot when its
   response starts, and every way the response ends frees it.
-- **Slow clients.** A send that waits longer than `stream_send_timeout_seconds`
+- **Slow clients.** A send that waits longer than `stream_send_timeout`
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.
 - **Connections.** Each live reader holds a pool connection for each blocking
   read. With `REDIS_MAX_CONNECTIONS` set, size it for `stream_max_readers` plus
   your other traffic. The driver's `socket_timeout` must be longer than
-  `stream_heartbeat_seconds`; `.streams()` refuses a setup where it is not.
+  `stream_heartbeat_interval`; `.streams()` refuses a setup where it is not.
 - **Redis failover.** Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
   loss gets `409`; one behind it sees a `stream.gap`.
@@ -699,8 +699,8 @@ transaction starts a run and takes the slot, and one transaction ends it and
 frees the slot. It also puts all of a scope's runs on one shard, so make the
 scope one resource, such as a chat, and not one value for the whole
 application. The `alive` field in the metadata hash is the producer heartbeat;
-it has its own TTL, `stream_alive_ttl_seconds`. The metadata hash outlives the
-stream by `stream_gone_ttl_seconds`,
+it has its own TTL, `stream_alive_ttl`. The metadata hash outlives the
+stream by `stream_gone_ttl`,
 so a late reconnect gets `410` (expired) instead of `404` (unknown). The prefix
 must not contain braces.
 
@@ -709,23 +709,24 @@ must not contain braces.
 ## Settings
 
 Every setting is an environment variable prefixed `REDIS_`, so
-`stream_active_ttl_seconds` is `REDIS_STREAM_ACTIVE_TTL_SECONDS`. See
+`stream_active_ttl` is `REDIS_STREAM_ACTIVE_TTL`. Durations are whole
+seconds, as everywhere else in the SDK. See
 [Configuration](configuration.md) for how these are loaded.
 
-| Setting                         | Default  | Notes                                                                |
-|---------------------------------|----------|----------------------------------------------------------------------|
-| `stream_active_ttl_seconds`     | `600`    | TTL of a running stream, refreshed by every append                   |
-| `stream_done_ttl_seconds`       | `120`    | How long a finished stream stays readable                            |
-| `stream_gone_ttl_seconds`       | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
-| `stream_maxlen`                 | `10000`  | Approximate entries kept per stream                                  |
-| `stream_max_event_bytes`        | `65536`  | Largest encoded event                                                |
-| `stream_heartbeat_seconds`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |
-| `stream_alive_ttl_seconds`      | `45`     | Lifetime of the producer heartbeat field; longer than the heartbeat  |
-| `stream_replay_page`            | `100`    | Entries per read                                                     |
-| `stream_max_readers`            | `256`    | Live SSE readers per process                                         |
-| `stream_max_connection_seconds` | `300`    | Longest SSE connection before the client reconnects                  |
-| `stream_read_retry_seconds`     | `30`     | How long a reader retries a failing Redis read                       |
-| `stream_send_timeout_seconds`   | `10`     | Longest wait for one send to a client                                |
+| Setting                          | Default  | Notes                                                                |
+|----------------------------------|----------|----------------------------------------------------------------------|
+| `stream_active_ttl`              | `600`    | TTL of a running stream, refreshed by every append                   |
+| `stream_done_ttl`                | `120`    | How long a finished stream stays readable                            |
+| `stream_gone_ttl`                | `3600`   | How long metadata outlives the stream, for `410` instead of `404`    |
+| `stream_maxlen`                  | `10000`  | Approximate entries kept per stream                                  |
+| `stream_max_event_bytes`         | `65536`  | Largest encoded event                                                |
+| `stream_heartbeat_interval`      | `15`     | SSE ping, blocking-read bound, producer heartbeat                    |
+| `stream_alive_ttl`               | `45`     | Lifetime of the producer heartbeat field; longer than the heartbeat  |
+| `stream_replay_page`             | `100`    | Entries per read                                                     |
+| `stream_max_readers`             | `256`    | Live SSE readers per process                                         |
+| `stream_max_connection_duration` | `300`    | Longest SSE connection before the client reconnects                  |
+| `stream_read_retry_window`       | `30`     | How long a reader retries a failing Redis read                       |
+| `stream_send_timeout`            | `10`     | Longest wait for one send to a client                                |
 
 ---
 

@@ -143,7 +143,7 @@ def _frame(entry: _Entry) -> str:
 
 
 class _SlowConsumer(Exception):
-    """A send to the client took longer than ``stream_send_timeout_seconds``."""
+    """A send to the client took longer than ``stream_send_timeout``."""
 
 
 class _SSEResponse(StreamingResponse):
@@ -166,7 +166,7 @@ class _SSEResponse(StreamingResponse):
         content: AsyncIterator[str],
         *,
         backend: StreamBackend,
-        send_timeout: float,
+        send_timeout: int,
         **kwargs: Any,
     ) -> None:
         super().__init__(content, **kwargs)
@@ -232,7 +232,7 @@ async def sse(
     The response then replays the entries after the cursor and follows the
     live stream.  It ends after the final entry, at *expires_at* with a
     ``stream.error`` event whose code is ``credential_expired``, or after
-    ``stream_max_connection_seconds`` with no event, so the browser reconnects
+    ``stream_max_connection_duration`` with no event, so the browser reconnects
     through the application's access check.
 
     Do not copy the ``?after=`` query into *after*: the response reads it
@@ -256,7 +256,7 @@ async def sse(
 
     async def body() -> AsyncIterator[str]:
         started = time.monotonic()
-        lifetime_end = started + settings.stream_max_connection_seconds
+        lifetime_end = started + settings.stream_max_connection_duration
         credential_end = (
             started + credential_left if credential_left is not None else None
         )
@@ -291,7 +291,7 @@ async def sse(
     return _SSEResponse(
         body(),
         backend=backend,
-        send_timeout=settings.stream_send_timeout_seconds,
+        send_timeout=settings.stream_send_timeout,
         media_type="text/event-stream",
         headers=_HEADERS,
     )
@@ -331,15 +331,15 @@ def check_stream_settings() -> None:
             "The key prefix must not contain '{' or '}': Redis hashes on the "
             "first braces in a key, which would put every stream in one slot."
         )
-    block = settings.stream_heartbeat_seconds
-    if settings.stream_alive_ttl_seconds <= block:
+    block = settings.stream_heartbeat_interval
+    if settings.stream_alive_ttl <= block:
         raise StreamConfigurationError(
-            "stream_alive_ttl_seconds must be longer than "
-            "stream_heartbeat_seconds, or a live producer looks dead."
+            "stream_alive_ttl must be longer than "
+            "stream_heartbeat_interval, or a live producer looks dead."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(
-            "socket_timeout must be longer than stream_heartbeat_seconds, which "
+            "socket_timeout must be longer than stream_heartbeat_interval, which "
             "bounds each blocking stream read."
         )
 

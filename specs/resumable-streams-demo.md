@@ -135,7 +135,7 @@ a request, and a long SSE response does not refresh the idle clock. The
 stream endpoint passes `session_expiry(request)` to `sse()`, so a response
 ends at the session's absolute deadline with a `stream.error` event whose code is
 `credential_expired`. Every response also ends after 60 seconds
-(`stream_max_connection_seconds`), with no event. The browser then reconnects
+(`stream_max_connection_duration`), with no event. The browser then reconnects
 by itself, and `subject_of` runs again. A reconnect after the idle clock runs
 out, or after a sign-out, gets a `401`, and the UI sends the engineer back to
 sign-in. The stream TTL does not follow the session: a run goes on after its
@@ -483,7 +483,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   the final `stream.end` entry, with `reason` `done`, `error` or `cancelled`,
   and the page shows the outcome from that data. A reconnect past the final
   entry gets `204`, and the page says the run has ended.
-- **Expired streams.** A finished stream stays readable for `stream_done_ttl_seconds`
+- **Expired streams.** A finished stream stays readable for `stream_done_ttl`
   (default 2 minutes). A resume after that gets `410`. The page says the
   answer has expired and never starts the run again by itself.
 
@@ -568,7 +568,7 @@ Risks:
 | 4 | FastAPI Cloud's scaling is unknown to this design: replica count, scale to zero and SSE timeouts. Its autoscaling docs page returned 404. | Runs live in Redis, so readers can follow a run from any replica. A planner runs on the replica that started it, so scale to zero, or a deploy, ends the answers in progress, and their readers see `producer_lost`. Finished answers, sessions, the cache and the quotas live in Redis and survive. |
 | 5 | An in-process call through `ASGITransport` shares the event loop with the SSE readers. | Tool latency is simulated with `asyncio.sleep`, so nothing blocks the loop. |
 | 6 | A crashed producer holds the active slot until a reader notices or the slot's TTL runs out (10 minutes), so its engineer cannot start a new run. | The page follows the active run on load, and its reader ends a dead producer's stream (`producer_lost`), which releases the slot within the heartbeat key's 15 seconds. With no reader, the slot lasts until its TTL. |
-| 7 | An open SSE response does not check the session again. After "sign out everywhere", the phone keeps reading until the connection ends. | Taken into the streams design (decision 2): the response ends at the session's deadline and after `stream_max_connection_seconds`, 60 seconds here, and the reconnect gets `401`. The page's 4-second poll still shows the `401` sooner. |
+| 7 | An open SSE response does not check the session again. After "sign out everywhere", the phone keeps reading until the connection ends. | Taken into the streams design (decision 2): the response ends at the session's deadline and after `stream_max_connection_duration`, 60 seconds here, and the reconnect gets `401`. The page's 4-second poll still shows the `401` sooner. |
 | 8 | `StreamEvent` has no `q`, so the browser cannot prove that no entry was lost on a resume. | The page reports the entries since the cursor and any repeats by entry ID. Feed back to the streams design if a "0 lost" check is wanted. |
 
 Decisions:

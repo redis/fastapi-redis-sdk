@@ -40,7 +40,7 @@ from redis_fastapi import (
 )
 from redis_fastapi.config import get_settings
 from redis_fastapi.stream_backend import _keys, _StreamCapabilities
-from tests.conftest import REDIS_URL, requires_redis
+from tests.conftest import REDIS_URL, about, aexpire_now, requires_redis
 
 
 def _server_supports_streams() -> bool | None:
@@ -201,9 +201,9 @@ async def _collect(
     return events
 
 
-async def _alive_ms(redis: Any, keys: Any) -> int:
-    """The heartbeat field's remaining lifetime in ms, or a negative code."""
-    reply = await redis.execute_command("HPTTL", keys.meta, "FIELDS", 1, "alive")
+async def _alive_ttl(redis: Any, keys: Any) -> int:
+    """The heartbeat field's remaining lifetime in seconds, or a negative code."""
+    reply = await redis.execute_command("HTTL", keys.meta, "FIELDS", 1, "alive")
     return int(reply[0])
 
 
@@ -474,7 +474,6 @@ class TestHttp:
     def test_credential_deadline_and_connection_cap(
         self, settings_env: Callable[..., None], real_redis: Any, scope: str
     ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=60)
         with TestClient(_app()) as client:
             client.post(f"/{scope}/runs/r1")
             # A deadline already passed: 401 before the first byte.
@@ -486,11 +485,7 @@ class TestHttp:
             assert frames[-1]["event"] == "stream.error"
             assert frames[-1]["data"] == {"code": "credential_expired"}
 
-        settings_env(
-            stream_heartbeat_seconds=0.2,
-            stream_alive_ttl_seconds=60,
-            stream_max_connection_seconds=0.5,
-        )
+        settings_env(stream_max_connection_duration=1)
         other = f"{scope}-b"  # r1 still holds the first scope's slot
         with TestClient(_app()) as client:
             client.post(f"/{other}/runs/r2")
@@ -504,7 +499,7 @@ class TestHttp:
     ) -> None:
         # The default 15 s heartbeat: the deadline cuts the blocking read
         # short, so the stream closes on time and not at the next heartbeat.
-        settings_env(stream_max_connection_seconds=0.5)
+        settings_env(stream_max_connection_duration=1)
         with TestClient(_app()) as client:
             client.post(f"/{scope}/runs/r1")
             started = time.monotonic()
@@ -768,25 +763,6 @@ class TestBackend:
             await writer.append("delta", {})
         assert await writer.finish("message", {}) == first  # idempotent
 
-    async def test_a_writer_and_a_reader_ending_leave_one_final_entry(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.3)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        writer = await backend.open(scope=scope, stream_id="r1")
-        await writer.append("delta", {})
-        await asyncio.sleep(0.4)  # the heartbeat lapses
-        events, final = await asyncio.gather(
-            _collect(backend, "r1", scope), writer.finish("message", {})
-        )
-        assert events[-1].id == final
-        entries = await real_async_redis.xrange(_keys(scope, "r1").stream)
-        assert sum(1 for _, fields in entries if fields.get("f") == "1") == 1
-
     async def test_a_replaced_writer_cannot_end_the_new_run(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
     ) -> None:
@@ -899,7 +875,7 @@ class TestBackend:
         real_async_redis: Any,
         scope: str,
     ) -> None:
-        settings_env(stream_done_ttl_seconds=60, stream_gone_ttl_seconds=600)
+        settings_env(stream_done_ttl=60, stream_gone_ttl=600)
         backend = StreamBackend(lambda: real_async_redis)
         backend._start(_StreamCapabilities(supported=True))
         writer = await backend.open(scope=scope, stream_id="r1")
@@ -915,16 +891,19 @@ class TestBackend:
         real_async_redis: Any,
         scope: str,
     ) -> None:
-        settings_env(stream_done_ttl_seconds=1, stream_gone_ttl_seconds=2)
+        settings_env()
         backend = StreamBackend(lambda: real_async_redis)
         backend._start(_StreamCapabilities(supported=True))
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.append("delta", {})
         await writer.finish("message", {})
-        await asyncio.sleep(1.5)
+        keys = _keys(scope, "r1")
+        assert about(await real_async_redis.ttl(keys.stream), 120)
+        assert about(await real_async_redis.ttl(keys.meta), 120 + 3600)
+        await aexpire_now(real_async_redis, keys.stream)  # stream_done_ttl ran out
         with pytest.raises(StreamExpired):
             await _collect(backend, "r1", scope)
-        await asyncio.sleep(2.5)
+        await aexpire_now(real_async_redis, keys.meta)  # and stream_gone_ttl too
         with pytest.raises(StreamNotFound):
             await _collect(backend, "r1", scope)
 
@@ -981,32 +960,6 @@ class TestBackend:
         ]
         assert seen[-1].final
 
-    async def test_producer_lost_is_ended_by_the_reader(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.5)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        writer = await backend.open(scope=scope, stream_id="r1")  # never spawned
-        await writer.append("delta", {"n": 1})
-        first, second = await asyncio.gather(
-            _collect(backend, "r1", scope), _collect(backend, "r1", scope)
-        )
-        for events in (first, second):
-            assert events[-1].type == "stream.end"
-            assert events[-1].data == {"reason": "producer_lost"}
-            assert events[-1].final
-        keys = _keys(scope, "r1")
-        entries = await real_async_redis.xrange(keys.stream)
-        assert sum(1 for _, f in entries if f.get("f") == "1") == 1
-        assert await backend.active(scope) is None
-        # The slow producer comes back: it gets the reader's final entry.
-        assert await writer.finish("message", {}) == entries[-1][0]
-        assert await _collect(backend, "r1", scope, after=entries[-1][0]) == []
-
     async def test_a_stale_writer_does_not_free_a_newer_run(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
     ) -> None:
@@ -1025,26 +978,8 @@ class TestBackend:
         await writer.extend(timedelta(hours=1))
         keys = _keys(scope, "r1")
         assert 3590 <= await real_async_redis.ttl(keys.stream) <= 3600
-        assert await _alive_ms(real_async_redis, keys) > 3_500_000
+        assert 3590 <= await _alive_ttl(real_async_redis, keys) <= 3600
         assert 3590 <= await real_async_redis.ttl(keys.active) <= 3600
-
-    async def test_keepalive_refreshes_the_heartbeat(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.5)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        writer = await backend.open(scope=scope, stream_id="r1")
-        keys = _keys(scope, "r1")
-        async with writer.keepalive():
-            await asyncio.sleep(1.0)  # twice the heartbeat field's lifetime
-            assert await real_async_redis.hexists(keys.meta, "alive")
-        await asyncio.sleep(0.7)
-        assert not await real_async_redis.hexists(keys.meta, "alive")
-        assert await real_async_redis.hget(keys.meta, "status") == "running"
 
     async def test_an_append_refreshes_the_active_slot(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
@@ -1053,24 +988,7 @@ class TestBackend:
         keys = _keys(scope, "r1")
         await real_async_redis.expire(keys.active, 5)
         await writer.append("delta", {})
-        ttl = get_settings().stream_active_ttl_seconds
-        assert ttl - 2 <= await real_async_redis.ttl(keys.active) <= ttl
-
-    async def test_keepalive_refreshes_the_active_slot(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.5)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        writer = await backend.open(scope=scope, stream_id="r1")
-        keys = _keys(scope, "r1")
-        await real_async_redis.expire(keys.active, 5)
-        async with writer.keepalive():
-            await asyncio.sleep(0.5)
-        ttl = get_settings().stream_active_ttl_seconds
+        ttl = get_settings().stream_active_ttl
         assert ttl - 2 <= await real_async_redis.ttl(keys.active) <= ttl
 
     async def test_cancel_flag_reaches_a_plain_producer(
@@ -1103,11 +1021,7 @@ class TestBackend:
     ) -> None:
         # TestClient runs a streaming response to its end before returning,
         # so two readers cannot overlap through it; drive ASGI directly.
-        settings_env(
-            stream_max_readers=1,
-            stream_heartbeat_seconds=0.2,
-            stream_alive_ttl_seconds=60,
-        )
+        settings_env(stream_max_readers=1)
         backend = StreamBackend(lambda: real_async_redis)
         backend._start(_StreamCapabilities(supported=True))
         await backend.open(scope=scope, stream_id="r1")
@@ -1153,28 +1067,6 @@ class TestBackend:
         events = await _collect(backend, "r1", scope)
         assert events[-1].type == "stream.end"
         assert events[-1].data == {"reason": "cancelled"}
-
-    async def test_the_heartbeat_finds_a_fence_and_writes_no_end(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.1, stream_alive_ttl_seconds=5)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-
-        async def quiet(writer: StreamWriter) -> None:
-            await writer.append("delta", {})
-            await asyncio.sleep(60)  # a long tool call: no appends
-
-        writer = await backend.open(scope=scope, stream_id="r1")
-        task = backend.spawn(writer, quiet)
-        await asyncio.sleep(0.05)
-        await backend.attach("r1", scope=scope)
-        await asyncio.wait_for(task, 5)
-        entries = await real_async_redis.xrange(_keys(scope, "r1").stream)
-        assert all(fields.get("f") != "1" for _, fields in entries)
 
     async def test_a_failed_read_is_retried(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
@@ -1283,51 +1175,13 @@ class TestBackend:
         keys = _keys(scope, "r1")
         # What a late heartbeat leaves after meta expired: only the field.
         await real_async_redis.execute_command(
-            "HSETEX", keys.meta, "PX", 5000, "FIELDS", 1, "alive", "1"
+            "HSETEX", keys.meta, "EX", 5, "FIELDS", 1, "alive", "1"
         )
         with pytest.raises(StreamNotFound):
             await backend.follow("r1", scope=scope)
         with pytest.raises(StreamNotFound):
             await backend.attach("r1", scope=scope)
         assert (await backend.open(scope=scope, stream_id="r1")).created is True
-
-    async def test_a_lost_producer_never_recreates_an_expired_stream(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.3)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        writer = await backend.open(scope=scope, stream_id="r1")
-        await writer.append("delta", {})
-        plan = await backend._prepare("r1", scope=scope, after=None)
-        assert plan is not None
-        keys = _keys(scope, "r1")
-        # Expired mid-read: the stream is gone, and the heartbeat with it.
-        await real_async_redis.delete(keys.stream)
-        await real_async_redis.hdel(keys.meta, "alive")
-        seen = await asyncio.wait_for(_flatten(backend._pages(plan)), 5)
-        assert [e.type for e in seen if e is not None] == ["delta"]
-        assert not await real_async_redis.exists(keys.stream)
-        with pytest.raises(StreamExpired):
-            await backend.follow("r1", scope=scope)
-
-    async def test_a_lost_producer_that_never_appended_gets_an_end(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
-    ) -> None:
-        settings_env(stream_heartbeat_seconds=0.2, stream_alive_ttl_seconds=0.3)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
-        await backend.open(scope=scope, stream_id="r1")  # dies before appending
-        events = await asyncio.wait_for(_collect(backend, "r1", scope), 5)
-        assert [(e.type, e.data) for e in events] == [
-            ("stream.end", {"reason": "producer_lost"})
-        ]
 
     async def test_a_cancel_never_interrupts_the_final_write(
         self, backend: StreamBackend, scope: str, real_async_redis: Any

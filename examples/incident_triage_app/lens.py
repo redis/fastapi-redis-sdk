@@ -83,7 +83,7 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
     fields = {_text(k): _text(v) for k, v in raw_meta.items()}
     if "status" in fields:  # meta holding only the heartbeat is a remnant
         # The heartbeat is meta's "alive" field, with its own TTL.
-        (alive_ms,) = await redis.execute_command("HPTTL", meta, "FIELDS", 1, "alive")
+        (alive,) = await redis.execute_command("HTTL", meta, "FIELDS", 1, "alive")
         keys.append(
             _key(
                 meta,
@@ -91,7 +91,7 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
                 {
                     "status": fields.get("status"),
                     "cancel": int(fields.get("cancel") or 0),
-                    "alive PTTL": alive_ms if alive_ms > 0 else None,
+                    "alive TTL": alive if alive > 0 else None,
                     "TTL": await redis.ttl(meta),
                 },
             )

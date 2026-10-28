@@ -589,8 +589,8 @@ server support at startup and cancels spawned producers at shutdown. A
 `StreamError` handler the application set first is kept, and one it sets for a
 subclass wins for that subclass. Calling it twice is a no-op. Raises
 `StreamConfigurationError` when the prefix contains braces,
-`stream_alive_ttl_seconds` is not longer than `stream_heartbeat_seconds`, or
-`socket_timeout` is not longer than `stream_heartbeat_seconds`.
+`stream_alive_ttl` is not longer than `stream_heartbeat_interval`, or
+`socket_timeout` is not longer than `stream_heartbeat_interval`.
 
 ---
 
@@ -625,7 +625,7 @@ the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
 | `await append(type, data) -> str` | Store one event and return its entry ID. Retried safely after a timeout. Raises `ValueError` for an invalid or reserved type or an event over `stream_max_event_bytes`, `StreamFinished` after the final event, `StreamExpired` when the stream expired, `StreamFenced` when this writer does not own the stream. |
 | `await finish(type, data=None) -> str` | Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID. Raises `StreamFenced` for a writer `attach()` replaced, so it cannot end the new writer's run. |
 | `await extend(ttl)` | Keep the stream, the heartbeat and the active slot for `ttl`, in seconds or a `timedelta`. Raises `StreamFenced` or `StreamFinished`. |
-| `keepalive()` | Async context manager that refreshes the heartbeat and reads the cancel flag every `stream_heartbeat_seconds`. |
+| `keepalive()` | Async context manager that refreshes the heartbeat and reads the cancel flag every `stream_heartbeat_interval`. |
 | `cancelled` | Whether a stop was requested, as last seen by an append or heartbeat. |
 | `finished` | Whether this writer wrote the final event. |
 

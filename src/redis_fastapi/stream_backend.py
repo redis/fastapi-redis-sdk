@@ -229,11 +229,14 @@ def check_event_type(event_type: str) -> None:
         )
 
 
-def _ms(value: float | timedelta) -> int:
-    """A duration in whole milliseconds, at least 1, for ``PX`` and ``PEXPIRE``."""
+def _seconds(value: int | timedelta) -> int:
+    """A duration in whole seconds, at least 1, for ``EX`` and ``EXPIRE``.
+
+    ``EXPIRE 0`` would delete the key, so a shorter *timedelta* rounds up.
+    """
     if isinstance(value, timedelta):
-        value = value.total_seconds()
-    return max(1, int(value * 1000))
+        value = int(value.total_seconds())
+    return max(1, int(value))
 
 
 @dataclass(frozen=True)
@@ -501,7 +504,7 @@ class StreamWriter:
         check_event_type(type)
         return await self._end(type, data)
 
-    async def extend(self, ttl: float | timedelta) -> None:
+    async def extend(self, ttl: int | timedelta) -> None:
         """Keep the stream, its heartbeat and its active slot for *ttl*.
 
         For a run that waits on a slow tool, or that another process will
@@ -515,16 +518,16 @@ class StreamWriter:
         self._check_writable()
         if self._final_id is not None:
             raise StreamFinished(f"stream {self.stream_id} already ended")
-        ms = _ms(ttl)
-        gone = _ms(get_settings().stream_gone_ttl_seconds)
+        seconds = _seconds(ttl)
+        gone = get_settings().stream_gone_ttl
         client = self._backend._client()
         try:
             pipe = client.pipeline(transaction=True)
-            pipe.pexpire(self._keys.stream, ms)
-            pipe.pexpire(self._keys.meta, ms + gone)
-            _set_alive(pipe, self._keys, ms)
+            pipe.expire(self._keys.stream, seconds)
+            pipe.expire(self._keys.meta, seconds + gone)
+            _set_alive(pipe, self._keys, seconds)
             if self._exclusive:
-                _refresh_slot(pipe, self._keys, self.stream_id, ms)
+                _refresh_slot(pipe, self._keys, self.stream_id, seconds)
             await pipe.execute()
         except STORE_ERRORS as exc:
             raise StreamStoreError("could not extend the stream") from exc
@@ -532,7 +535,7 @@ class StreamWriter:
     def keepalive(self) -> AbstractAsyncContextManager[None]:
         """Refresh the producer heartbeat while a block runs.
 
-        Every ``stream_heartbeat_seconds`` it refreshes the heartbeat and the
+        Every ``stream_heartbeat_interval`` it refreshes the heartbeat and the
         active slot, and reads the cancel flag.  It covers long tool calls
         during which no append happens.  :meth:`StreamBackend.spawn` runs it
         for you.
@@ -552,17 +555,14 @@ class StreamWriter:
     async def _beat(self) -> None:
         settings = get_settings()
         while True:
-            await asyncio.sleep(settings.stream_heartbeat_seconds)
+            await asyncio.sleep(settings.stream_heartbeat_interval)
             client = self._backend._client()
             try:
                 pipe = client.pipeline(transaction=True)
-                _set_alive(pipe, self._keys, _ms(settings.stream_alive_ttl_seconds))
+                _set_alive(pipe, self._keys, settings.stream_alive_ttl)
                 if self._exclusive:
                     _refresh_slot(
-                        pipe,
-                        self._keys,
-                        self.stream_id,
-                        _ms(settings.stream_active_ttl_seconds),
+                        pipe, self._keys, self.stream_id, settings.stream_active_ttl
                     )
                 pipe.hmget(self._keys.meta, [M_CANCEL, M_WRITER])
                 replies = await pipe.execute()
@@ -609,11 +609,7 @@ class StreamWriter:
     ) -> tuple[str, bool]:
         settings = get_settings()
         keys = self._keys
-        ttl = (
-            settings.stream_done_ttl_seconds
-            if final
-            else settings.stream_active_ttl_seconds
-        )
+        ttl = settings.stream_done_ttl if final else settings.stream_active_ttl
         args = _xadd(
             keys,
             type,
@@ -630,7 +626,7 @@ class StreamWriter:
                 args,
                 keys,
                 self.stream_id,
-                _ms(ttl),
+                ttl,
                 final=final,
                 started=self._started,
                 exclusive=self._exclusive,
@@ -693,17 +689,19 @@ def _xadd(
     return args
 
 
-def _set_alive(pipe: Any, keys: _Keys, ms: int) -> None:
+def _set_alive(pipe: Any, keys: _Keys, seconds: int) -> None:
     """Queue a refresh of the producer heartbeat: meta's ``alive`` field.
 
     ``HSETEX`` gives the field its own TTL and leaves meta's TTL alone.
     """
-    pipe.execute_command("HSETEX", keys.meta, "PX", ms, "FIELDS", 1, M_ALIVE, "1")
+    pipe.execute_command("HSETEX", keys.meta, "EX", seconds, "FIELDS", 1, M_ALIVE, "1")
 
 
-def _refresh_slot(pipe: Any, keys: _Keys, stream_id: str, ms: int) -> None:
+def _refresh_slot(pipe: Any, keys: _Keys, stream_id: str, seconds: int) -> None:
     """Queue an extension of the active slot, only while it names *stream_id*."""
-    pipe.execute_command("SET", keys.active, stream_id, "IFEQ", stream_id, "PX", ms)
+    pipe.execute_command(
+        "SET", keys.active, stream_id, "IFEQ", stream_id, "EX", seconds
+    )
 
 
 def _release_slot(pipe: Any, keys: _Keys, stream_id: str) -> None:
@@ -719,30 +717,30 @@ def _build_write(
     args: list[Any],
     keys: _Keys,
     stream_id: str,
-    ms: int,
+    ttl: int,
     *,
     final: bool,
     started: bool,
     exclusive: bool,
 ) -> None:
     settings = get_settings()
-    gone = _ms(settings.stream_gone_ttl_seconds)
+    gone = settings.stream_gone_ttl
     pipe.execute_command(*args)
     if not started:
         pipe.hset(keys.meta, M_STARTED, "1")
     if final:
         pipe.hset(keys.meta, M_STATUS, STATUS_FINISHED)
-    pipe.pexpire(keys.stream, ms)
-    pipe.pexpire(keys.meta, ms + gone)
+    pipe.expire(keys.stream, ttl)
+    pipe.expire(keys.meta, ttl + gone)
     if final:
         # No need to clear the heartbeat: once status is finished, nothing
         # reads it, and the field expires by itself.
         _release_slot(pipe, keys, stream_id)
     else:
-        _set_alive(pipe, keys, _ms(settings.stream_alive_ttl_seconds))
+        _set_alive(pipe, keys, settings.stream_alive_ttl)
         if exclusive:
             # A run that appends keeps its slot even without keepalive().
-            _refresh_slot(pipe, keys, stream_id, ms)
+            _refresh_slot(pipe, keys, stream_id, ttl)
     pipe.hmget(keys.meta, [M_CANCEL, M_WRITER])
 
 
@@ -980,10 +978,8 @@ class StreamBackend:
         settings = get_settings()
         pipe = self._client().pipeline(transaction=True)
         pipe.hset(keys.meta, mapping=mapping)
-        pipe.pexpire(
-            keys.meta,
-            _ms(settings.stream_done_ttl_seconds + settings.stream_gone_ttl_seconds),
-            nx=True,
+        pipe.expire(
+            keys.meta, settings.stream_done_ttl + settings.stream_gone_ttl, nx=True
         )
         await pipe.execute()
 
@@ -1103,18 +1099,15 @@ class StreamBackend:
                         record_stream_operation(operation="open", result="busy")
                         raise StreamBusy(holder)
                     pipe.multi()  # type: ignore[no-untyped-call]
-                    active_ms = _ms(settings.stream_active_ttl_seconds)
+                    active = settings.stream_active_ttl
                     if exclusive:
-                        pipe.set(keys.active, stream_id, px=active_ms)
+                        pipe.set(keys.active, stream_id, ex=active)
                     pipe.hset(
                         keys.meta,
                         mapping={M_STATUS: STATUS_RUNNING, M_WRITER: writer_id},
                     )
-                    pipe.pexpire(
-                        keys.meta,
-                        active_ms + _ms(settings.stream_gone_ttl_seconds),
-                    )
-                    _set_alive(pipe, keys, _ms(settings.stream_alive_ttl_seconds))
+                    pipe.expire(keys.meta, active + settings.stream_gone_ttl)
+                    _set_alive(pipe, keys, settings.stream_alive_ttl)
                     await pipe.execute()
                     return True
             except WatchError:
@@ -1478,7 +1471,7 @@ class StreamBackend:
         stops on time.  The page with the final entry is the last.
         """
         settings = get_settings()
-        heartbeat_ms = _ms(settings.stream_heartbeat_seconds)
+        heartbeat_ms = settings.stream_heartbeat_interval * 1000  # BLOCK is in ms
         cursor = plan.cursor
         last_seq = plan.last_seq
         pending = plan.first
@@ -1521,7 +1514,7 @@ class StreamBackend:
             except STORE_ERRORS:
                 now = time.monotonic()
                 failing_since = failing_since or now
-                if now - failing_since > settings.stream_read_retry_seconds:
+                if now - failing_since > settings.stream_read_retry_window:
                     raise StreamStoreError("Redis stayed unreachable") from None
                 logger.debug("Stream read failed; retrying", exc_info=True)
                 await asyncio.sleep(min(1.0, block_ms / 1000))
@@ -1602,7 +1595,7 @@ class StreamBackend:
             args,
             keys,
             plan.stream_id,
-            _ms(settings.stream_done_ttl_seconds),
+            settings.stream_done_ttl,
             final=True,
             started=started,
             exclusive=False,

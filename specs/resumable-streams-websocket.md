@@ -472,7 +472,7 @@ the meta hash. `cancel()` sets it. `append()` reads it in the same transaction
 | | Design today: `cancel` flag | Proposal: control stream |
 |---|---|---|
 | What it carries | One bit | Any message: an answer, a cancel, later commands |
-| How the producer learns | Polls. Free on each append, because the read rides in the same round trip. Otherwise every `stream_heartbeat_seconds` | Blocks on `XREAD BLOCK`, or polls the stream on each append |
+| How the producer learns | Polls. Free on each append, because the read rides in the same round trip. Otherwise every `stream_heartbeat_interval` | Blocks on `XREAD BLOCK`, or polls the stream on each append |
 | Latency | The next append while output flows. Up to 15 s during silence | About 3 ms to wake a blocked reader (measured, loopback). The next append, if the producer only polls |
 | Redis cost | None extra | One blocked connection per run that is waiting. Nothing while it only polls |
 | Several messages, order | No | Yes, in order |
