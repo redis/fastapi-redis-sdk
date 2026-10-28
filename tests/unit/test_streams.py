@@ -53,6 +53,7 @@ from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
     _keys,
+    _meta_reply,
     _seconds,
     _StreamCapabilities,
     _xread_entries,
@@ -299,6 +300,10 @@ class TestXreadEntries:
 
     def test_resp3(self) -> None:
         reply = {b"s": [[(b"1-0", {b"t": b"x"})]]}
+        assert _xread_entries(reply) == [(b"1-0", {b"t": b"x"})]
+
+    def test_resp3_modern_lists(self) -> None:
+        reply = {b"s": [[b"1-0", {b"t": b"x"}]]}
         assert _xread_entries(reply) == [(b"1-0", {b"t": b"x"})]
 
     @pytest.mark.parametrize("reply", [None, [], {}])
@@ -1022,3 +1027,34 @@ class TestLostProducer:
         client.hmget.return_value = meta
         assert await _started_backend(client)._check_producer(_lost_plan()) == "quiet"
         assert client.pipes == []
+
+
+class TestMetadataReply:
+    def test_binary_fields_and_missing_values(self) -> None:
+        assert _meta_reply([b"running", None, b"owner", b"1"]) == {
+            "status": "running",
+            "writer": "owner",
+            "started": "1",
+        }
+
+    def test_missing_metadata(self) -> None:
+        assert _meta_reply([None] * 4) == {}
+
+    @pytest.mark.parametrize("reply", [None, {}, ["short"], [None] * 5])
+    def test_invalid_shapes(self, reply: Any) -> None:
+        with pytest.raises(StreamStoreError):
+            _meta_reply(reply)
+
+    def test_command_error_is_a_store_error(self) -> None:
+        from redis.exceptions import ResponseError
+
+        with pytest.raises(StreamStoreError):
+            _meta_reply(ResponseError("WRONGTYPE"))
+
+
+@pytest.mark.parametrize(
+    "reply", [False, 42, {b"s": None}, {b"s": [[b"1-0"]]}, [[b"s"]]]
+)
+def test_malformed_xread_reply_is_a_store_error(reply: Any) -> None:
+    with pytest.raises(StreamStoreError):
+        _xread_entries(reply)

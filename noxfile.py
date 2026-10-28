@@ -190,3 +190,23 @@ def fix(session: nox.Session) -> None:
     uv_sync(session, "--only-group", "lint")
     session.run("ruff", "check", "--fix", *SOURCES)
     session.run("ruff", "format", *SOURCES)
+
+
+@nox.session(python=PYTHON_DEFAULT, default=False)
+def streams_clients(session: nox.Session) -> None:
+    """Exercise stream replay and live delivery with selected redis-py clients."""
+    import os
+
+    version = os.getenv("STREAMS_REDIS_PY_VERSION", "8.0.1")
+    if version not in {"8.0.1", "8.1.0"}:
+        session.error("STREAMS_REDIS_PY_VERSION must be 8.0.1 or 8.1.0")
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
+    session.run_install(
+        "uv", "pip", "install", f"redis=={version}",
+        env={"VIRTUAL_ENV": session.virtualenv.location},
+    )
+    session.run(
+        "pytest", "tests/integration/test_streams_integration.py",
+        "-k", "client_response_modes", "-o", "addopts=", "-q", "-rs",
+        *session.posargs,
+    )

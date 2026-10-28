@@ -12,6 +12,7 @@ with a real async client, where an HTTP round trip would only add noise.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -1252,3 +1253,84 @@ class TestBackend:
         assert first.created is True and second.created is False
         events = await _collect(backend, "r1", scope)
         assert [e.type for e in events] == ["delta", "delta", "message"]
+
+
+@requires_redis
+@requires_streams
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "client_options",
+    [
+        pytest.param({}, id="default"),
+        pytest.param({"protocol": 2}, id="resp2"),
+        pytest.param({"protocol": 3}, id="resp3-legacy"),
+        pytest.param({"protocol": 3, "legacy_responses": False}, id="resp3-modern"),
+    ],
+)
+@pytest.mark.parametrize("decode", [False, True], ids=["bytes", "text"])
+async def test_client_response_modes_replay_live_and_attach(
+    settings_env: Callable[..., None],
+    scope: str,
+    client_options: dict[str, Any],
+    decode: bool,
+) -> None:
+    import os
+
+    if (
+        "legacy_responses" in client_options
+        and "legacy_responses" not in inspect.signature(async_redis.Redis).parameters
+    ):
+        pytest.skip("This redis-py version has no modern-response option")
+    settings_env()
+    factory = (
+        async_redis.RedisCluster
+        if os.getenv("STREAMS_TEST_CLUSTER") == "1"
+        else async_redis.Redis
+    )
+    async with factory.from_url(
+        REDIS_URL, decode_responses=decode, **client_options
+    ) as client:
+        instance = StreamBackend(lambda: client)
+        instance._start(_StreamCapabilities())
+        try:
+            writer = await instance.open(scope=scope, stream_id="compatibility")
+            first = await writer.append("delta", {"n": 1})
+            writer = await instance.attach(writer.stream_id, scope=scope)
+            plan = await instance._prepare(writer.stream_id, scope=scope, after=None)
+            assert plan is not None
+            async with await instance.follow(writer.stream_id, scope=scope) as events:
+                replay = await asyncio.wait_for(anext(events), 5)
+                assert replay is not None and replay.id == first
+                waiting = asyncio.create_task(anext(events))
+                live = await writer.append("delta", {"n": 2})
+                event = await asyncio.wait_for(waiting, 5)
+                assert event is not None and event.id == live
+                assert event.data == {"n": 2}
+                final = await writer.finish("done", {"n": 3})
+                event = await asyncio.wait_for(anext(events), 5)
+                assert event is not None and event.id == final and event.final
+            assert await _collect(instance, writer.stream_id, scope, after=final) == []
+        finally:
+            await instance.aclose()
+            keys = _keys(scope, "compatibility")
+            for key in [keys.stream, keys.meta, keys.active]:
+                await client.delete(key)
+
+
+@requires_redis
+@requires_streams
+@pytest.mark.integration
+async def test_metadata_command_errors_remain_store_errors(
+    backend: StreamBackend, scope: str, real_async_redis: Any
+) -> None:
+    from redis_fastapi import StreamStoreError
+
+    writer = await backend.open(scope=scope, stream_id="corrupt-meta")
+    await writer.append("delta", {})
+    key = _keys(scope, writer.stream_id).meta
+    await real_async_redis.delete(key)
+    await real_async_redis.set(key, "not-a-hash")
+    with pytest.raises(StreamStoreError):
+        await _collect(backend, writer.stream_id, scope)
+    with pytest.raises(StreamStoreError):
+        await backend.attach(writer.stream_id, scope=scope)
