@@ -870,6 +870,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#agent-sdk-recipes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent SDK recipes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Agent SDK recipes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rules-for-every-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules for every SDK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-agents-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenAI Agents SDK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pydanticai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PydanticAI
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#google-adk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Google ADK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#langgraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LangGraph
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#errors-and-status-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1346,6 +1418,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#agent-sdk-recipes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent SDK recipes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Agent SDK recipes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rules-for-every-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules for every SDK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-agents-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenAI Agents SDK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pydanticai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PydanticAI
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#google-adk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Google ADK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#langgraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LangGraph
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#errors-and-status-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1480,17 +1624,15 @@ disconnect does not stop it.</p>
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs&quot;</span><span class="p">,</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">202</span><span class="p">,</span>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>          <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">run_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="k">if</span> <span class="n">writer</span><span class="o">.</span><span class="n">created</span><span class="p">:</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        <span class="n">streams</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">run_agent</span><span class="p">)</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="n">writer</span><span class="o">.</span><span class="n">stream_id</span><span class="p">}</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/</span><span class="si">{stream_id}</span><span class="s2">/events&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>         <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">events</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">stream_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">request</span><span class="p">:</span> <span class="n">Request</span><span class="p">,</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>                 <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">):</span>
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">run_agent</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="n">writer</span><span class="o">.</span><span class="n">stream_id</span><span class="p">}</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/</span><span class="si">{stream_id}</span><span class="s2">/events&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>         <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">events</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">stream_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">request</span><span class="p">:</span> <span class="n">Request</span><span class="p">,</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                 <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">):</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>    <span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div>
 <p><code>require_chat_access</code> is your own access check; the SDK has none (see
 <a href="#access">Access</a>). In the browser, an <code>EventSource</code> on the events route is
@@ -1523,42 +1665,59 @@ If Redis is unreachable at startup, the first stream call asks again.</p>
 8.6.6 or later is advised for its stream security fixes.</p>
 <hr />
 <h2 id="starting-a-run">Starting a run<a class="headerlink" href="#starting-a-run" title="Permanent link">&para;</a></h2>
-<p><code>open()</code> creates the run and returns a <code>StreamWriter</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="s2">&quot;chat:42&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
+<p><code>start()</code> creates the run, starts your producer on it, and returns its
+<code>StreamWriter</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">run_agent</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s2">&quot;chat:42&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
 </code></pre></div>
 <ul>
 <li><strong><code>scope</code></strong> names what the run belongs to, usually the resource your access
   check just authorized, such as a chat. It is part of every key (see
   <a href="#access">Access</a>).</li>
 <li><strong><code>stream_id</code></strong> is optional. Let the browser generate one before it sends
-  the request, and a retried <code>POST</code> finds the same run: <code>open()</code> returns a
-  writer whose <code>created</code> is <code>False</code>. Start a producer only when <code>created</code> is
-  <code>True</code>. Without a <code>stream_id</code>, the SDK generates one.</li>
+  the request, and a retried <code>POST</code> finds the same run: <code>start()</code> starts no
+  second producer, and the writer it returns has <code>created</code> set to <code>False</code>.
+  This holds while the run goes on and for
+  <code>stream_done_ttl + stream_gone_ttl</code> after it ends; later,
+  the same ID starts a new run. Without a <code>stream_id</code>, the SDK generates one.</li>
 <li><strong>One active run per scope.</strong> By default a run takes the scope's slot, and a
   second <code>open()</code> in the same scope raises <code>StreamBusy</code> (<code>409</code>), whose
   <code>stream_id</code> names the running one. Pass <code>exclusive=False</code> to allow several
   runs at once.</li>
 </ul>
 <p>Scopes may use letters, digits and <code>_ . : -</code>, up to 200 characters. Stream IDs
-may use letters, digits and <code>_ -</code>, up to 64.</p>
+may use letters, digits and <code>_ -</code>, up to 64. Any other value raises
+<code>StreamInvalidName</code>, answered with <code>422</code>, on every method.</p>
+<p>To do something between creating the run and starting the producer, such as
+spending a budget only for a new run, call <code>open()</code> and <code>spawn()</code> yourself:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">scope</span><span class="o">=</span><span class="s2">&quot;chat:42&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">if</span> <span class="n">writer</span><span class="o">.</span><span class="n">created</span><span class="p">:</span>  <span class="c1"># False for a retried start: the run already has a producer</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">streams</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">run_agent</span><span class="p">)</span>
+</code></pre></div>
+<p><code>spawn()</code> refuses a writer whose <code>created</code> is <code>False</code> with <code>ValueError</code>.</p>
 <h3 id="producing">Producing<a class="headerlink" href="#producing" title="Permanent link">&para;</a></h3>
-<p><code>spawn()</code> runs your producer as a task the backend owns. It keeps a reference
+<p><code>spawn()</code>, which <code>start()</code> calls, runs your producer as a task the backend
+owns. It keeps a reference
 so the task is not garbage-collected, refreshes the producer heartbeat while
 it runs, and cancels it at shutdown.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run_agent</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="k">for</span> <span class="n">tool</span> <span class="ow">in</span> <span class="n">plan</span><span class="p">:</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call</span><span class="p">(</span><span class="n">tool</span><span class="p">)</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">tool</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="n">result</span><span class="p">})</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">chunk</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">stream</span><span class="p">(</span><span class="n">prompt</span><span class="p">):</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">chunk</span><span class="p">})</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">message_id</span><span class="p">})</span>   <span class="c1"># optional</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run_agent</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="k">for</span> <span class="n">tool</span> <span class="ow">in</span> <span class="n">plan</span><span class="p">:</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call</span><span class="p">(</span><span class="n">tool</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">tool</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="n">result</span><span class="p">})</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">chunk</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">stream</span><span class="p">(</span><span class="n">prompt</span><span class="p">):</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">chunk</span><span class="p">})</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">message_id</span><span class="p">})</span>   <span class="c1"># optional</span>
 </code></pre></div>
-<p><code>append(type, data)</code> stores one event. The type is any name you choose, up to
+<p><code>append(type, data)</code> stores one event and returns its entry ID. The type is
+any name you choose, up to
 128 characters with no line breaks; names starting with <code>stream.</code> belong to
-the SDK. The data goes through the payload coder, JSON by default, and may be
-at most <code>stream_max_event_bytes</code>. A timeout or a dropped connection is retried
-with the same idempotency key, so a retried append never stores the event
-twice.</p>
+the SDK. The data goes through the payload coder and may be at most
+<code>stream_max_event_bytes</code>. The default coder, <code>JsonableCoder</code>, writes JSON and
+also takes Pydantic models, dataclasses and datetimes, which is what agent
+SDKs hand you; readers get plain JSON back. A timeout or a dropped connection
+is retried with the same idempotency key, so a retried append never stores
+the event twice.</p>
+<p>For the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph, see
+<a href="#agent-sdk-recipes">Agent SDK recipes</a>.</p>
 <h3 id="ending">Ending<a class="headerlink" href="#ending" title="Permanent link">&para;</a></h3>
 <p>Every stream ends with exactly one final event. Readers stop after it, and a
 reconnect after it gets <code>204</code>, which stops <code>EventSource</code> for good.</p>
@@ -1576,7 +1735,7 @@ reconnect after it gets <code>204</code>, which stops <code>EventSource</code> f
 holds at most one, even if two writers end it at the same time.</p>
 <hr />
 <h2 id="reading">Reading<a class="headerlink" href="#reading" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">)</span>
 </code></pre></div>
 <p><code>sse()</code> does every check that decides the status code before the first byte,
 then streams. It reads the cursor from the request itself, in this order:</p>
@@ -1593,18 +1752,27 @@ copied query would win and replay entries twice.</p>
 <p>A cursor must be a full entry ID such as <code>1700000000000-0</code>. <code>0-0</code> means the
 whole stream. The special IDs <code>$</code>, <code>+</code> and <code>-</code>, a bare timestamp, and a
 repeated header or query parameter are refused with <code>422</code>.</p>
-<p>The response sends a <code>: ping</code> comment every <code>stream_heartbeat_seconds</code>, sets
+<p>The response sends a <code>: ping</code> comment every <code>stream_heartbeat_interval</code>, sets
 <code>Cache-Control: no-store</code> and <code>X-Accel-Buffering: no</code>, and closes after the
-final event. Never put the SSE route behind <code>cache()</code>, and exclude it from
+final event. Its <code>retry:</code> hint asks the browser to reconnect after one to three
+seconds, chosen at random per connection, so clients that a deploy closed at
+the same moment do not all return at once. Never put the SSE route behind <code>cache()</code>, and exclude it from
 compression middleware that buffers the body.</p>
 <h3 id="reading-without-http">Reading without HTTP<a class="headerlink" href="#reading-without-http" title="Permanent link">&para;</a></h3>
-<p><code>follow()</code> is the same read as an async iterator, for code that is not an SSE
-response:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">aclosing</span><span class="p">(</span><span class="n">streams</span><span class="o">.</span><span class="n">follow</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">))</span> <span class="k">as</span> <span class="n">events</span><span class="p">:</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="n">events</span><span class="p">:</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="nb">print</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">event</span><span class="o">.</span><span class="n">type</span><span class="p">,</span> <span class="n">event</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="n">event</span><span class="o">.</span><span class="n">final</span><span class="p">)</span>
+<p><code>follow()</code> is the same read for code that is not an SSE response. It runs
+every check when you await it, so a WebSocket handler can refuse a bad request
+before it accepts the connection, and it returns a <code>StreamReader</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">reader</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">follow</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">,</span> <span class="n">after</span><span class="o">=</span><span class="n">cursor</span><span class="p">)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">accept</span><span class="p">()</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">reader</span><span class="p">:</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="n">reader</span><span class="p">:</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        <span class="k">await</span> <span class="n">websocket</span><span class="o">.</span><span class="n">send_json</span><span class="p">({</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">type</span><span class="p">,</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>                                   <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">data</span><span class="p">})</span>
 </code></pre></div>
-<p>Use <code>aclosing()</code> if you might leave the loop early, so the read closes at once.</p>
+<p><code>async with</code> closes the read at once if you leave the loop early. A reader
+whose cursor is at or past the final event is empty. A <code>follow()</code> reader takes
+no reader slot, so <code>stream_max_readers</code> does not limit it; bound such readers
+yourself.</p>
 <hr />
 <h2 id="access">Access<a class="headerlink" href="#access" title="Permanent link">&para;</a></h2>
 <p>The SDK does not decide who may read a stream. Your FastAPI dependency checks
@@ -1618,58 +1786,333 @@ you resolve aliases or tenant-local IDs.</p>
 <p>Because access attaches to the resource and not to a session, every member of
 a shared chat, every tab and every device of a user reaches the same streams.
 A second device finds the current run with <code>active()</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/active&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>         <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">active</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">active</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/active&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>         <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">active</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">active</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)}</span>
 </code></pre></div>
 <h3 id="ending-a-connection-with-the-credential">Ending a connection with the credential<a class="headerlink" href="#ending-a-connection-with-the-credential" title="Permanent link">&para;</a></h3>
 <p>Your access check runs once, when the connection opens. To end an open stream
 when the credential does, pass its deadline:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">session_expiry</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">,</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>                         <span class="n">expires_at</span><span class="o">=</span><span class="n">session_expiry</span><span class="p">(</span><span class="n">request</span><span class="p">))</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">session_expiry</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>                         <span class="n">expires_at</span><span class="o">=</span><span class="n">session_expiry</span><span class="p">(</span><span class="n">request</span><span class="p">))</span>
 </code></pre></div>
 <p><code>session_expiry()</code> returns the absolute deadline of the SDK session. With
 other credentials, pass your own, for example a JWT's <code>exp</code>. At the deadline
 the response sends a <code>stream.error</code> event with code <code>credential_expired</code> and
-closes. Every connection also closes after <code>stream_max_connection_seconds</code>,
+closes. Every connection also closes after <code>stream_max_connection_duration</code>,
 with no event. The browser then reconnects through your dependency, so a
 revoked session keeps reading for at most that long.</p>
 <hr />
 <h2 id="stopping-a-run">Stopping a run<a class="headerlink" href="#stopping-a-run" title="Permanent link">&para;</a></h2>
 <p>A closed connection never stops a run. To stop one, expose your own endpoint:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/</span><span class="si">{stream_id}</span><span class="s2">/cancel&quot;</span><span class="p">,</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">204</span><span class="p">,</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>          <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">stream_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">cancel</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/</span><span class="si">{stream_id}</span><span class="s2">/cancel&quot;</span><span class="p">,</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">204</span><span class="p">,</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>          <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">stream_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">cancel</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div>
 <p><code>cancel()</code> sets a flag in Redis and returns <code>False</code> if the run had already
 ended. A producer started by <code>spawn()</code> in the same process is cancelled at
 once; one in another process sees the flag at its next append or heartbeat. A
-producer you run yourself reads <code>AppendResult.cancelled</code> and calls <code>finish()</code>.</p>
+producer you run yourself checks <code>writer.cancelled</code> after each append and calls
+<code>finish()</code>. A cancel that arrives while the producer writes its final event
+lets that write finish.</p>
 <hr />
 <h2 id="producers-that-stop">Producers that stop<a class="headerlink" href="#producers-that-stop" title="Permanent link">&para;</a></h2>
-<p>A producer keeps a short-lived heartbeat key in Redis, which every append and
-every heartbeat refreshes. When a reader has waited a full heartbeat with no
-new entry, it checks that key. If the key has lapsed and the stream has no
-final event, the producer is gone, and the reader writes the final event the
+<p>A producer keeps a short-lived heartbeat in Redis, an <code>alive</code> field in the
+run's metadata hash with its own TTL, which every append and every heartbeat
+refreshes. When a reader has waited a full heartbeat with no new entry, it
+checks that field. If the field has lapsed and the stream has no final event, the producer is gone, and the reader writes the final event the
 producer never wrote: <code>stream.end</code> with <code>{"reason": "producer_lost"}</code>. Every
 reader then stops, and reconnects get <code>204</code> instead of waiting again.</p>
 <ul>
 <li><strong>Long tool calls.</strong> <code>spawn()</code> runs <code>writer.keepalive()</code> around your
   producer. If you run a producer yourself, wrap long waits in
   <code>async with writer.keepalive():</code>.</li>
-<li><strong>Slow waits.</strong> <code>writer.suspend(ttl)</code> extends the stream, the heartbeat and
-  the active slot, for a run that waits on something slow.</li>
+<li><strong>Slow waits.</strong> <code>writer.extend(ttl)</code> keeps the stream, the heartbeat and
+  the active slot for <code>ttl</code> seconds, for a run that waits on something slow.</li>
 <li><strong>Another process continues.</strong> <code>streams.attach(stream_id, scope=...)</code>
   returns a writer that continues the run's sequence numbers. The old writer is
   fenced: its next append or heartbeat raises <code>StreamFenced</code>, and at most that
-  one append lands after the takeover.</li>
+  one append lands after the takeover. Its <code>finish()</code> raises <code>StreamFenced</code>
+  before it writes, so it can never end the new writer's run.</li>
 </ul>
 <p>A reader that cannot write, because its Redis ACL is read-only, sends a
 <code>stream.error</code> event with code <code>producer_lost</code> and closes instead.</p>
+<hr />
+<h2 id="agent-sdk-recipes">Agent SDK recipes<a class="headerlink" href="#agent-sdk-recipes" title="Permanent link">&para;</a></h2>
+<p>Agent SDKs such as the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph
+run the agent loop and give you its events as an async iterator. They have no
+server of their own, so you host them in your FastAPI application, and a
+producer is a short loop that turns their events into appends.</p>
+<p>Each recipe below maps its SDK's events to the same four event types, so the
+browser code is the same whichever SDK you use:</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Data</th>
+<th>Written with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>delta</code></td>
+<td><code>{"text": ...}</code></td>
+<td><code>append()</code></td>
+</tr>
+<tr>
+<td><code>tool_call</code></td>
+<td><code>{"id": ..., "name": ..., "args": ...}</code></td>
+<td><code>append()</code></td>
+</tr>
+<tr>
+<td><code>tool_result</code></td>
+<td><code>{"id": ..., "output": ...}</code></td>
+<td><code>append()</code></td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td><code>{"text": ...}</code>, the whole answer</td>
+<td><code>finish()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each recipe returns a producer for one turn. Start it from your route as any
+other producer:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/</span><span class="si">{run_id}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">status_code</span><span class="o">=</span><span class="mi">202</span><span class="p">,</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>          <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">run_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">Prompt</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>                <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">run_turn</span><span class="p">(</span><span class="n">body</span><span class="o">.</span><span class="n">text</span><span class="p">),</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>                                 <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="n">writer</span><span class="o">.</span><span class="n">stream_id</span><span class="p">}</span>
+</code></pre></div>
+<p>Each recipe is also a complete app in
+<a href="https://github.com/redis/fastapi-redis-sdk/tree/main/examples/agent_sdks"><code>examples/agent_sdks/</code></a>,
+with the start, events and cancel routes. These SDKs often rename and reshape
+their events, so check a recipe against the version you run. Checked with
+<code>openai-agents</code> 0.24, <code>pydantic-ai-slim</code> 2.54, <code>google-adk</code> 2.7, and
+<code>langgraph</code> 1.2 with <code>langchain-core</code> 1.7.</p>
+<h3 id="rules-for-every-sdk">Rules for every SDK<a class="headerlink" href="#rules-for-every-sdk" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Map events, do not store them whole.</strong> An SDK event often holds the agent
+  and its tools, which no coder can encode. The ones that can be encoded are
+  large: an ADK event is about 1.6 KB for a three-word chunk, and PydanticAI's
+  final event holds the whole message history. Pick the fields the browser
+  needs. Values such as a tool's Pydantic or dataclass result can go in as
+  they are, because the default coder encodes them.</li>
+<li><strong>Send deltas, not snapshots.</strong> Every event must fit in
+  <code>stream_max_event_bytes</code>. A large tool result, such as retrieved documents,
+  is better sent as a summary.</li>
+<li><strong>Cancel works as it is.</strong> <code>cancel()</code> cancels the producer task, and the
+  cancel reaches the model call or tool the SDK is waiting on. <code>spawn()</code> then
+  writes <code>stream.end</code> with <code>{"reason": "cancelled"}</code>. This holds for all four
+  SDKs.</li>
+<li><strong>Errors end the stream.</strong> An exception from the SDK, such as a provider
+  error, ends the stream with <code>{"reason": "error", "code": "producer_error"}</code>.</li>
+<li><strong>A pause for a person ends the turn.</strong> When the agent waits for an
+  approval or an answer, end the turn with
+  <code>finish("turn.interrupted", ...)</code>, and start the answer as a new turn with a
+  new stream ID. A stream left open while a person decides needs <code>extend()</code>
+  against its TTL, and holds the scope's active slot all that time. The
+  LangGraph recipe shows the pattern; the OpenAI Agents SDK
+  (<code>result.interruptions</code>), PydanticAI (deferred tools) and ADK (long-running
+  tools) work the same way.</li>
+<li><strong>The conversation lives elsewhere.</strong> One stream carries one turn. Keep the
+  conversation in the SDK's own session or checkpoint store.</li>
+</ul>
+<p>Not covered in this release: producers in sync code (CrewAI, ADK's sync
+<code>Runner.run</code>), and durable execution, where the SDK appends from a Temporal,
+DBOS or Prefect worker. Both need a writer outside the FastAPI process (see
+<a href="#limitations">Limitations</a>).</p>
+<h3 id="openai-agents-sdk">OpenAI Agents SDK<a class="headerlink" href="#openai-agents-sdk" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">agents</span><span class="w"> </span><span class="kn">import</span> <span class="n">Agent</span><span class="p">,</span> <span class="n">Runner</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">openai.types.responses</span><span class="w"> </span><span class="kn">import</span> <span class="n">ResponseTextDeltaEvent</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;triage&quot;</span><span class="p">,</span> <span class="n">instructions</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">,</span> <span class="n">tools</span><span class="o">=</span><span class="p">[</span><span class="n">latency</span><span class="p">])</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">run_turn</span><span class="p">(</span><span class="n">prompt</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">produce</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">Runner</span><span class="o">.</span><span class="n">run_streamed</span><span class="p">(</span><span class="n">agent</span><span class="p">,</span> <span class="n">prompt</span><span class="p">)</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>        <span class="k">async</span> <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">stream_events</span><span class="p">():</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>            <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;raw_response_event&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="n">ResponseTextDeltaEvent</span><span class="p">):</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">delta</span><span class="p">})</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>            <span class="k">elif</span> <span class="n">event</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;run_item_stream_event&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>                <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;tool_called&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>                    <span class="n">call</span> <span class="o">=</span> <span class="n">event</span><span class="o">.</span><span class="n">item</span><span class="o">.</span><span class="n">raw_item</span>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a>                        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">call</span><span class="o">.</span><span class="n">call_id</span><span class="p">,</span>
+<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>                        <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">call</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a>                        <span class="s2">&quot;args&quot;</span><span class="p">:</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">arguments</span> <span class="ow">or</span> <span class="s2">&quot;</span><span class="si">{}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a>                    <span class="p">})</span>
+<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a>                <span class="k">elif</span> <span class="n">event</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;tool_output&quot;</span><span class="p">:</span>
+<a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_result&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a>                        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">item</span><span class="o">.</span><span class="n">raw_item</span><span class="p">[</span><span class="s2">&quot;call_id&quot;</span><span class="p">],</span>
+<a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a>                        <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">item</span><span class="o">.</span><span class="n">output</span><span class="p">,</span>
+<a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a>                    <span class="p">})</span>
+<a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">final_output</span><span class="p">)})</span>
+<a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a>
+<a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a>    <span class="k">return</span> <span class="n">produce</span>
+</code></pre></div>
+<ul>
+<li>Text arrives as raw Responses API events, and tool calls and their results
+  as run items. Every other event can be left out.</li>
+<li><code>result.final_output</code> is set once the loop ends.</li>
+<li>When the producer is cancelled, <code>stream_events()</code> cancels the run and the
+  tool it waits on. No <code>result.cancel()</code> is needed.</li>
+</ul>
+<h3 id="pydanticai">PydanticAI<a class="headerlink" href="#pydanticai" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    <span class="n">Agent</span><span class="p">,</span> <span class="n">AgentRunResultEvent</span><span class="p">,</span> <span class="n">FunctionToolCallEvent</span><span class="p">,</span> <span class="n">FunctionToolResultEvent</span><span class="p">,</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="n">PartDeltaEvent</span><span class="p">,</span> <span class="n">PartStartEvent</span><span class="p">,</span> <span class="n">TextPart</span><span class="p">,</span> <span class="n">TextPartDelta</span><span class="p">,</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="p">)</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">tools</span><span class="o">=</span><span class="p">[</span><span class="n">latency</span><span class="p">])</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">run_turn</span><span class="p">(</span><span class="n">prompt</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">produce</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>        <span class="k">async</span> <span class="k">with</span> <span class="n">agent</span><span class="o">.</span><span class="n">run_stream_events</span><span class="p">(</span><span class="n">prompt</span><span class="p">)</span> <span class="k">as</span> <span class="n">events</span><span class="p">:</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>            <span class="k">async</span> <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="n">events</span><span class="p">:</span>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="p">,</span> <span class="n">PartStartEvent</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="p">,</span> <span class="n">TextPart</span><span class="p">):</span>
+<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>                    <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">content</span><span class="p">:</span>
+<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>                        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">content</span><span class="p">})</span>
+<a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>                <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="p">,</span> <span class="n">PartDeltaEvent</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="o">.</span><span class="n">delta</span><span class="p">,</span> <span class="n">TextPartDelta</span><span class="p">):</span>
+<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">delta</span><span class="o">.</span><span class="n">content_delta</span><span class="p">})</span>
+<a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>                <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="p">,</span> <span class="n">FunctionToolCallEvent</span><span class="p">):</span>
+<a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>                        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">tool_call_id</span><span class="p">,</span>
+<a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>                        <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">tool_name</span><span class="p">,</span>
+<a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a>                        <span class="s2">&quot;args&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">args_as_dict</span><span class="p">(),</span>
+<a id="__codelineno-12-23" name="__codelineno-12-23" href="#__codelineno-12-23"></a>                    <span class="p">})</span>
+<a id="__codelineno-12-24" name="__codelineno-12-24" href="#__codelineno-12-24"></a>                <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="p">,</span> <span class="n">FunctionToolResultEvent</span><span class="p">):</span>
+<a id="__codelineno-12-25" name="__codelineno-12-25" href="#__codelineno-12-25"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_result&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-12-26" name="__codelineno-12-26" href="#__codelineno-12-26"></a>                        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">tool_call_id</span><span class="p">,</span>
+<a id="__codelineno-12-27" name="__codelineno-12-27" href="#__codelineno-12-27"></a>                        <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">part</span><span class="o">.</span><span class="n">content</span><span class="p">,</span>
+<a id="__codelineno-12-28" name="__codelineno-12-28" href="#__codelineno-12-28"></a>                    <span class="p">})</span>
+<a id="__codelineno-12-29" name="__codelineno-12-29" href="#__codelineno-12-29"></a>                <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">event</span><span class="p">,</span> <span class="n">AgentRunResultEvent</span><span class="p">):</span>
+<a id="__codelineno-12-30" name="__codelineno-12-30" href="#__codelineno-12-30"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">event</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">output</span><span class="p">})</span>
+<a id="__codelineno-12-31" name="__codelineno-12-31" href="#__codelineno-12-31"></a>
+<a id="__codelineno-12-32" name="__codelineno-12-32" href="#__codelineno-12-32"></a>    <span class="k">return</span> <span class="n">produce</span>
+</code></pre></div>
+<ul>
+<li><code>run_stream_events()</code> is an async context manager; use it with <code>async with</code>.</li>
+<li>The first text of a reply comes in <code>PartStartEvent</code>, and only the rest in
+  <code>PartDeltaEvent</code>. Read both, or the answer loses its first chunk.</li>
+<li><code>AgentRunResultEvent</code> holds the whole message history. Send only its
+  <code>output</code>.</li>
+<li>A tool may return a Pydantic model or a dataclass; the default coder
+  encodes it.</li>
+</ul>
+<h3 id="google-adk">Google ADK<a class="headerlink" href="#google-adk" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">google.adk.agents</span><span class="w"> </span><span class="kn">import</span> <span class="n">LlmAgent</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">google.adk.agents.run_config</span><span class="w"> </span><span class="kn">import</span> <span class="n">RunConfig</span><span class="p">,</span> <span class="n">StreamingMode</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">google.adk.runners</span><span class="w"> </span><span class="kn">import</span> <span class="n">Runner</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">google.genai</span><span class="w"> </span><span class="kn">import</span> <span class="n">types</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="n">runner</span> <span class="o">=</span> <span class="n">Runner</span><span class="p">(</span><span class="n">app_name</span><span class="o">=</span><span class="s2">&quot;triage&quot;</span><span class="p">,</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>                <span class="n">agent</span><span class="o">=</span><span class="n">LlmAgent</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;triage&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">,</span> <span class="n">tools</span><span class="o">=</span><span class="p">[</span><span class="n">latency</span><span class="p">]),</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>                <span class="n">session_service</span><span class="o">=</span><span class="n">session_service</span><span class="p">)</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="k">def</span><span class="w"> </span><span class="nf">run_turn</span><span class="p">(</span><span class="n">prompt</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">user_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">produce</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>        <span class="n">message</span> <span class="o">=</span> <span class="n">types</span><span class="o">.</span><span class="n">Content</span><span class="p">(</span><span class="n">role</span><span class="o">=</span><span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="n">parts</span><span class="o">=</span><span class="p">[</span><span class="n">types</span><span class="o">.</span><span class="n">Part</span><span class="p">(</span><span class="n">text</span><span class="o">=</span><span class="n">prompt</span><span class="p">)])</span>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>        <span class="n">config</span> <span class="o">=</span> <span class="n">RunConfig</span><span class="p">(</span><span class="n">streaming_mode</span><span class="o">=</span><span class="n">StreamingMode</span><span class="o">.</span><span class="n">SSE</span><span class="p">)</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>        <span class="n">answer</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>        <span class="k">async</span> <span class="k">for</span> <span class="n">event</span> <span class="ow">in</span> <span class="n">runner</span><span class="o">.</span><span class="n">run_async</span><span class="p">(</span><span class="n">user_id</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="n">session_id</span><span class="o">=</span><span class="n">session_id</span><span class="p">,</span>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a>                                            <span class="n">new_message</span><span class="o">=</span><span class="n">message</span><span class="p">,</span> <span class="n">run_config</span><span class="o">=</span><span class="n">config</span><span class="p">):</span>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a>            <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">partial</span><span class="p">:</span>
+<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a>                <span class="c1"># A chunk of the answer.  The final, non-partial event repeats</span>
+<a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a>                <span class="c1"># the whole text, so only chunks become deltas.</span>
+<a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a>                <span class="n">parts</span> <span class="o">=</span> <span class="n">event</span><span class="o">.</span><span class="n">content</span><span class="o">.</span><span class="n">parts</span> <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">content</span> <span class="k">else</span> <span class="kc">None</span>
+<a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a>                <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">parts</span> <span class="ow">or</span> <span class="p">[]:</span>
+<a id="__codelineno-13-23" name="__codelineno-13-23" href="#__codelineno-13-23"></a>                    <span class="k">if</span> <span class="n">part</span><span class="o">.</span><span class="n">text</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">part</span><span class="o">.</span><span class="n">thought</span><span class="p">:</span>
+<a id="__codelineno-13-24" name="__codelineno-13-24" href="#__codelineno-13-24"></a>                        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">part</span><span class="o">.</span><span class="n">text</span><span class="p">})</span>
+<a id="__codelineno-13-25" name="__codelineno-13-25" href="#__codelineno-13-25"></a>                <span class="k">continue</span>
+<a id="__codelineno-13-26" name="__codelineno-13-26" href="#__codelineno-13-26"></a>            <span class="k">for</span> <span class="n">call</span> <span class="ow">in</span> <span class="n">event</span><span class="o">.</span><span class="n">get_function_calls</span><span class="p">():</span>
+<a id="__codelineno-13-27" name="__codelineno-13-27" href="#__codelineno-13-27"></a>                <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span>
+<a id="__codelineno-13-28" name="__codelineno-13-28" href="#__codelineno-13-28"></a>                                    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">call</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">call</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s2">&quot;args&quot;</span><span class="p">:</span> <span class="n">call</span><span class="o">.</span><span class="n">args</span><span class="p">})</span>
+<a id="__codelineno-13-29" name="__codelineno-13-29" href="#__codelineno-13-29"></a>            <span class="k">for</span> <span class="n">response</span> <span class="ow">in</span> <span class="n">event</span><span class="o">.</span><span class="n">get_function_responses</span><span class="p">():</span>
+<a id="__codelineno-13-30" name="__codelineno-13-30" href="#__codelineno-13-30"></a>                <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_result&quot;</span><span class="p">,</span>
+<a id="__codelineno-13-31" name="__codelineno-13-31" href="#__codelineno-13-31"></a>                                    <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">response</span><span class="p">})</span>
+<a id="__codelineno-13-32" name="__codelineno-13-32" href="#__codelineno-13-32"></a>            <span class="k">if</span> <span class="n">event</span><span class="o">.</span><span class="n">is_final_response</span><span class="p">()</span> <span class="ow">and</span> <span class="n">event</span><span class="o">.</span><span class="n">content</span> <span class="ow">and</span> <span class="n">event</span><span class="o">.</span><span class="n">content</span><span class="o">.</span><span class="n">parts</span><span class="p">:</span>
+<a id="__codelineno-13-33" name="__codelineno-13-33" href="#__codelineno-13-33"></a>                <span class="n">answer</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">part</span><span class="o">.</span><span class="n">text</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span> <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">event</span><span class="o">.</span><span class="n">content</span><span class="o">.</span><span class="n">parts</span>
+<a id="__codelineno-13-34" name="__codelineno-13-34" href="#__codelineno-13-34"></a>                                 <span class="k">if</span> <span class="ow">not</span> <span class="n">part</span><span class="o">.</span><span class="n">thought</span><span class="p">)</span>
+<a id="__codelineno-13-35" name="__codelineno-13-35" href="#__codelineno-13-35"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">answer</span><span class="p">})</span>
+<a id="__codelineno-13-36" name="__codelineno-13-36" href="#__codelineno-13-36"></a>
+<a id="__codelineno-13-37" name="__codelineno-13-37" href="#__codelineno-13-37"></a>    <span class="k">return</span> <span class="n">produce</span>
+</code></pre></div>
+<ul>
+<li>Without <code>StreamingMode.SSE</code>, ADK sends no partial events, and the answer
+  arrives in one piece.</li>
+<li>The last, non-partial event repeats the whole answer. Sending it as a delta
+  would show the answer twice.</li>
+<li>Leave out <code>thought</code> parts unless your interface shows the model's
+  reasoning.</li>
+<li>The ADK session must exist before the turn starts. Create it in the start
+  route, or keep one per chat.</li>
+</ul>
+<h3 id="langgraph">LangGraph<a class="headerlink" href="#langgraph" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">langchain_core.messages</span><span class="w"> </span><span class="kn">import</span> <span class="n">AIMessage</span><span class="p">,</span> <span class="n">AIMessageChunk</span><span class="p">,</span> <span class="n">ToolMessage</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">graph</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">checkpointer</span><span class="o">=</span><span class="n">checkpointer</span><span class="p">)</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="k">def</span><span class="w"> </span><span class="nf">run_turn</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">produce</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>        <span class="n">answer</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>        <span class="k">async</span> <span class="k">for</span> <span class="n">mode</span><span class="p">,</span> <span class="n">chunk</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">astream</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>                                               <span class="n">stream_mode</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;messages&quot;</span><span class="p">,</span> <span class="s2">&quot;updates&quot;</span><span class="p">]):</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>            <span class="k">if</span> <span class="n">mode</span> <span class="o">==</span> <span class="s2">&quot;messages&quot;</span><span class="p">:</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>                <span class="n">message</span><span class="p">,</span> <span class="n">_metadata</span> <span class="o">=</span> <span class="n">chunk</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">AIMessageChunk</span><span class="p">)</span> <span class="ow">and</span> <span class="n">message</span><span class="o">.</span><span class="n">text</span><span class="p">:</span>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>                    <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">message</span><span class="o">.</span><span class="n">text</span><span class="p">})</span>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a>                <span class="k">continue</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a>            <span class="k">if</span> <span class="s2">&quot;__interrupt__&quot;</span> <span class="ow">in</span> <span class="n">chunk</span><span class="p">:</span>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a>                <span class="c1"># The graph waits for a person.  End this turn; the answer</span>
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a>                <span class="c1"># resumes the graph as a new turn, on a new stream.</span>
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a>                <span class="n">interrupts</span> <span class="o">=</span> <span class="p">[</span><span class="n">item</span><span class="o">.</span><span class="n">value</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">chunk</span><span class="p">[</span><span class="s2">&quot;__interrupt__&quot;</span><span class="p">]]</span>
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a>                <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;turn.interrupted&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;interrupts&quot;</span><span class="p">:</span> <span class="n">interrupts</span><span class="p">})</span>
+<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a>                <span class="k">return</span>
+<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a>            <span class="k">for</span> <span class="n">update</span> <span class="ow">in</span> <span class="n">chunk</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a>                <span class="k">for</span> <span class="n">message</span> <span class="ow">in</span> <span class="p">(</span><span class="n">update</span> <span class="ow">or</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;messages&quot;</span><span class="p">,</span> <span class="p">[]):</span>
+<a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a>                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">ToolMessage</span><span class="p">):</span>
+<a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a>                        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_result&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a>                            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">message</span><span class="o">.</span><span class="n">tool_call_id</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="n">message</span><span class="o">.</span><span class="n">content</span><span class="p">})</span>
+<a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a>                    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">AIMessage</span><span class="p">)</span> <span class="ow">and</span> <span class="n">message</span><span class="o">.</span><span class="n">tool_calls</span><span class="p">:</span>
+<a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>                        <span class="k">for</span> <span class="n">call</span> <span class="ow">in</span> <span class="n">message</span><span class="o">.</span><span class="n">tool_calls</span><span class="p">:</span>
+<a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a>                            <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span> <span class="p">{</span>
+<a id="__codelineno-14-30" name="__codelineno-14-30" href="#__codelineno-14-30"></a>                                <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">],</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">],</span>
+<a id="__codelineno-14-31" name="__codelineno-14-31" href="#__codelineno-14-31"></a>                                <span class="s2">&quot;args&quot;</span><span class="p">:</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;args&quot;</span><span class="p">]})</span>
+<a id="__codelineno-14-32" name="__codelineno-14-32" href="#__codelineno-14-32"></a>                    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">AIMessage</span><span class="p">):</span>
+<a id="__codelineno-14-33" name="__codelineno-14-33" href="#__codelineno-14-33"></a>                        <span class="n">answer</span> <span class="o">=</span> <span class="n">message</span><span class="o">.</span><span class="n">text</span>
+<a id="__codelineno-14-34" name="__codelineno-14-34" href="#__codelineno-14-34"></a>        <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">answer</span><span class="p">})</span>
+<a id="__codelineno-14-35" name="__codelineno-14-35" href="#__codelineno-14-35"></a>
+<a id="__codelineno-14-36" name="__codelineno-14-36" href="#__codelineno-14-36"></a>    <span class="k">return</span> <span class="n">produce</span>
+</code></pre></div>
+<p>Start a turn with <code>run_turn({"messages": [("user", text)]}, thread)</code> and
+resume after an interrupt with <code>run_turn(Command(resume=answer), thread)</code>,
+where <code>thread</code> is <code>{"configurable": {"thread_id": chat_id}}</code>. Each is its own
+run with its own stream ID; the checkpointer carries the graph between them.</p>
+<ul>
+<li>Use the <code>messages</code> and <code>updates</code> stream modes. Tokens come from <code>messages</code>;
+  tool calls, tool results and interrupts from <code>updates</code>. Avoid <code>values</code>: it
+  sends the whole state after every step.</li>
+<li><code>message.text</code> joins the text blocks of a message, so it also works for
+  providers that send content as a list of blocks.</li>
+<li>On Python 3.10, a node must pass its <code>config</code> on to the model
+  (<code>await model.ainvoke(messages, config)</code>); without it the <code>messages</code> mode
+  gets the whole reply at once instead of its tokens. <code>interrupt()</code> in an
+  async graph needs Python 3.11 or later.</li>
+</ul>
 <hr />
 <h2 id="errors-and-status-codes">Errors and status codes<a class="headerlink" href="#errors-and-status-codes" title="Permanent link">&para;</a></h2>
 <p>Before the first byte, a problem is an ordinary status code. Your own
@@ -1710,8 +2153,8 @@ dependency answers <code>401</code> or <code>403</code> before the SDK runs.</p>
 </tr>
 <tr>
 <td><code>422</code></td>
-<td>A malformed or repeated cursor</td>
-<td><code>StreamInvalidCursor</code></td>
+<td>A malformed or repeated cursor; a scope or stream ID outside the rules</td>
+<td><code>StreamInvalidCursor</code>, <code>StreamInvalidName</code></td>
 </tr>
 <tr>
 <td><code>503</code></td>
@@ -1720,11 +2163,16 @@ dependency answers <code>401</code> or <code>403</code> before the SDK runs.</p>
 </tr>
 </tbody>
 </table>
-<p><code>StreamError</code> is the base of every stream exception.</p>
+<p><code>StreamError</code> is the base of every stream exception. The body is
+<code>{"detail": ..., "code": ...}</code>, where <code>code</code> is a stable name such as
+<code>stream_not_found</code>, <code>stream_expired</code> or <code>cursor_ahead</code> (see the
+<a href="../../api/reference/#stream-errors">API reference</a> for the full list), and a
+<code>503</code> carries <code>Retry-After</code>. Branch on <code>code</code>, not on <code>detail</code>. A handler you
+register for <code>StreamError</code>, or for one of its subclasses, takes precedence.</p>
 <p>After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:</p>
 <ul>
-<li><strong>Passing</strong>: Redis down for longer than <code>stream_read_retry_seconds</code>, a
+<li><strong>Passing</strong>: Redis down for longer than <code>stream_read_retry_window</code>, a
   shutdown, the connection cap, a client that stops reading. The response
   closes with no event, and <code>EventSource</code> reconnects and resumes from
   <code>Last-Event-ID</code>. A shorter Redis failure never reaches the client: the reader
@@ -1743,18 +2191,18 @@ whose last event was exactly the newest one trimmed also gets <code>410</code>, 
 missed nothing.</p>
 <hr />
 <h2 id="the-browser-side">The browser side<a class="headerlink" href="#the-browser-side" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">const</span><span class="w"> </span><span class="nx">events</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">EventSource</span><span class="p">(</span><span class="sb">`/chats/</span><span class="si">${</span><span class="nx">chatId</span><span class="si">}</span><span class="sb">/runs/</span><span class="si">${</span><span class="nx">runId</span><span class="si">}</span><span class="sb">/events`</span><span class="p">);</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">append</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">text</span><span class="p">));</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.gap&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">markIncomplete</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">)));</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.end&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nx">events</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nx">showOutcome</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">reason</span><span class="p">);</span><span class="w">   </span><span class="c1">// done, error, cancelled, producer_lost</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="p">});</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.error&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nx">events</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">code</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s2">&quot;credential_expired&quot;</span><span class="p">)</span><span class="w"> </span><span class="nx">signIn</span><span class="p">();</span>
-<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="p">});</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kd">const</span><span class="w"> </span><span class="nx">events</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">EventSource</span><span class="p">(</span><span class="sb">`/chats/</span><span class="si">${</span><span class="nx">chatId</span><span class="si">}</span><span class="sb">/runs/</span><span class="si">${</span><span class="nx">runId</span><span class="si">}</span><span class="sb">/events`</span><span class="p">);</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">append</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">text</span><span class="p">));</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.gap&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">markIncomplete</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">)));</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.end&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">  </span><span class="nx">events</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">  </span><span class="nx">showOutcome</span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">reason</span><span class="p">);</span><span class="w">   </span><span class="c1">// done, error, cancelled, producer_lost</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="p">});</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="nx">events</span><span class="p">.</span><span class="nx">addEventListener</span><span class="p">(</span><span class="s2">&quot;stream.error&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span><span class="nx">events</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nb">JSON</span><span class="p">.</span><span class="nx">parse</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">data</span><span class="p">).</span><span class="nx">code</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s2">&quot;credential_expired&quot;</span><span class="p">)</span><span class="w"> </span><span class="nx">signIn</span><span class="p">();</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="p">});</span>
 </code></pre></div>
 <ul>
 <li>The client need not know which event is last. The server closes after the
@@ -1775,13 +2223,13 @@ missed nothing.</p>
 <li><strong>Live readers.</strong> At most <code>stream_max_readers</code> per process; over the limit a
   new reader gets <code>503</code> with <code>Retry-After</code>. A reader takes its slot when its
   response starts, and every way the response ends frees it.</li>
-<li><strong>Slow clients.</strong> A send that waits longer than <code>stream_send_timeout_seconds</code>
+<li><strong>Slow clients.</strong> A send that waits longer than <code>stream_send_timeout</code>
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.</li>
 <li><strong>Connections.</strong> Each live reader holds a pool connection for each blocking
   read. With <code>REDIS_MAX_CONNECTIONS</code> set, size it for <code>stream_max_readers</code> plus
   your other traffic. The driver's <code>socket_timeout</code> must be longer than
-  <code>stream_heartbeat_seconds</code>; <code>.streams()</code> refuses a setup where it is not.</li>
+  <code>stream_heartbeat_interval</code>; <code>.streams()</code> refuses a setup where it is not.</li>
 <li><strong>Redis failover.</strong> Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
   loss gets <code>409</code>; one behind it sees a <code>stream.gap</code>.</li>
@@ -1800,24 +2248,31 @@ missed nothing.</p>
   run.</li>
 <li><strong>SSE only.</strong> There is no WebSocket reader; <code>follow()</code> is the starting point
   for one.</li>
+<li><strong>Async producers only.</strong> A producer in sync code, such as CrewAI or ADK's
+  sync <code>Runner.run</code>, has no writer yet.</li>
 </ul>
 <hr />
 <h2 id="redis-keys">Redis keys<a class="headerlink" href="#redis-keys" title="Permanent link">&para;</a></h2>
 <p>Every key uses the SDK's <code>prefix</code> setting (<code>REDIS_PREFIX</code>, default
 <code>redis:fastapi</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>&lt;prefix&gt;:stream:{&lt;scope&gt;:&lt;id&gt;}        Stream   the events
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>&lt;prefix&gt;:stream-meta:{&lt;scope&gt;:&lt;id&gt;}   Hash     status, cancel, final, writer, started
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>&lt;prefix&gt;:stream-alive:{&lt;scope&gt;:&lt;id&gt;}  String   the producer heartbeat
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>&lt;prefix&gt;:stream-active:&lt;scope&gt;        String   the scope&#39;s active run
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>&lt;prefix&gt;:stream:{&lt;scope&gt;}:&lt;id&gt;        Stream   the events
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>&lt;prefix&gt;:stream-meta:{&lt;scope&gt;}:&lt;id&gt;   Hash     status, cancel, writer, started, alive
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>&lt;prefix&gt;:stream-active:{&lt;scope&gt;}      String   the scope&#39;s active run
 </code></pre></div>
-<p>The <code>{&lt;scope&gt;:&lt;id&gt;}</code> hash tag keeps a stream's keys in one Cluster slot. The
-metadata hash outlives the stream by <code>stream_expiry_window</code>, so a late
-reconnect gets <code>410</code> (expired) instead of <code>404</code> (unknown). The prefix must not
-contain braces.</p>
+<p>The <code>{&lt;scope&gt;}</code> hash tag keeps a scope's keys in one Cluster slot, so one
+transaction starts a run and takes the slot, and one transaction ends it and
+frees the slot. It also puts all of a scope's runs on one shard, so make the
+scope one resource, such as a chat, and not one value for the whole
+application. The <code>alive</code> field in the metadata hash is the producer heartbeat;
+it has its own TTL, <code>stream_alive_ttl</code>. The metadata hash outlives the
+stream by <code>stream_gone_ttl</code>,
+so a late reconnect gets <code>410</code> (expired) instead of <code>404</code> (unknown). The prefix
+must not contain braces.</p>
 <hr />
 <h2 id="settings">Settings<a class="headerlink" href="#settings" title="Permanent link">&para;</a></h2>
 <p>Every setting is an environment variable prefixed <code>REDIS_</code>, so
-<code>stream_ttl_active</code> is <code>REDIS_STREAM_TTL_ACTIVE</code>. See
+<code>stream_active_ttl</code> is <code>REDIS_STREAM_ACTIVE_TTL</code>. Durations are whole
+seconds, as everywhere else in the SDK. See
 <a href="../configuration/">Configuration</a> for how these are loaded.</p>
 <table>
 <thead>
@@ -1829,17 +2284,17 @@ contain braces.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>stream_ttl_active</code></td>
+<td><code>stream_active_ttl</code></td>
 <td><code>600</code></td>
 <td>TTL of a running stream, refreshed by every append</td>
 </tr>
 <tr>
-<td><code>stream_ttl_done</code></td>
+<td><code>stream_done_ttl</code></td>
 <td><code>120</code></td>
 <td>How long a finished stream stays readable</td>
 </tr>
 <tr>
-<td><code>stream_expiry_window</code></td>
+<td><code>stream_gone_ttl</code></td>
 <td><code>3600</code></td>
 <td>How long metadata outlives the stream, for <code>410</code> instead of <code>404</code></td>
 </tr>
@@ -1854,14 +2309,14 @@ contain braces.</p>
 <td>Largest encoded event</td>
 </tr>
 <tr>
-<td><code>stream_heartbeat_seconds</code></td>
+<td><code>stream_heartbeat_interval</code></td>
 <td><code>15</code></td>
 <td>SSE ping, blocking-read bound, producer heartbeat</td>
 </tr>
 <tr>
-<td><code>stream_alive_ttl_seconds</code></td>
+<td><code>stream_alive_ttl</code></td>
 <td><code>45</code></td>
-<td>Lifetime of the producer heartbeat key; longer than the heartbeat</td>
+<td>Lifetime of the producer heartbeat field; longer than the heartbeat</td>
 </tr>
 <tr>
 <td><code>stream_replay_page</code></td>
@@ -1874,17 +2329,17 @@ contain braces.</p>
 <td>Live SSE readers per process</td>
 </tr>
 <tr>
-<td><code>stream_max_connection_seconds</code></td>
+<td><code>stream_max_connection_duration</code></td>
 <td><code>300</code></td>
 <td>Longest SSE connection before the client reconnects</td>
 </tr>
 <tr>
-<td><code>stream_read_retry_seconds</code></td>
+<td><code>stream_read_retry_window</code></td>
 <td><code>30</code></td>
 <td>How long a reader retries a failing Redis read</td>
 </tr>
 <tr>
-<td><code>stream_send_timeout_seconds</code></td>
+<td><code>stream_send_timeout</code></td>
 <td><code>10</code></td>
 <td>Longest wait for one send to a client</td>
 </tr>
@@ -1918,7 +2373,7 @@ No scope, stream ID or event data becomes a label.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 24, 2026 06:15:48 UTC">October 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
   </span>
 
     

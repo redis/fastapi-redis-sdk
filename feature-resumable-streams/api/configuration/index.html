@@ -1086,6 +1086,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#jsonablecoder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JsonableCoder
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#pydantic_model_coder" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1304,6 +1315,17 @@
     <span class="md-ellipsis">
       
         JsonCoder
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jsonablecoder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JsonableCoder
       
     </span>
   </a>
@@ -1554,21 +1576,21 @@
 <td>Enable redis-py native OTel</td>
 </tr>
 <tr>
-<td><code>stream_ttl_active</code></td>
+<td><code>stream_active_ttl</code></td>
 <td><code>int</code></td>
 <td><code>600</code></td>
 <td>&gt; 0</td>
 <td>TTL of a running stream, refreshed by every append</td>
 </tr>
 <tr>
-<td><code>stream_ttl_done</code></td>
+<td><code>stream_done_ttl</code></td>
 <td><code>int</code></td>
 <td><code>120</code></td>
 <td>&gt; 0</td>
 <td>How long a finished stream stays readable</td>
 </tr>
 <tr>
-<td><code>stream_expiry_window</code></td>
+<td><code>stream_gone_ttl</code></td>
 <td><code>int</code></td>
 <td><code>3600</code></td>
 <td>&gt;= 0</td>
@@ -1589,18 +1611,18 @@
 <td>Largest encoded event</td>
 </tr>
 <tr>
-<td><code>stream_heartbeat_seconds</code></td>
-<td><code>float</code></td>
+<td><code>stream_heartbeat_interval</code></td>
+<td><code>int</code></td>
 <td><code>15</code></td>
 <td>&gt; 0</td>
 <td>SSE ping, read bound, producer heartbeat</td>
 </tr>
 <tr>
-<td><code>stream_alive_ttl_seconds</code></td>
-<td><code>float</code></td>
+<td><code>stream_alive_ttl</code></td>
+<td><code>int</code></td>
 <td><code>45</code></td>
 <td>&gt; heartbeat</td>
-<td>Lifetime of the producer heartbeat key</td>
+<td>Lifetime of the producer heartbeat field</td>
 </tr>
 <tr>
 <td><code>stream_replay_page</code></td>
@@ -1617,22 +1639,22 @@
 <td>Live SSE readers per process</td>
 </tr>
 <tr>
-<td><code>stream_max_connection_seconds</code></td>
-<td><code>float</code></td>
+<td><code>stream_max_connection_duration</code></td>
+<td><code>int</code></td>
 <td><code>300</code></td>
 <td>&gt; 0</td>
 <td>Longest SSE connection</td>
 </tr>
 <tr>
-<td><code>stream_read_retry_seconds</code></td>
-<td><code>float</code></td>
+<td><code>stream_read_retry_window</code></td>
+<td><code>int</code></td>
 <td><code>30</code></td>
 <td>&gt;= 0</td>
 <td>How long a reader retries a failing read</td>
 </tr>
 <tr>
-<td><code>stream_send_timeout_seconds</code></td>
-<td><code>float</code></td>
+<td><code>stream_send_timeout</code></td>
+<td><code>int</code></td>
 <td><code>10</code></td>
 <td>&gt; 0</td>
 <td>Longest wait for one send to a client</td>
@@ -1710,6 +1732,12 @@ are not installed, a warning is logged and telemetry remains disabled.</p>
 </code></pre></div>
 <h3 id="jsoncoder"><code>JsonCoder</code><a class="headerlink" href="#jsoncoder" title="Permanent link">&para;</a></h3>
 <p>Default <code>Coder</code> implementation using <code>json.dumps</code> / <code>json.loads</code>.</p>
+<h3 id="jsonablecoder"><code>JsonableCoder</code><a class="headerlink" href="#jsonablecoder" title="Permanent link">&para;</a></h3>
+<p>The default <code>Coder</code> for resumable streams. It writes JSON as <code>JsonCoder</code> does,
+and converts a value <code>json.dumps</code> cannot encode, such as a Pydantic model, a
+dataclass or a datetime, with <code>pydantic_core.to_jsonable_python</code> first.
+Decoding returns plain JSON values. A value neither can encode raises
+<code>ValueError</code>.</p>
 <h3 id="pydantic_model_coder"><code>pydantic_model_coder()</code><a class="headerlink" href="#pydantic_model_coder" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">pydantic_model_coder</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
@@ -1763,7 +1791,7 @@ model-specific <code>CacheBackend</code> provider and inject it (the default
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 24, 2026 06:15:48 UTC">October 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
   </span>
 
     

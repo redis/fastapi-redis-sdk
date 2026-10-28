@@ -2162,45 +2162,47 @@ creates the run and returns at once; a producer task writes events to a Redis
 Stream; and the events route, on any API process, reads that stream. The
 producer and the reader share nothing but Redis, so a dropped connection ends
 only its reader, and the run goes on.</p>
+<p>The first diagram shows the producing side. The start request takes the
+active slot, starts the producer task and returns. The producer task then
+writes each event, and last the final entry.</p>
 <pre class="mermaid"><code>sequenceDiagram
-    participant B as Browser (EventSource)
+    participant B as REST client
     participant A as API process
     participant P as Producer task
     participant R as Redis
 
     B-&gt;&gt;A: POST /runs (stream_id)
-    A-&gt;&gt;R: SET active slot NX, create meta, heartbeat
+    A-&gt;&gt;R: take the active slot, create meta
     A-&gt;&gt;P: spawn()
-    A--&gt;&gt;B: 202 {stream_id}
+    A--&gt;&gt;B: 202 with stream_id
 
     loop each event
-        P-&gt;&gt;R: MULTI: XADD IDMP, EXPIRE, heartbeat, read cancel flag
+        P-&gt;&gt;R: XADD entry, refresh TTL and heartbeat
     end
+    P-&gt;&gt;R: XADD final entry, status finished, release slot</code></pre>
+<p>The second diagram shows the consuming side. The reader replays the entries
+already in the stream, then follows new ones, with the same <code>XREAD</code>. When the
+connection drops, the browser reconnects with the last entry ID it got, and
+the reader starts after it.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant B as Rest client
+    participant A as API process
+    participant R as Redis
 
     B-&gt;&gt;A: GET /events
-    A-&gt;&gt;R: MULTI: meta, XINFO STREAM, first page
-    A--&gt;&gt;B: 200, replay, then live events (id: entry ID)
+    A-&gt;&gt;R: read meta and first page
+    A--&gt;&gt;B: 200, replayed entries
     loop until the final entry
         A-&gt;&gt;R: XREAD BLOCK after cursor
-        R--&gt;&gt;A: new entries, or none (ping)
-        A--&gt;&gt;B: events, or ": ping"
+        R--&gt;&gt;A: new entries
+        A--&gt;&gt;B: events (id: entry ID)
     end
 
-    Note over B,A: connection drops; the run goes on
-    B-&gt;&gt;A: GET /events, Last-Event-ID: cursor
-    A-&gt;&gt;R: checks, first page after the cursor
-    A--&gt;&gt;B: only the entries after the cursor
-
-    P-&gt;&gt;R: final entry (f=1), status finished, release slot
-    A--&gt;&gt;B: final event, then close
-    B-&gt;&gt;A: GET /events, Last-Event-ID: final
-    A--&gt;&gt;B: 204, EventSource stops
-
-    opt producer dies
-        Note over R: heartbeat key lapses
-        A-&gt;&gt;R: reader writes stream.end (producer_lost)
-        A--&gt;&gt;B: final event, then close
-    end</code></pre>
+    Note over B,A: connection drops, the run goes on
+    B-&gt;&gt;A: GET /events, Last-Event-ID: entry ID
+    A-&gt;&gt;R: read meta and first page after the entry ID
+    A--&gt;&gt;B: 200, only the entries after it
+    A--&gt;&gt;B: final event, then close</code></pre>
 <p>Four rules hold this together:</p>
 <ol>
 <li><strong>One read loop.</strong> The reader replays and follows with the same <code>XREAD</code>,
@@ -2257,7 +2259,7 @@ tier.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 24, 2026 06:15:48 UTC">October 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
   </span>
 
     

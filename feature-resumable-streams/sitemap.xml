@@ -2,54 +2,54 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/api/configuration/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/api/reference/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/getting-started/installation/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/getting-started/quick-start/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/architecture/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/benchmarks/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/caching/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/configuration/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/observability/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/rate-limiting/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/sessions/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
     <url>
          <loc>https://redis.github.io/fastapi-redis-sdk/feature-resumable-streams/guide/streams/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-28</lastmod>
     </url>
 </urlset>

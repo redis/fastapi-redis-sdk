@@ -2994,16 +2994,18 @@ whole process. Raises <code>StreamConfigurationError</code> when streams are not
 <tbody>
 <tr>
 <td><code>coder</code></td>
-<td>Serializer for event payloads. Defaults to <code>JsonCoder</code>.</td>
+<td>Serializer for event payloads. Defaults to <code>JsonableCoder</code>: JSON that also takes Pydantic models, dataclasses and datetimes.</td>
 </tr>
 </tbody>
 </table>
-<p>Creates the backend, registers the handlers that turn stream errors into
-status codes, and marks the app so the lifespan detects server support at
-startup and cancels spawned producers at shutdown. Calling it twice is a
-no-op. Raises <code>StreamConfigurationError</code> when the prefix contains braces,
-<code>stream_alive_ttl_seconds</code> is not longer than <code>stream_heartbeat_seconds</code>, or
-<code>socket_timeout</code> is not longer than <code>stream_heartbeat_seconds</code>.</p>
+<p>Creates the backend, registers one handler for <code>StreamError</code> that turns
+stream errors into status codes, and marks the app so the lifespan detects
+server support at startup and cancels spawned producers at shutdown. A
+<code>StreamError</code> handler the application set first is kept, and one it sets for a
+subclass wins for that subclass. Calling it twice is a no-op. Raises
+<code>StreamConfigurationError</code> when the prefix contains braces,
+<code>stream_alive_ttl</code> is not longer than <code>stream_heartbeat_interval</code>, or
+<code>socket_timeout</code> is not longer than <code>stream_heartbeat_interval</code>.</p>
 <hr />
 <h2 id="streambackend"><code>StreamBackend</code><a class="headerlink" href="#streambackend" title="Permanent link">&para;</a></h2>
 <table>
@@ -3015,6 +3017,10 @@ no-op. Raises <code>StreamConfigurationError</code> when the prefix contains bra
 </thead>
 <tbody>
 <tr>
+<td><code>await start(fn, *, scope, stream_id=None, exclusive=True) -&gt; StreamWriter</code></td>
+<td><code>open()</code>, then <code>spawn(writer, fn)</code> unless the run already existed. The usual start route in one call.</td>
+</tr>
+<tr>
 <td><code>await open(*, scope, stream_id=None, exclusive=True)</code></td>
 <td>Create a run and return its <code>StreamWriter</code>. With <code>exclusive</code>, the run takes the scope's active slot; another run in the scope raises <code>StreamBusy</code>. A retried start with the same <code>stream_id</code> returns a writer whose <code>created</code> is <code>False</code>.</td>
 </tr>
@@ -3024,15 +3030,15 @@ no-op. Raises <code>StreamConfigurationError</code> when the prefix contains bra
 </tr>
 <tr>
 <td><code>spawn(writer, fn) -&gt; asyncio.Task</code></td>
-<td>Run <code>fn(writer)</code> as a task the backend owns, with the heartbeat around it. Writes a final <code>stream.end</code> with the reason unless <code>fn</code> called <code>finish()</code>.</td>
+<td>Run <code>fn(writer)</code> as a task the backend owns, with the heartbeat around it. Writes a final <code>stream.end</code> with the reason unless <code>fn</code> called <code>finish()</code>. Raises <code>ValueError</code> for a writer whose <code>created</code> is <code>False</code>, or one already spawned.</td>
 </tr>
 <tr>
 <td><code>await sse(stream_id, *, request, scope, after=None, expires_at=None) -&gt; Response</code></td>
 <td>Prepare an SSE response. Every check that decides the status runs first. Reads <code>Last-Event-ID</code> and <code>?after=</code> itself; <code>after</code> overrides both. Ends at <code>expires_at</code> with <code>stream.error</code> <code>credential_expired</code>.</td>
 </tr>
 <tr>
-<td><code>follow(stream_id, *, scope, after=None) -&gt; AsyncIterator[StreamEvent]</code></td>
-<td>The same read without HTTP. Stops after the final event. Wrap it in <code>contextlib.aclosing()</code> if you may leave early.</td>
+<td><code>await follow(stream_id, *, scope, after=None) -&gt; StreamReader</code></td>
+<td>The same read without HTTP. Every check runs at the <code>await</code>, before any event.</td>
 </tr>
 <tr>
 <td><code>await cancel(stream_id, *, scope) -&gt; bool</code></td>
@@ -3055,7 +3061,7 @@ no-op. Raises <code>StreamConfigurationError</code> when the prefix contains bra
 <p>Every method except <code>spawn()</code> and <code>detect()</code> raises <code>StreamUnsupported</code> when
 the server lacks support, and <code>StreamStoreError</code> when Redis fails. Scopes match
 <code>[A-Za-z0-9_.:-]{1,200}</code> and stream IDs <code>[A-Za-z0-9_-]{1,64}</code>; others raise
-<code>ValueError</code>, or <code>StreamNotFound</code> when reading.</p>
+<code>StreamInvalidName</code> (<code>422</code>, also a <code>ValueError</code>) on every method.</p>
 <hr />
 <h2 id="streamwriter"><code>StreamWriter</code><a class="headerlink" href="#streamwriter" title="Permanent link">&para;</a></h2>
 <table>
@@ -3075,24 +3081,24 @@ the server lacks support, and <code>StreamStoreError</code> when Redis fails. Sc
 <td><code>True</code> when <code>open()</code> created the run; <code>False</code> for a retried start. Start a producer only when <code>True</code>.</td>
 </tr>
 <tr>
-<td><code>await append(type, data) -&gt; AppendResult</code></td>
-<td>Store one event. Retried safely after a timeout. Raises <code>ValueError</code> for an invalid or reserved type or an event over <code>stream_max_event_bytes</code>, <code>StreamFinished</code> after the final event, <code>StreamExpired</code> when the stream expired, <code>StreamFenced</code> after a takeover.</td>
+<td><code>await append(type, data) -&gt; str</code></td>
+<td>Store one event and return its entry ID. Retried safely after a timeout. Raises <code>ValueError</code> for an invalid or reserved type or an event over <code>stream_max_event_bytes</code>, <code>StreamFinished</code> after the final event, <code>StreamExpired</code> when the stream expired, <code>StreamFenced</code> when this writer does not own the stream.</td>
 </tr>
 <tr>
 <td><code>await finish(type, data=None) -&gt; str</code></td>
-<td>Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID.</td>
+<td>Write the final event and end the stream. Returns its ID; if the stream already ended, returns the existing final ID. Raises <code>StreamFenced</code> for a writer <code>attach()</code> replaced, so it cannot end the new writer's run.</td>
 </tr>
 <tr>
-<td><code>await suspend(ttl)</code></td>
-<td>Extend the stream, the heartbeat and the active slot. <code>ttl</code> is <code>int</code> seconds or <code>timedelta</code>.</td>
+<td><code>await extend(ttl)</code></td>
+<td>Keep the stream, the heartbeat and the active slot for <code>ttl</code>, in seconds or a <code>timedelta</code>. Raises <code>StreamFenced</code> or <code>StreamFinished</code>.</td>
 </tr>
 <tr>
 <td><code>keepalive()</code></td>
-<td>Async context manager that refreshes the heartbeat and reads the cancel flag every <code>stream_heartbeat_seconds</code>.</td>
+<td>Async context manager that refreshes the heartbeat and reads the cancel flag every <code>stream_heartbeat_interval</code>.</td>
 </tr>
 <tr>
 <td><code>cancelled</code></td>
-<td>Whether a stop was requested, as last seen.</td>
+<td>Whether a stop was requested, as last seen by an append or heartbeat.</td>
 </tr>
 <tr>
 <td><code>finished</code></td>
@@ -3118,8 +3124,8 @@ the server lacks support, and <code>StreamStoreError</code> when Redis fails. Sc
 <td><code>id</code> (the entry ID, the cursor; <code>None</code> for the reader's own events), <code>type</code>, <code>data</code> (decoded), <code>final</code>.</td>
 </tr>
 <tr>
-<td><code>AppendResult</code></td>
-<td><code>id</code>, <code>cancelled</code>.</td>
+<td><code>StreamReader</code></td>
+<td>What <code>follow()</code> returns: an async iterator of <code>StreamEvent</code> and an async context manager that closes it. It reads nothing until iterated, and is empty when the cursor is at or past the final event. <code>await aclose()</code> stops it. It takes no reader slot.</td>
 </tr>
 </tbody>
 </table>
@@ -3142,13 +3148,76 @@ the server lacks support, and <code>StreamStoreError</code> when Redis fails. Sc
 <a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>├── StreamFinished             409  a write after the final event
 <a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>├── StreamFenced               409  another writer took over
 <a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>├── StreamInvalidCursor        422  malformed or repeated cursor (also a ValueError)
-<a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>├── StreamCredentialExpired    401  expires_at had already passed
-<a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a>├── StreamUnsupported          503  the server lacks support
-<a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a>├── StreamStoreError           503  Redis failed
-<a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>└── StreamConfigurationError        a setting cannot work, or no .streams()
+<a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>├── StreamInvalidName          422  scope or stream ID outside the allowed set (also a ValueError)
+<a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a>├── StreamCredentialExpired    401  expires_at had already passed
+<a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a>├── StreamUnsupported          503  the server lacks support
+<a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>├── StreamStoreError           503  Redis failed
+<a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a>└── StreamConfigurationError   500  a setting cannot work, or no .streams()
 </code></pre></div>
-<p>The status is what the handlers <code>.streams()</code> registers answer before the first
-byte. A <code>503</code> carries <code>Retry-After</code>.</p>
+<p>Each class carries its <code>status_code</code> and a stable <code>code</code>. The handler
+<code>.streams()</code> registers answers before the first byte with
+<code>{"detail": ..., "code": ...}</code>; a <code>503</code> carries <code>Retry-After</code>. Branch on
+<code>code</code>, not on <code>detail</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th><code>code</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>StreamNotFound</code></td>
+<td><code>stream_not_found</code></td>
+</tr>
+<tr>
+<td><code>StreamExpired</code></td>
+<td><code>stream_expired</code></td>
+</tr>
+<tr>
+<td><code>StreamBusy</code></td>
+<td><code>stream_busy</code></td>
+</tr>
+<tr>
+<td><code>StreamCursorAhead</code></td>
+<td><code>cursor_ahead</code></td>
+</tr>
+<tr>
+<td><code>StreamFinished</code></td>
+<td><code>stream_finished</code></td>
+</tr>
+<tr>
+<td><code>StreamFenced</code></td>
+<td><code>stream_fenced</code></td>
+</tr>
+<tr>
+<td><code>StreamInvalidCursor</code></td>
+<td><code>invalid_cursor</code></td>
+</tr>
+<tr>
+<td><code>StreamInvalidName</code></td>
+<td><code>invalid_stream_name</code></td>
+</tr>
+<tr>
+<td><code>StreamCredentialExpired</code></td>
+<td><code>credential_expired</code></td>
+</tr>
+<tr>
+<td><code>StreamUnsupported</code></td>
+<td><code>stream_unsupported</code></td>
+</tr>
+<tr>
+<td><code>StreamStoreError</code></td>
+<td><code>stream_unavailable</code></td>
+</tr>
+<tr>
+<td><code>StreamConfigurationError</code></td>
+<td><code>stream_configuration_error</code></td>
+</tr>
+</tbody>
+</table>
+<p>Over <code>stream_max_readers</code>, the SSE response answers <code>503</code> with code
+<code>stream_capacity_exceeded</code>; no exception is raised for it.</p>
 
 
 
@@ -3171,7 +3240,7 @@ byte. A <code>503</code> carries <code>Retry-After</code>.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 24, 2026 06:15:48 UTC">October 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
   </span>
 
     
