@@ -229,14 +229,16 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         ps.async_pool = _PoolState.build_async_pool()
 
-    if getattr(app.state, "_redis_rate_limiting", False):
-        await _probe_rate_limit_capabilities(ps)
-
-    if getattr(app.state, "_redis_caching", False):
-        await _check_cache_eviction_safety(ps)
-
     streams = None
     try:
+        # The startup checks swallow errors but not cancellation, so they
+        # run inside the try: the pool still closes if startup is cancelled.
+        if getattr(app.state, "_redis_rate_limiting", False):
+            await _probe_rate_limit_capabilities(ps)
+
+        if getattr(app.state, "_redis_caching", False):
+            await _check_cache_eviction_safety(ps)
+
         streams = await _start_streams(app, ps)
         yield
     finally:

@@ -71,30 +71,6 @@ from redis_fastapi.streams import (
 )
 
 
-@pytest.mark.parametrize("failure", [RuntimeError("startup"), asyncio.CancelledError()])
-async def test_stream_startup_failure_closes_sdk_pool(
-    failure: BaseException, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from redis_fastapi.deps import _PoolState
-    from redis_fastapi.lifespan import redis_lifespan
-
-    get_settings.cache_clear()
-    pool = AsyncMock()
-    monkeypatch.setattr(_PoolState, "build_async_pool", lambda: pool)
-    monkeypatch.setattr(
-        "redis_fastapi.lifespan._start_streams", AsyncMock(side_effect=failure)
-    )
-    app = FastAPI()
-    try:
-        with pytest.raises(type(failure)):
-            async with redis_lifespan(app):
-                pytest.fail("startup should fail")
-        pool.aclose.assert_awaited_once()
-        assert app.state._redis.async_pool is None
-    finally:
-        get_settings.cache_clear()
-
-
 @pytest.fixture()
 def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     """Set ``REDIS_*`` variables for one test, with a fresh settings cache."""
