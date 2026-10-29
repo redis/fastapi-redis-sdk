@@ -74,6 +74,24 @@ The check confirms the command set, not the patch release. Redis 8.6.0 and
 8.6.1 have the commands but carry defects in `IDMP`, so use 8.6.2 or later;
 8.6.6 or later is advised for its stream security fixes.
 
+
+### Redis client response modes
+
+Streaming is tested with redis-py 8.0.1 and 8.1.0 using the protocol unset,
+explicit RESP2, and explicit RESP3 with both legacy and modern responses.
+Both binary and decoded responses are covered. The reader accepts the
+corresponding XREAD layouts without requiring a particular response mode.
+
+Initial replay uses a nonblocking XRANGE inside the metadata transaction;
+live delivery uses XREAD. Both return events strictly after the cursor.
+Metadata reads use fixed-field HMGET to avoid the redis-py RESP2 Cluster
+HGETALL callback incompatibility in these client versions.
+
+These compatibility checks do not qualify network failure or failover.
+The watched-transaction retry fix in redis/redis-py#4486 is absent from these
+released clients; select a released client containing it and repeat failure
+and transaction-race checks before qualifying Cluster recovery.
+
 ---
 
 ## Starting a run
