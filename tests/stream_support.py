@@ -31,15 +31,37 @@ from redis_fastapi.stream_backend import (
 from tests.conftest import REDIS_URL
 
 
-def stream_client() -> Any:
+def stream_client(protocol: int = 3) -> Any:
     """A client for the endpoint of the running ``stream_case``.
 
-    For a test that needs a second process's own connections.
+    For a test that needs a second process's own connections, or a client
+    speaking another protocol.
     """
     factory = RedisCluster if os.environ.get("REDIS_CLUSTER") == "True" else Redis
     return factory.from_url(
-        os.environ["REDIS_URL"], decode_responses=True, socket_timeout=5, protocol=3
+        os.environ["REDIS_URL"],
+        decode_responses=True,
+        socket_timeout=5,
+        protocol=protocol,
     )
+
+
+async def command_calls(client: Any) -> dict[str, int]:
+    """How many times the server ran each command, summed over primaries.
+
+    Read it before and after an operation to see what that operation sent.
+    """
+    if isinstance(client, RedisCluster):
+        replies = await client.info("commandstats", target_nodes=RedisCluster.PRIMARIES)
+        sections = list(replies.values()) if isinstance(replies, dict) else replies
+    else:
+        sections = [await client.info("commandstats")]
+    calls: dict[str, int] = {}
+    for section in sections:
+        for name, stats in section.items():
+            command = name.removeprefix("cmdstat_")
+            calls[command] = calls.get(command, 0) + int(stats["calls"])
+    return calls
 
 
 def stream_backend(client: Any) -> StreamBackend:
