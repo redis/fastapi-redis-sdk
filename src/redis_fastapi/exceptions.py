@@ -161,18 +161,6 @@ class StreamFinished(StreamError):
     code = "stream_finished"
 
 
-class StreamFenced(StreamError):
-    """This writer does not own the stream.  409.
-
-    Raised by a handle from a retried start, which never writes, and by a
-    writer that ``attach()`` replaced.  That writer stops; at most the append
-    that reported the fence landed after the new writer started.
-    """
-
-    status_code = 409
-    code = "stream_fenced"
-
-
 class StreamStoreError(StreamError):
     """Redis could not complete a stream operation.  Answered with 503."""
 

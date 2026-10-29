@@ -81,9 +81,11 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
         )
     raw_meta = await redis.hgetall(meta)
     fields = {_text(k): _text(v) for k, v in raw_meta.items()}
-    if "status" in fields:  # meta holding only the heartbeat is a remnant
-        # The heartbeat is meta's "alive" field, with its own TTL.
-        (alive,) = await redis.execute_command("HTTL", meta, "FIELDS", 1, "alive")
+    if "status" in fields:
+        # The owner is "<process>:<writer>"; that process's lease vouches for
+        # the run.
+        proc = (fields.get("owner") or "").split(":", 1)[0]
+        lease = f"{prefix}:stream-proc:{{{proc}}}"
         keys.append(
             _key(
                 meta,
@@ -91,7 +93,7 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
                 {
                     "status": fields.get("status"),
                     "cancel": int(fields.get("cancel") or 0),
-                    "alive TTL": alive if alive > 0 else None,
+                    "owner lease TTL": (await redis.ttl(lease)) if proc else None,
                     "TTL": await redis.ttl(meta),
                 },
             )

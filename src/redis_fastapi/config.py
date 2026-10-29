@@ -337,13 +337,14 @@ class RedisSettings(BaseSettings):
     )
 
     # -- Resumable streams -----------------------------------------------------
-    stream_active_ttl: int = Field(
-        default=600,
+    stream_max_run: int = Field(
+        default=3600,
         gt=0,
         description=(
-            "TTL of a running stream, in seconds.  Every append refreshes it, "
-            "so a producer killed mid-run leaves a stream that expires by "
-            "itself."
+            "TTL of a running stream, in seconds, set when it opens, so a "
+            "producer killed mid-run leaves a stream that expires by itself.  "
+            "An append past half of it extends it; StreamWriter.extend() "
+            "covers a longer wait."
         ),
     )
     stream_done_ttl: int = Field(
@@ -380,17 +381,24 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "SSE ping interval, in seconds.  Also bounds each blocking read, "
-            "and sets how often a producer refreshes its heartbeat and checks "
-            "for cancel."
+            "and so how often a reader checks that the producer is alive."
         ),
     )
-    stream_alive_ttl: int = Field(
+    stream_lease_interval: int = Field(
+        default=15,
+        gt=0,
+        description=(
+            "How often a process renews its lease and collects the cancels "
+            "sent to it, in seconds."
+        ),
+    )
+    stream_lease_ttl: int = Field(
         default=45,
         gt=0,
         description=(
-            "Lifetime of a producer's heartbeat field, in seconds.  When it "
-            "lapses with no final entry, a reader ends the stream as "
-            "producer_lost.  Must be longer than stream_heartbeat_interval."
+            "Lifetime of a process's lease, in seconds.  When it lapses, a "
+            "reader ends the process's running streams as producer_lost.  "
+            "Must be longer than stream_lease_interval."
         ),
     )
     stream_replay_page: int = Field(

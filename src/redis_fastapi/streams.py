@@ -332,10 +332,10 @@ def check_stream_settings() -> None:
             "first braces in a key, which would put every stream in one slot."
         )
     block = settings.stream_heartbeat_interval
-    if settings.stream_alive_ttl <= block:
+    if settings.stream_lease_ttl <= settings.stream_lease_interval:
         raise StreamConfigurationError(
-            "stream_alive_ttl must be longer than "
-            "stream_heartbeat_interval, or a live producer looks dead."
+            "stream_lease_ttl must be longer than "
+            "stream_lease_interval, or a live producer looks dead."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(
