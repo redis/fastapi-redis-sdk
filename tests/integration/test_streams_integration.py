@@ -41,6 +41,7 @@ from redis_fastapi import (
 from redis_fastapi.config import get_settings
 from redis_fastapi.stream_backend import _keys, _lease_key, _StreamCapabilities
 from tests.conftest import REDIS_URL, about, aexpire_now, requires_redis
+from tests.stream_support import collect, crash, stream_backend
 
 
 def _server_supports_streams() -> bool | None:
@@ -108,13 +109,6 @@ async def backend(
     assert await instance.detect() is True
     yield instance
     await instance._drop_lease()
-
-
-def _other_process(real_async_redis: Any) -> StreamBackend:
-    """A second backend on the same server: another process, as Redis sees it."""
-    instance = StreamBackend(lambda: real_async_redis)
-    instance._start(_StreamCapabilities(supported=True))
-    return instance
 
 
 Producer = Callable[[StreamWriter], Awaitable[None]]
@@ -201,16 +195,6 @@ def _deltas(count: int, final: bool = True) -> Producer:
             await writer.finish("message", {"count": count})
 
     return produce
-
-
-async def _collect(
-    backend: StreamBackend, stream_id: str, scope: str, after: str | None = None
-) -> list[Any]:
-    events = []
-    async with await backend.follow(stream_id, scope=scope, after=after) as reader:
-        async for event in reader:
-            events.append(event)
-    return events
 
 
 async def _flatten(pages: Any) -> list[Any]:
@@ -562,7 +546,7 @@ class TestBackend:
         for i in range(3):
             await writer.append("delta", {"i": i})
         final = await writer.finish("message", {"ok": True})
-        events = await _collect(backend, "r1", scope)
+        events = await collect(backend, "r1", scope)
         assert [e.type for e in events] == ["delta"] * 3 + ["message"]
         assert events[-1].final and events[-1].id == final
         assert [e.data for e in events[:3]] == [{"i": 0}, {"i": 1}, {"i": 2}]
@@ -683,23 +667,6 @@ class TestBackend:
         )
         assert sum(w.created for w in writers) == 1
 
-    async def test_concurrent_starts_of_different_runs_admit_one(
-        self, backend: StreamBackend, scope: str, real_async_redis: Any
-    ) -> None:
-        results = await asyncio.gather(
-            *(backend.open(scope=scope, stream_id=f"r{i}") for i in range(8)),
-            return_exceptions=True,
-        )
-        created = [r for r in results if isinstance(r, StreamWriter)]
-        assert len(created) == 1 and created[0].created is True
-        assert all(isinstance(r, StreamBusy) for r in results if r not in created)
-        # Only the winner left keys behind: no other run has meta.
-        for i in range(8):
-            meta = _keys(scope, f"r{i}").meta
-            assert bool(await real_async_redis.exists(meta)) == (
-                f"r{i}" == created[0].stream_id
-            )
-
     async def test_shutdown_survives_a_lost_cancel(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
     ) -> None:
@@ -777,36 +744,6 @@ class TestBackend:
             await writer.append("delta", {})
         assert await writer.finish("message", {}) == first  # idempotent
 
-    async def test_suspend_then_resume_in_another_process(
-        self, backend: StreamBackend, scope: str, real_async_redis: Any
-    ) -> None:
-        first = await backend.open(scope=scope, stream_id="r1")
-        await first.append("tool_call", {"n": 1})
-        await first.suspend(600)
-        keys = _keys(scope, "r1")
-        assert await real_async_redis.hget(keys.meta, "status") == "suspended"
-        assert await real_async_redis.ttl(keys.stream) >= 600
-        with pytest.raises(ValueError, match="suspended"):
-            await first.append("delta", {})
-        await backend._drop_lease()  # the first process goes away
-        later = _other_process(real_async_redis)
-        try:
-            second = await later.resume("r1", scope=scope)
-            assert second._exclusive  # it still holds the scope's slot
-            await second.append("tool_result", {"n": 2})
-            await second.finish("message", {"n": 3})
-        finally:
-            await later.aclose()
-        events = await _collect(backend, "r1", scope)
-        assert [(e.type, e.data) for e in events] == [
-            ("tool_call", {"n": 1}),
-            ("tool_result", {"n": 2}),
-            ("message", {"n": 3}),
-        ]
-        entries = await real_async_redis.xrange(keys.stream)
-        # The sequence goes on without a hole, so no reader sees a gap.
-        assert [f.get("q") for _, f in entries] == [None, "1", "2", "3"]
-
     async def test_a_suspended_spawned_producer_writes_no_end(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
     ) -> None:
@@ -823,7 +760,7 @@ class TestBackend:
         self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
     ) -> None:
         settings_env(stream_heartbeat_interval=1)
-        backend = _other_process(real_async_redis)
+        backend = stream_backend(real_async_redis)
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.suspend(60)
         await backend._drop_lease()
@@ -850,64 +787,13 @@ class TestBackend:
         with pytest.raises(StreamExpired):
             await backend.resume("r2", scope=scope)
 
-    async def test_a_crashed_process_is_reported_lost(
-        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
-    ) -> None:
-        settings_env(stream_heartbeat_interval=1)
-        crashed = _other_process(real_async_redis)
-        writer = await crashed.open(scope=scope, stream_id="r1")
-        await writer.append("delta", {"n": 1})
-        # A hard kill: the lease stops being renewed, and nothing ends the run.
-        assert crashed._lease_task is not None
-        crashed._lease_task.cancel()
-        await aexpire_now(real_async_redis, _lease_key(crashed._proc))
-        reader = _other_process(real_async_redis)
-        events = await asyncio.wait_for(_collect(reader, "r1", scope), 5)
-        assert events[-1].type == "stream.end"
-        assert events[-1].data == {"reason": "producer_lost"}
-        # The producer, if it was only stalled, learns the run is over.
-        with pytest.raises(StreamFinished, match="reader"):
-            await writer.append("delta", {"n": 2})
-        assert await real_async_redis.get(_keys(scope, "r1").active) is None
-
-    async def test_a_crashed_holder_frees_the_scope(
-        self, backend: StreamBackend, real_async_redis: Any, scope: str
-    ) -> None:
-        crashed = _other_process(real_async_redis)
-        await crashed.open(scope=scope, stream_id="r1")
-        with pytest.raises(StreamBusy):
-            await backend.open(scope=scope, stream_id="r2")  # r1 is alive
-        assert crashed._lease_task is not None
-        crashed._lease_task.cancel()
-        await aexpire_now(real_async_redis, _lease_key(crashed._proc))
-        writer = await backend.open(scope=scope, stream_id="r2")
-        assert writer.created and await backend.active(scope) == "r2"
-
-    async def test_a_dropped_writer_is_reported_lost(
-        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
-    ) -> None:
-        # The process lives on, but nothing holds the run's writer any more.
-        import gc
-
-        settings_env(stream_heartbeat_interval=1, stream_lease_interval=1)
-        backend = _other_process(real_async_redis)
-        try:
-            writer = await backend.open(scope=scope, stream_id="r1")
-            await writer.append("delta", {})
-            del writer
-            gc.collect()
-            events = await asyncio.wait_for(_collect(backend, "r1", scope), 5)
-        finally:
-            await backend.aclose()
-        assert events[-1].data == {"reason": "producer_lost"}
-
     async def test_a_producer_whose_end_failed_is_reported_lost(
         self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
     ) -> None:
         from redis_fastapi import StreamStoreError
 
         settings_env(stream_heartbeat_interval=1, stream_lease_interval=1)
-        backend = _other_process(real_async_redis)
+        backend = stream_backend(real_async_redis)
         try:
             writer = await backend.open(scope=scope, stream_id="r1")
 
@@ -916,64 +802,30 @@ class TestBackend:
 
             writer._end = unreachable  # type: ignore[method-assign]
             await asyncio.wait_for(backend.spawn(writer, _deltas(1, final=False)), 5)
-            events = await asyncio.wait_for(_collect(backend, "r1", scope), 5)
+            events = await asyncio.wait_for(collect(backend, "r1", scope), 5)
         finally:
             await backend.aclose()
         assert events[-1].data == {"reason": "producer_lost"}
 
-    async def test_a_resume_delivered_twice_starts_one_writer(
-        self, backend: StreamBackend, real_async_redis: Any, scope: str
-    ) -> None:
-        writer = await backend.open(scope=scope, stream_id="r1")
-        await writer.suspend(60)
-        first, second = (
-            _other_process(real_async_redis),
-            _other_process(real_async_redis),
-        )
-        try:
-            resumed = await first.resume("r1", scope=scope)
-            with pytest.raises(StreamBusy):
-                await second.resume("r1", scope=scope)
-            await resumed.finish("message", {})
-        finally:
-            await first.aclose()
-            await second.aclose()
-
     async def test_a_run_nobody_vouches_for_can_be_resumed(
         self, backend: StreamBackend, real_async_redis: Any, scope: str
     ) -> None:
-        crashed = _other_process(real_async_redis)
+        crashed = stream_backend(real_async_redis)
         await (await crashed.open(scope=scope, stream_id="r1")).append("delta", {})
-        assert crashed._lease_task is not None
-        crashed._lease_task.cancel()
-        await aexpire_now(real_async_redis, _lease_key(crashed._proc))
+        await crash(crashed, real_async_redis)
         resumed = await backend.resume("r1", scope=scope)
         assert resumed._seq == 1
         await resumed.finish("message", {})
-
-    async def test_cancel_ends_a_suspended_run(
-        self, backend: StreamBackend, real_async_redis: Any, scope: str
-    ) -> None:
-        writer = await backend.open(scope=scope, stream_id="r1")
-        await writer.append("tool_call", {})
-        await writer.suspend(86_400)
-        assert await backend.cancel("r1", scope=scope) is True
-        events = await asyncio.wait_for(_collect(backend, "r1", scope), 5)
-        assert events[-1].data == {"reason": "cancelled"}
-        assert await backend.active(scope) is None
-        assert await backend.cancel("r1", scope=scope) is False
 
     async def test_finish_after_a_reader_ended_the_run_raises(
         self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
     ) -> None:
         settings_env(stream_heartbeat_interval=1)
-        stalled = _other_process(real_async_redis)
+        stalled = stream_backend(real_async_redis)
         writer = await stalled.open(scope=scope, stream_id="r1")
-        assert stalled._lease_task is not None
-        stalled._lease_task.cancel()
-        await aexpire_now(real_async_redis, _lease_key(stalled._proc))
-        reader = _other_process(real_async_redis)
-        events = await asyncio.wait_for(_collect(reader, "r1", scope), 5)
+        await crash(stalled, real_async_redis)
+        reader = stream_backend(real_async_redis)
+        events = await asyncio.wait_for(collect(reader, "r1", scope), 5)
         assert events[-1].data == {"reason": "producer_lost"}
         with pytest.raises(StreamFinished, match="reader"):
             await writer.finish("message", {"lost": True})
@@ -998,29 +850,6 @@ class TestBackend:
         assert 40 <= await real_async_redis.ttl(lease) <= 45
         await backend.aclose()
         assert not await real_async_redis.exists(lease)
-
-    async def test_a_cancel_reaches_another_process_during_a_tool_call(
-        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
-    ) -> None:
-        settings_env(stream_lease_interval=1, stream_lease_ttl=3)
-        owner = _other_process(real_async_redis)
-        asked = _other_process(real_async_redis)
-
-        async def tool_call(writer: StreamWriter) -> None:
-            await writer.append("tool_call", {})
-            await asyncio.sleep(3600)  # no appends: only the lease sees a cancel
-
-        try:
-            task = (await owner.start(tool_call, scope=scope, stream_id="r1"))._task
-            assert task is not None
-            await asyncio.sleep(0.05)
-            assert await asyncio.wait_for(asked.cancel("r1", scope=scope), 5)
-            await asyncio.wait_for(task, 5)
-        finally:
-            await owner.aclose()
-            await asked.aclose()
-        events = await _collect(asked, "r1", scope)
-        assert events[-1].data == {"reason": "cancelled"}
 
     async def test_a_retried_append_after_a_timeout_stores_one_entry(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
@@ -1097,10 +926,10 @@ class TestBackend:
         assert about(await real_async_redis.ttl(keys.meta), 120 + 3600)
         await aexpire_now(real_async_redis, keys.stream)  # stream_done_ttl ran out
         with pytest.raises(StreamExpired):
-            await _collect(backend, "r1", scope)
+            await collect(backend, "r1", scope)
         await aexpire_now(real_async_redis, keys.meta)  # and stream_gone_ttl too
         with pytest.raises(StreamNotFound):
-            await _collect(backend, "r1", scope)
+            await collect(backend, "r1", scope)
 
     async def test_a_run_with_no_events_yet_reads_as_empty(
         self, backend: StreamBackend, scope: str
@@ -1125,9 +954,9 @@ class TestBackend:
             await writer.append("delta", {"n": n})
         await writer.finish("message", {})
         with pytest.raises(StreamExpired):
-            await _collect(backend, "r1", scope, after=first)
+            await collect(backend, "r1", scope, after=first)
         with pytest.raises(StreamExpired):
-            await _collect(backend, "r1", scope)  # no cursor means 0-0
+            await collect(backend, "r1", scope)  # no cursor means 0-0
 
     async def test_a_trim_during_the_read_is_a_gap_event(
         self,
@@ -1287,7 +1116,7 @@ class TestBackend:
         # Another process sets the flag; this process's task is not touched.
         await real_async_redis.hset(_keys(scope, "r1").meta, "cancel", "1")
         await asyncio.wait_for(task, 5)
-        events = await _collect(backend, "r1", scope)
+        events = await collect(backend, "r1", scope)
         assert events[-1].type == "stream.end"
         assert events[-1].data == {"reason": "cancelled"}
 
@@ -1388,7 +1217,7 @@ class TestBackend:
             await writer.append("delta", {"i": i})
         await writer.finish("message", {})
         # Two pages of entries after the cursor, the final one in the second.
-        events = await _collect(backend, "r1", scope, after=first)
+        events = await collect(backend, "r1", scope, after=first)
         assert [e.data for e in events] == [{"i": 1}, {"i": 2}, {"i": 3}, {}]
         assert events[-1].final
 
@@ -1422,7 +1251,7 @@ class TestBackend:
         assert await backend.cancel("r1", scope=scope) is True
         gate.set()
         await asyncio.wait_for(task, 5)
-        events = await _collect(backend, "r1", scope)
+        events = await collect(backend, "r1", scope)
         assert events[-1].data == {"reason": "done"}
 
     async def test_shutdown_never_interrupts_a_done_final_write(
@@ -1445,7 +1274,7 @@ class TestBackend:
         gate.set()
         await asyncio.wait_for(closing, 5)
         backend._closing = False
-        events = await _collect(backend, "r1", scope)
+        events = await collect(backend, "r1", scope)
         assert events[-1].data == {"reason": "done"}
 
     async def test_a_replay_page_is_one_send(
@@ -1471,7 +1300,7 @@ class TestBackend:
         first = await backend.start(_deltas(2), scope=scope, stream_id="r1")
         second = await backend.start(_deltas(2), scope=scope, stream_id="r1")
         assert first.created is True and second.created is False
-        events = await _collect(backend, "r1", scope)
+        events = await collect(backend, "r1", scope)
         assert [e.type for e in events] == ["delta", "delta", "message"]
 
 
@@ -1530,7 +1359,7 @@ async def test_client_response_modes_replay_live_and_resume(
                 final = await writer.finish("done", {"n": 3})
                 event = await asyncio.wait_for(anext(events), 5)
                 assert event is not None and event.id == final and event.final
-            assert await _collect(instance, writer.stream_id, scope, after=final) == []
+            assert await collect(instance, writer.stream_id, scope, after=final) == []
         finally:
             await instance.aclose()
             keys = _keys(scope, "compatibility")
@@ -1552,6 +1381,6 @@ async def test_metadata_command_errors_remain_store_errors(
     await real_async_redis.delete(key)
     await real_async_redis.set(key, "not-a-hash")
     with pytest.raises(StreamStoreError):
-        await _collect(backend, writer.stream_id, scope)
+        await collect(backend, writer.stream_id, scope)
     with pytest.raises(StreamStoreError):
         await backend.resume(writer.stream_id, scope=scope)
