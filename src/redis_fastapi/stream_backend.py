@@ -959,9 +959,9 @@ class StreamBackend:
         """
         for attempt in range(_WRITE_ATTEMPTS):
             try:
-                pipe = self._client().pipeline(transaction=transaction)
-                build(pipe)
-                return list(await pipe.execute())
+                async with self._client().pipeline(transaction=transaction) as pipe:
+                    build(pipe)
+                    return list(await pipe.execute())
             except _AMBIGUOUS_ERRORS as exc:
                 if attempt == _WRITE_ATTEMPTS - 1:
                     raise StreamStoreError("Redis did not answer") from exc
@@ -1031,15 +1031,15 @@ class StreamBackend:
         settings = get_settings()
         lease, cancels = _lease_key(self._proc), _cancel_key(self._proc)
         runs = {*self._live.keys(), *self._pending}
-        pipe = self._client().pipeline(transaction=True)
-        pipe.delete(lease)
-        pipe.sadd(lease, "", *(_member(scope, sid) for scope, sid in runs))
-        pipe.expire(lease, settings.stream_lease_ttl)
-        # Not pipe.smembers(): redis-py's async Cluster transaction hands its
-        # reply callback a keyword the callback does not take.
-        pipe.execute_command("SMEMBERS", cancels)
-        pipe.delete(cancels)
-        replies = await pipe.execute()
+        async with self._client().pipeline(transaction=True) as pipe:
+            pipe.delete(lease)
+            pipe.sadd(lease, "", *(_member(scope, sid) for scope, sid in runs))
+            pipe.expire(lease, settings.stream_lease_ttl)
+            # Not pipe.smembers(): redis-py's async Cluster transaction hands
+            # its reply callback a keyword the callback does not take.
+            pipe.execute_command("SMEMBERS", cancels)
+            pipe.delete(cancels)
+            replies = await pipe.execute()
         for member in replies[3] or ():
             text = _text(member)
             if text and ":" in text:
@@ -1221,10 +1221,10 @@ class StreamBackend:
                     await pipe.watch(*watched)
                     # Read on another connection: EXEC still aborts if either
                     # key changes after the WATCH, whoever changes it.
-                    read = client.pipeline(transaction=True)
-                    read.hmget(keys.meta, [M_STATUS, M_OWNER])
-                    read.get(keys.active)
-                    (status, current), holder = await read.execute()
+                    async with client.pipeline(transaction=True) as read:
+                        read.hmget(keys.meta, [M_STATUS, M_OWNER])
+                        read.get(keys.active)
+                        (status, current), holder = await read.execute()
                     if _text(current) == owner:
                         return True  # this call's EXEC applied; its reply was lost
                     if status is not None:
@@ -1333,12 +1333,12 @@ class StreamBackend:
             try:
                 await self._ensure_lease()
                 await self._vouch(scope, stream_id)
-                pipe = self._client().pipeline(transaction=True)
-                pipe.hmget(keys.meta, [M_STATUS, M_OWNER])
-                pipe.xrevrange(keys.stream, count=1)
-                pipe.pttl(keys.stream)
-                pipe.get(keys.active)
-                (status, previous), last, left_ms, holder = await pipe.execute()
+                async with self._client().pipeline(transaction=True) as pipe:
+                    pipe.hmget(keys.meta, [M_STATUS, M_OWNER])
+                    pipe.xrevrange(keys.stream, count=1)
+                    pipe.pttl(keys.stream)
+                    pipe.get(keys.active)
+                    (status, previous), last, left_ms, holder = await pipe.execute()
                 previous = _text(previous)
                 if _text(status) == STATUS_RUNNING and await self._vouched(
                     previous, scope, stream_id
@@ -1518,10 +1518,10 @@ class StreamBackend:
         elif proc is not None:
             cancels = _cancel_key(proc)
             try:
-                pipe = self._client().pipeline(transaction=True)
-                pipe.sadd(cancels, f"{scope}:{stream_id}")
-                pipe.expire(cancels, get_settings().stream_lease_ttl)
-                await pipe.execute()
+                async with self._client().pipeline(transaction=True) as pipe:
+                    pipe.sadd(cancels, _member(scope, stream_id))
+                    pipe.expire(cancels, get_settings().stream_lease_ttl)
+                    await pipe.execute()
             except STORE_ERRORS:
                 # The flag is set; the producer still sees it on its next
                 # append.
@@ -1631,9 +1631,9 @@ class StreamBackend:
             pipe.xrange(keys.stream, f"({_format(cursor)}", "+", count=page)
 
         try:
-            pipe = self._client().pipeline(transaction=True)
-            build(pipe)
-            replies = list(await pipe.execute(raise_on_error=False))
+            async with self._client().pipeline(transaction=True) as pipe:
+                build(pipe)
+                replies = list(await pipe.execute(raise_on_error=False))
         except STORE_ERRORS as exc:
             raise StreamStoreError("could not read the stream") from exc
         for reply in (replies[0], replies[1]):
@@ -1787,10 +1787,10 @@ class StreamBackend:
         whose entries expired, whatever its status, is gone.
         """
         try:
-            pipe = self._client().pipeline(transaction=True)
-            pipe.hmget(plan.keys.meta, [M_STATUS, M_OWNER])
-            pipe.exists(plan.keys.stream)
-            (status, owner), exists = await pipe.execute()
+            async with self._client().pipeline(transaction=True) as pipe:
+                pipe.hmget(plan.keys.meta, [M_STATUS, M_OWNER])
+                pipe.exists(plan.keys.stream)
+                (status, owner), exists = await pipe.execute()
             status, owner = _text(status), _text(owner)
             if status is None or not exists:
                 return "gone"  # expired or evicted mid-read: the reconnect gets 410
