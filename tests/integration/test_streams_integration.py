@@ -797,6 +797,71 @@ class TestBackend:
             await backend.aclose()
         assert [e.type for e in events] == ["delta", "message"]
 
+    async def test_a_writer_stops_at_stream_maxlen(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        settings_env(stream_maxlen=3)
+        backend = stream_backend(real_async_redis)
+        writer = await backend.open(scope=scope, stream_id="r1")
+        for n in range(3):
+            await writer.append("delta", {"n": n})
+        with pytest.raises(ValueError, match="stream_maxlen"):
+            await writer.append("delta", {"n": 3})
+        await writer.finish("message", {})  # the end always fits
+        events = await collect(backend, "r1", scope)
+        assert [e.type for e in events] == ["delta"] * 3 + ["message"]
+
+    async def test_a_runaway_spawned_producer_ends_as_an_error(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        settings_env(stream_maxlen=5)
+        backend = stream_backend(real_async_redis)
+
+        async def runaway(writer: StreamWriter) -> None:
+            while True:
+                await writer.append("delta", {})
+
+        try:
+            writer = await backend.start(runaway, scope=scope, stream_id="r1")
+            assert writer._task is not None
+            await asyncio.wait_for(writer._task, 5)
+        finally:
+            await backend.aclose()
+        events = await collect(backend, "r1", scope)
+        assert events[-1].data == {"reason": "error", "code": "producer_error"}
+
+    async def test_a_held_retry_never_duplicates_an_event(
+        self, backend: StreamBackend, scope: str, real_async_redis: Any
+    ) -> None:
+        # The first append lands, its reply is held, then lost.  Redis keeps
+        # 100 IDMP pairs per writer: had 150 other appends from this writer
+        # passed it meanwhile, its pair would be gone and the retry would
+        # store the event twice.  Appends go one at a time, so none pass it.
+        writer = await backend.open(scope=scope, stream_id="r1")
+        original = real_async_redis.execute_command
+        held = {"done": False}
+
+        async def held_then_lost(*args: Any, **kwargs: Any) -> Any:
+            result = await original(*args, **kwargs)
+            if not held["done"] and args[0] == "XADD":
+                held["done"] = True
+                await asyncio.sleep(0.3)  # others would run here
+                raise RedisTimeoutError("reply lost")
+            return result
+
+        real_async_redis.execute_command = held_then_lost  # type: ignore[method-assign]
+        try:
+            await asyncio.gather(
+                writer.append("delta", {"n": -1}),
+                *(writer.append("delta", {"n": n}) for n in range(150)),
+            )
+        finally:
+            real_async_redis.execute_command = original  # type: ignore[method-assign]
+        entries = await real_async_redis.xrange(_key(scope, "r1"))
+        payloads = [json.loads(f["d"]) for _, f in entries if f["t"] == "delta"]
+        assert payloads.count({"n": -1}) == 1
+        assert len(payloads) == 151
+
     async def test_a_late_append_after_expiry_does_not_recreate_the_stream(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
     ) -> None:
@@ -834,20 +899,17 @@ class TestBackend:
         assert plan is not None
         assert [f["t"] for _, f in plan.first] == ["stream.start"]  # never shown
 
-    async def test_trimmed_history_is_410(
-        self,
-        settings_env: Callable[..., None],
-        real_async_redis: Any,
-        scope: str,
+    async def test_history_removed_outside_the_sdk_is_410(
+        self, backend: StreamBackend, real_async_redis: Any, scope: str
     ) -> None:
-        settings_env(stream_maxlen=10)
-        backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        # The SDK never trims a run; something else - an operator's XTRIM -
+        # still can, and a reader must not replay a history with a hole in it.
         writer = await backend.open(scope=scope, stream_id="r1")
         first = await writer.append("delta", {"n": 0})
-        for n in range(1, 300):  # past a node, so the approximate trim acts
+        for n in range(1, 300):
             await writer.append("delta", {"n": n})
         await writer.finish("message", {})
+        await real_async_redis.xtrim(_key(scope, "r1"), maxlen=10, approximate=False)
         with pytest.raises(StreamExpired):
             await collect(backend, "r1", scope, after=first)
         with pytest.raises(StreamExpired):
@@ -896,16 +958,6 @@ class TestBackend:
         await real_async_redis.expire(keys, 2000)
         await writer.append("delta", {})
         assert about(await real_async_redis.ttl(keys), 2000)
-
-    async def test_extend_never_shortens(
-        self, backend: StreamBackend, scope: str, real_async_redis: Any
-    ) -> None:
-        writer = await backend.open(scope=scope, stream_id="r1")
-        await writer.extend(timedelta(hours=2))
-        keys = _key(scope, "r1")
-        assert 7190 <= await real_async_redis.ttl(keys) <= 7200
-        await writer.extend(60)
-        assert 7190 <= await real_async_redis.ttl(keys) <= 7200
 
     async def test_max_readers_answers_503(
         self,

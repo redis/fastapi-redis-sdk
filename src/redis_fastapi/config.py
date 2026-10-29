@@ -342,8 +342,8 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "Lifetime of a run, in seconds, set when it opens, so a producer "
-            "killed mid-run leaves a stream that expires by itself.  Appends "
-            "never extend it; StreamWriter.extend() keeps a longer run."
+            "killed mid-run leaves a stream that expires by itself.  Nothing "
+            "extends it: a run longer than this expires.  At most 86400."
         ),
     )
     stream_done_ttl: int = Field(
@@ -360,8 +360,9 @@ class RedisSettings(BaseSettings):
         default=10_000,
         gt=0,
         description=(
-            "Approximate entry cap per stream (XADD MAXLEN ~).  A reader that "
-            "falls behind the trimming sees a stream.gap event."
+            "Most events one writer may append to a run.  Past it append() "
+            "raises; Redis never trims a run, so its history and its final "
+            "entry stay whole."
         ),
     )
     stream_max_event_bytes: int = Field(

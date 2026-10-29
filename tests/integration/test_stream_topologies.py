@@ -75,18 +75,34 @@ def _finals(entries: list[Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-async def test_open_is_one_transaction_and_one_config(stream_case: Case) -> None:
+async def test_open_is_one_transaction(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The IDMP window is set inside the creating transaction, so nothing - a
+    # cancel from another process - can write a pair it then clears: open()
+    # sends one pipeline and no command of its own after it.
     backend, client, _ = stream_case
-    before = await command_calls(client)
-    writer = await backend.open(scope="chat:1", stream_id="r1")
-    assert writer.created
-    sent = await _sent(client, before)
-    assert sent.pop("xadd") == 1 and sent.pop("expire") == 1
-    assert sent.pop("xcfgset") == 1  # only for the call that created the run
-    assert set(sent) <= {"multi", "exec"}
-    before = await command_calls(client)
-    assert not (await backend.open(scope="chat:1", stream_id="r1")).created
-    assert "xcfgset" not in await _sent(client, before)
+    pipelines: list[bool] = []
+    commands: list[Any] = []
+    pipeline, command = backend._pipeline, backend._command
+
+    async def counted_pipeline(build: Any, *, transaction: bool) -> Any:
+        pipelines.append(transaction)
+        return await pipeline(build, transaction=transaction)
+
+    async def counted_command(args: Any) -> Any:
+        commands.append(args[0])
+        return await command(args)
+
+    monkeypatch.setattr(backend, "_pipeline", counted_pipeline)
+    monkeypatch.setattr(backend, "_command", counted_command)
+    for created in (True, False):  # the creating call, then a retried start
+        before = await command_calls(client)
+        writer = await backend.open(scope="chat:1", stream_id="r1")
+        assert writer.created is created
+        sent = await _sent(client, before)
+        assert sent == {"multi": 1, "xadd": 1, "xcfgset": 1, "expire": 1, "exec": 1}
+    assert pipelines == [True, True] and commands == []
     assert 0 < await client.ttl(_key("chat:1", "r1")) <= get_settings().stream_max_run
 
 
@@ -137,23 +153,21 @@ async def test_ending_twice_never_extends_the_run(stream_case: Case) -> None:
     assert (await collect(backend, "r1", "chat:1"))[-1].id == final
 
 
-async def test_a_created_run_widens_its_idmp_window_first(stream_case: Case) -> None:
-    # Redis's default IDMP window is 100 s.  open() widens it to the run's
-    # whole life before anything else writes, because XCFGSET clears the
-    # IDMP history: an append made after open() is still deduplicated.
+async def test_a_retried_start_keeps_a_cancels_idmp_pair(stream_case: Case) -> None:
+    # A retried start sends XCFGSET again; the same value must not clear the
+    # cancel's IDMP pair, or the writer's later finish adds a second end.
     backend, client, _ = stream_case
-    writer = await backend.open(scope="chat:1", stream_id="r1")
-    first = await writer.append("delta", {})
-    retried = await backend._command(
-        ["XADD", _key("chat:1", "r1"), "NOMKSTREAM", "IDMP", writer._writer_id, "1"]
-        + ["*", "t", "delta", "d", "{}", "q", "1"]
-    )
-    assert retried == first  # the same pair again: deduplicated
-    info = await client.xinfo_stream(_key("chat:1", "r1"))
-    settings = get_settings()
-    assert int(info["idmp-duration"]) == max(
-        settings.stream_max_run, settings.stream_done_ttl
-    )
+    async with _Processes() as processes:
+        canceller, _ = processes.spawn()
+        writer = await backend.open(scope="chat:1", stream_id="r1")
+        await canceller.cancel("r1", scope="chat:1")
+        assert not (await canceller.open(scope="chat:1", stream_id="r1")).created
+        final = await writer.finish("message", {})
+    key = _key("chat:1", "r1")
+    assert [f["t"] for f in _finals(await client.xrange(key))] == ["stream.end"]
+    assert (await collect(backend, "r1", "chat:1"))[-1].id == final
+    info = await client.xinfo_stream(key)
+    assert int(info["idmp-duration"]) == 86_400
 
 
 async def test_a_retried_start_is_not_created_again(stream_case: Case) -> None:
@@ -295,6 +309,33 @@ async def test_a_cancel_racing_a_finish_leaves_one_final_entry(
     assert [f["t"] for f in finals] == ["message"]
     events = await collect(backend, "r1", "chat:1")
     assert events[-1].id == final
+
+
+async def test_writes_after_a_cancel_are_capped_and_never_read(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A producer in another process is not told of a cancel and keeps
+    # appending.  Its writer stops it at stream_maxlen, its late entries are
+    # never read, and a reader that started before the cancel still stops at
+    # the end.  That no write trims a run is checked in the unit tests.
+    backend, client, _ = stream_case
+    configure(monkeypatch, stream_maxlen=10)
+    async with _Processes() as processes:
+        producer, _ = processes.spawn()
+        writer = await producer.open(scope="chat:1", stream_id="r1")
+        for n in range(3):
+            await writer.append("delta", {"n": n})
+        reader = await backend.follow("r1", scope="chat:1")
+        await backend.cancel("r1", scope="chat:1")
+        with pytest.raises(ValueError, match="stream_maxlen"):
+            while True:
+                await writer.append("delta", {"late": True})
+        async with reader:
+            events = [event async for event in reader]
+    assert [e.type for e in events] == ["delta"] * 3 + ["stream.end"]
+    assert events[-1].data == {"reason": "cancelled"}
+    entries = await client.xrange(_key("chat:1", "r1"))
+    assert len(_finals(entries)) == 1 and len(entries) == 1 + 10 + 1
 
 
 async def test_cancelling_an_unknown_run_is_not_found(stream_case: Case) -> None:

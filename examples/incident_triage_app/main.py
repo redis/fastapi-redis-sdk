@@ -35,16 +35,15 @@ os.environ.setdefault("REDIS_MAX_CONNECTIONS", "20")
 
 # The demo's stream clocks and limits.  Set before anything reads the
 # settings: tools.py builds its cache() dependencies at import time, and the
-# settings are read once and cached.  A short heartbeat makes a lost producer
-# show within seconds; 8 readers fit the free database; a 60-second
-# connection cap makes a revoked phone lose its stream within a minute even
-# without the page's poll.
+# settings are read once and cached.  A short heartbeat and silence timeout
+# make a lost producer show within seconds; 8 readers fit the free database; a
+# 60-second connection cap makes a revoked phone lose its stream within a
+# minute even without the page's poll.
 for _name, _value in {
-    "REDIS_STREAM_ACTIVE_TTL": "600",
+    "REDIS_STREAM_MAX_RUN": "600",
     "REDIS_STREAM_DONE_TTL": "120",
-    "REDIS_STREAM_MAXLEN": "500",
     "REDIS_STREAM_HEARTBEAT_INTERVAL": "5",
-    "REDIS_STREAM_ALIVE_TTL": "15",
+    "REDIS_STREAM_SILENCE_TIMEOUT": "15",
     "REDIS_STREAM_MAX_READERS": "8",
     "REDIS_STREAM_MAX_CONNECTION_DURATION": "60",
 }.items():

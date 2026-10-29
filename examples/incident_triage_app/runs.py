@@ -66,23 +66,23 @@ def _current(subject: str) -> str:
 
 
 async def _run_over(redis: Any, subject: str, run_id: str) -> bool:
-    """Whether a run is gone, or has its final entry: its claim is stale.
+    """Whether a run is gone, or has ended: its claim is stale.
 
-    A few entries can follow the final one - a late ping, or a producer that
-    has not noticed a cancel - so the newest few are checked, not the last.
+    Ending a run only ever shortens its lifetime to at most stream_done_ttl,
+    and a running one starts with stream_max_run, so the stream's TTL tells
+    the two apart without reading its entries - however many a producer that
+    has not noticed a cancel writes after the end.  A run in the last
+    stream_done_ttl of its lifetime also counts as over; it is about to expire.
     """
-    stream = f"{get_settings().prefix}:stream:{_scope(subject)}:{run_id}"
-    recent = await redis.xrevrange(stream, count=20)
-    if not recent:
+    settings = get_settings()
+    stream = f"{settings.prefix}:stream:{_scope(subject)}:{run_id}"
+    left = await redis.ttl(stream)
+    if left == -2:  # no stream
         # A claim is taken a moment before its run opens: while it is fresh,
         # a missing stream is a run about to start, not a finished one.
-        claimed_for = get_settings().stream_max_run - await redis.ttl(_current(subject))
+        claimed_for = settings.stream_max_run - await redis.ttl(_current(subject))
         return claimed_for > _OPEN_GRACE
-    return any(
-        _text(name) == "f" and _text(value) == "1"
-        for _, fields in recent
-        for name, value in fields.items()
-    )
+    return 0 <= left <= settings.stream_done_ttl
 
 
 async def _claim(redis: Any, subject: str, run_id: str) -> None:

@@ -37,6 +37,7 @@ from redis_fastapi.exceptions import (
 )
 from redis_fastapi.stream_backend import (
     ERROR_TYPE,
+    IDMP_WINDOW,
     StreamBackend,
     _Entry,
     parse_cursor,
@@ -338,16 +339,17 @@ def check_stream_settings() -> None:
             "stream_silence_timeout must be more than twice "
             "stream_heartbeat_interval, or a live producer looks dead."
         )
-    if settings.stream_done_ttl > settings.stream_max_run:
+    if settings.stream_done_ttl >= settings.stream_max_run:
         raise StreamConfigurationError(
-            "stream_done_ttl must not exceed stream_max_run: ending a run only "
-            "ever shortens its lifetime."
+            "stream_done_ttl must be shorter than stream_max_run: ending a run "
+            "only ever shortens its lifetime, and a TTL at most stream_done_ttl "
+            "is what marks a run as ended."
         )
     # Redis keeps IDMP history at most a day, and it must cover a run's life.
-    if max(settings.stream_max_run, settings.stream_done_ttl) > 86_400:
+    if settings.stream_max_run > IDMP_WINDOW:
         raise StreamConfigurationError(
-            "stream_max_run and stream_done_ttl must be at most 86400 s: Redis "
-            "remembers a stream's idempotency keys for at most a day."
+            f"stream_max_run must be at most {IDMP_WINDOW} s: Redis remembers a "
+            "stream's idempotency keys for at most a day."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(

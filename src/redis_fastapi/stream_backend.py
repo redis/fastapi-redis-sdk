@@ -38,7 +38,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
 
 from redis.asyncio import Redis as AsyncRedis
@@ -217,16 +217,6 @@ def check_event_type(event_type: str) -> None:
         )
 
 
-def _seconds(value: int | timedelta) -> int:
-    """A duration in whole seconds, at least 1, for ``EX`` and ``EXPIRE``.
-
-    ``EXPIRE 0`` would delete the key, so a shorter *timedelta* rounds up.
-    """
-    if isinstance(value, timedelta):
-        value = int(value.total_seconds())
-    return max(1, int(value))
-
-
 def _key(scope: str, stream_id: str) -> str:
     """The run's one key."""
     return f"{get_settings().prefix}:stream:{scope}:{stream_id}"
@@ -245,14 +235,16 @@ def _xadd(
     """The ``XADD`` for one entry, shared by every path that writes one.
 
     ``NOMKSTREAM`` unless *create*: only ``open()`` creates the stream, so a
-    write never recreates one that expired.
+    write never recreates one that expired.  No ``MAXLEN``: Redis never trims
+    a run, so its final entry can never be trimmed away by writes that land
+    after it.  The writer caps the entries instead (``stream_maxlen``).
     """
     args: list[Any] = ["XADD", key]
     if not create:
         args.append("NOMKSTREAM")
     if idmp is not None:
         args += ["IDMP", *idmp]
-    args += ["MAXLEN", "~", str(get_settings().stream_maxlen), "*"]
+    args.append("*")
     args += [F_TYPE, type, F_DATA, payload]
     if seq is not None:
         args += [F_SEQ, str(seq)]
@@ -275,16 +267,11 @@ def _queue_end(pipe: Any, key: str, type: str, payload: str, seq: int | None) ->
     pipe.expire(key, get_settings().stream_done_ttl, lt=True)
 
 
-def _idmp_window() -> int:
-    """How long the stream remembers IDMP pairs, in seconds.
-
-    As long as the stream itself can live, so a late end, a retried start or
-    a retried append is recognised for the run's whole life, not only for
-    Redis's default 100 s.  ``check_stream_settings`` keeps it within the
-    one day Redis allows.
-    """
-    settings = get_settings()
-    return max(settings.stream_max_run, settings.stream_done_ttl)
+# How long a stream remembers IDMP pairs, in seconds: the most Redis allows,
+# which ``check_stream_settings`` keeps above any run's lifetime.  A constant,
+# because XCFGSET with a changed value clears the IDMP history, while the same
+# value - sent again by a retried open() - leaves it alone.
+IDMP_WINDOW = 86_400
 
 
 def _xread_entries(reply: Any) -> list[tuple[Any, dict[Any, Any]]]:
@@ -438,6 +425,10 @@ class StreamWriter:
         self._key = _key(scope, stream_id)
         self._writer_id = writer_id
         self._seq = 0
+        # One append in flight per writer: a retried append then never has
+        # other appends from this writer pass it, so Redis's IDMP history,
+        # 100 pairs per writer by default, always still holds its pair.
+        self._lock = asyncio.Lock()
         self._last_write = time.monotonic()
         self._final_id: str | None = None
         # Set when spawn() starts writing the final entry, so a repeated
@@ -458,17 +449,17 @@ class StreamWriter:
 
         One ``XADD``.  A timeout or a dropped connection is retried with the
         same idempotency key, so a retried append never stores the event
-        twice.  An append after a cancel from another process still lands,
-        after the final entry, where no reader looks.
+        twice.  Appends from one writer go out one at a time, in order.  An
+        append after a cancel from another process still lands, after the
+        final entry, where no reader looks.
 
         Raises:
             ValueError: If *type* is invalid or reserved, the default coder cannot
                 encode *data*, the encoded event is larger than
-                ``stream_max_event_bytes``, or this writer is a retried
-                start's handle.
+                ``stream_max_event_bytes``, this writer already wrote
+                ``stream_maxlen`` events, or it is a retried start's handle.
             StreamFinished: If this writer already wrote the final entry.
-            StreamExpired: If the run outlived ``stream_max_run`` without
-                :meth:`extend`.
+            StreamExpired: If the run outlived ``stream_max_run``.
             StreamStoreError: If Redis cannot be reached.
         """
         check_event_type(type)
@@ -478,16 +469,23 @@ class StreamWriter:
             # on the cancel alone, which a concurrent await can lose.
             raise asyncio.CancelledError
         payload = self._backend._encode(data)
-        # Taken before the await, and kept if the append fails: a number is
-        # never sent twice, or Redis would keep the first event under it and
-        # silently drop the second.  One that never landed shows readers a
-        # stream.gap, which is the truth.
-        self._seq = seq = self._seq + 1
-        args = _xadd(
-            self._key, type, payload, idmp=(self._writer_id, str(seq)), seq=seq
-        )
-        with stream_span("redis_fastapi.streams.append"), timed_stream("append"):
-            entry_id = _text(await self._backend._command(args))
+        async with self._lock:
+            self._check_writable()  # a finish() may have gone first
+            limit = get_settings().stream_maxlen
+            if self._seq >= limit:
+                raise ValueError(
+                    f"stream {self.stream_id} already holds {limit} events "
+                    "(stream_maxlen)"
+                )
+            # Kept if the append fails: a number is never sent twice, or
+            # Redis would keep the first event under it and drop the second.
+            # One that never landed shows readers a stream.gap, the truth.
+            self._seq = seq = self._seq + 1
+            args = _xadd(
+                self._key, type, payload, idmp=(self._writer_id, str(seq)), seq=seq
+            )
+            with stream_span("redis_fastapi.streams.append"), timed_stream("append"):
+                entry_id = _text(await self._backend._command(args))
         if entry_id is None:
             record_stream_operation(operation="append", result="expired")
             raise StreamExpired(f"stream {self.stream_id} has expired")
@@ -508,19 +506,6 @@ class StreamWriter:
         """
         check_event_type(type)
         return await self._end(type, data)
-
-    async def extend(self, ttl: int | timedelta) -> None:
-        """Keep the run for at least *ttl* seconds more.
-
-        A run lives ``stream_max_run`` from :meth:`StreamBackend.open`.  This
-        is for one that needs longer; it never shortens the run.
-
-        Raises:
-            ValueError: If this writer is a retried start's handle.
-            StreamStoreError: If Redis cannot be reached.
-        """
-        self._check_writable()
-        await self._backend._command(["EXPIRE", self._key, _seconds(ttl), "GT"])
 
     def keepalive(self) -> AbstractAsyncContextManager[None]:
         """Keep a quiet run from looking lost while a block runs.
@@ -583,12 +568,15 @@ class StreamWriter:
             return self._final_id
         self._check_writable()
         payload = self._backend._encode(data)
-        self._seq = seq = self._seq + 1
-        with stream_span("redis_fastapi.streams.finish"), timed_stream("finish"):
-            replies = await self._backend._pipeline(
-                lambda pipe: _queue_end(pipe, self._key, type, payload, seq),
-                transaction=True,
-            )
+        async with self._lock:  # after any append still in flight
+            if self._final_id is not None:
+                return self._final_id
+            self._seq = seq = self._seq + 1
+            with stream_span("redis_fastapi.streams.finish"), timed_stream("finish"):
+                replies = await self._backend._pipeline(
+                    lambda pipe: _queue_end(pipe, self._key, type, payload, seq),
+                    transaction=True,
+                )
         entry_id = _text(replies[0])
         if entry_id is None:
             record_stream_operation(operation="finish", result="expired")
@@ -813,8 +801,9 @@ class StreamBackend:
     async def open(self, *, scope: str, stream_id: str | None = None) -> StreamWriter:
         """Start a run, or return the same run on a retried start request.
 
-        One transaction writes the run's first entry and gives the stream its
-        lifetime, ``stream_max_run``.  A client-supplied *stream_id* - for
+        One transaction writes the run's first entry, sets how long the stream
+        remembers idempotency keys, and gives the stream its lifetime,
+        ``stream_max_run``.  A client-supplied *stream_id* - for
         example an idempotency key the browser generated - makes a retried
         ``POST`` safe: the second call finds the same run and returns a writer
         whose ``created`` is ``False``.  Start a producer only for a writer
@@ -834,12 +823,16 @@ class StreamBackend:
         lifetime = get_settings().stream_max_run
 
         def build(pipe: Any) -> None:
-            # No IDMP: the XCFGSET below clears the stream's IDMP history, so
-            # it could not recognise a retry anyway.  A retried start adds a
-            # second start entry, which readers skip.
+            # No IDMP on the start entry: on a new stream the XCFGSET below
+            # clears the IDMP history.  A retried start adds a second start
+            # entry, which readers skip.
             pipe.execute_command(
                 *_xadd(key, START_TYPE, "null", idmp=None, create=True)
             )
+            # In the same transaction, so nothing - a cancel from another
+            # process, say - can write an IDMP pair that this then clears.
+            # A retried start sends the same value, which clears nothing.
+            pipe.execute_command("XCFGSET", key, "IDMP-DURATION", IDMP_WINDOW)
             # NX sets a TTL only on a key that has none.  Every run gets its
             # TTL here, so "had none" means this call created the stream.
             pipe.expire(key, lifetime, nx=True)
@@ -850,32 +843,13 @@ class StreamBackend:
             except StreamStoreError:
                 record_stream_operation(operation="open", result="error")
                 raise
-        created = bool(replies[1])
-        if created:
-            await self._remember_for_the_run(key)
+        created = bool(replies[2])
         record_stream_operation(
             operation="open", result="created" if created else "retry"
         )
         return StreamWriter(
             self, scope=scope, stream_id=sid, writer_id=_new_id(), created=created
         )
-
-    async def _remember_for_the_run(self, key: str) -> None:
-        """Make the new stream remember IDMP pairs for its whole life.
-
-        Only for a stream this call created, before anything else writes to
-        it: ``XCFGSET`` with a new value clears the IDMP history.  Should it
-        fail, the run keeps Redis's default window and goes on.
-        """
-        try:
-            await self._command(["XCFGSET", key, "IDMP-DURATION", _idmp_window()])
-        except StreamStoreError:
-            logger.warning(
-                "Could not widen the IDMP window of %s; late ends and retries "
-                "older than Redis's default are not recognised",
-                key,
-                exc_info=True,
-            )
 
     async def start(
         self,
@@ -912,6 +886,11 @@ class StreamBackend:
         ``{"reason": "done"}``, ``{"reason": "error", "code": ...}`` or
         ``{"reason": "cancelled"}``.  On application shutdown the remaining
         tasks are cancelled.
+
+        Appends from one writer go out one at a time, and the final entry
+        after them.  Await every append *fn* starts: one still running in a
+        task of its own holds up the end, and at shutdown can outlast the
+        grace period, so readers see ``producer_lost`` instead.
 
         Raises:
             ValueError: If *writer* is a handle from a retried start

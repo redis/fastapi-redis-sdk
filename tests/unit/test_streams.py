@@ -13,7 +13,7 @@ import asyncio
 import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -48,8 +48,8 @@ from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
     _key,
-    _seconds,
     _StreamCapabilities,
+    _xadd,
     _xread_entries,
     check_event_type,
     check_name,
@@ -317,12 +317,22 @@ class TestCheckStreamSettings:
         with pytest.raises(StreamConfigurationError, match="prefix"):
             check_stream_settings()
 
-    def test_a_finished_run_cannot_outlive_its_lifetime(
-        self, settings_env: Any
+    @pytest.mark.parametrize("done_ttl", [60, 120])
+    def test_a_finished_run_must_be_shorter_than_a_running_one(
+        self, settings_env: Any, done_ttl: int
     ) -> None:
-        settings_env(stream_max_run=60, stream_done_ttl=120)
+        settings_env(stream_max_run=60, stream_done_ttl=done_ttl)
         with pytest.raises(StreamConfigurationError, match="stream_done_ttl"):
             check_stream_settings()
+
+    def test_no_write_trims_a_run(self) -> None:
+        # Trimming could remove the final entry once writes land after it.
+        for args in (
+            _xadd("k", "delta", "{}", idmp=("w", "1"), seq=1),
+            _xadd("k", "stream.end", "{}", idmp=("end", "final"), final=True),
+            _xadd("k", "stream.start", "null", idmp=None, create=True),
+        ):
+            assert "MAXLEN" not in args and "MINID" not in args
 
     def test_a_run_must_fit_the_idempotency_window(self, settings_env: Any) -> None:
         settings_env(stream_max_run=86_401)
@@ -623,12 +633,6 @@ class TestWriterValidation:
 
 
 class TestDurations:
-    def test_seconds_from_int_or_timedelta(self) -> None:
-        assert _seconds(timedelta(minutes=2)) == 120
-        assert _seconds(30) == 30
-        assert _seconds(timedelta(milliseconds=500)) == 1
-        assert _seconds(0) == 1
-
     def test_settings_take_whole_seconds_only(
         self, settings_env: Callable[..., None]
     ) -> None:
@@ -666,8 +670,6 @@ class TestSpawnGuards:
         settings_env()
         backend = StreamBackend(_no_redis)
         handle = self._writer(backend, created=False)
-        with pytest.raises(ValueError, match="retried start"):
-            await handle.extend(60)
         with pytest.raises(ValueError, match="retried start"):
             await handle.append("delta", {})
 
