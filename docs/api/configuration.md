@@ -43,7 +43,7 @@ Automatically reads from:
 | `otel_enabled`                  | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
 | `otel_redis_enabled`            | `bool`              | `False`           | -                                            | Enable redis-py native OTel                                          |
 | `stream_max_run`                | `int`               | `3600`            | > 0, <= 86400                                | Lifetime of a run from `open()`; nothing extends it                  |
-| `stream_done_ttl`               | `int`               | `120`             | > 0, < `stream_max_run`                      | How long a finished stream stays readable                            |
+| `stream_done_ttl`               | `int`               | `120`             | > 0                                          | How long a finished stream stays readable                            |
 | `stream_maxlen`                 | `int`               | `10000`           | > 0                                          | Most events one writer may append                                    |
 | `stream_max_event_bytes`        | `int`               | `65536`           | > 0                                          | Largest encoded event                                                |
 | `stream_heartbeat_interval`     | `int`               | `15`              | > 0                                          | SSE ping, read bound, `keepalive()` cadence                          |

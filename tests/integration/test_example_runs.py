@@ -13,9 +13,15 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from examples.incident_triage_app.runs import _claim, _current, _release, _run_over
+from examples.incident_triage_app.runs import (
+    _claim,
+    _current,
+    _release,
+    _run_over,
+    check_settings,
+)
 from redis_fastapi import StreamBackend
-from tests.stream_support import collect
+from tests.stream_support import collect, configure
 
 pytestmark = pytest.mark.integration
 
@@ -76,3 +82,13 @@ async def test_release_frees_only_its_own_claim(stream_case: Case) -> None:
     assert await client.get(_current(SUBJECT)) == "a"
     await _release(client, SUBJECT, "a")
     assert await client.get(_current(SUBJECT)) is None
+
+
+def test_the_app_refuses_a_done_ttl_it_cannot_tell_from_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure(monkeypatch, stream_max_run=3600, stream_done_ttl=3600)
+    with pytest.raises(RuntimeError, match="REDIS_STREAM_DONE_TTL"):
+        check_settings()
+    configure(monkeypatch, stream_done_ttl=120)
+    check_settings()

@@ -83,6 +83,8 @@ def _no_session(request: Request) -> bool:
     )
 
 
+runs.check_settings()
+
 app = FastAPI(
     title="Incident triage demo",
     description="An on-call agent on fastapi-redis-sdk: sessions, caching, "

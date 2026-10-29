@@ -65,6 +65,21 @@ def _current(subject: str) -> str:
     return f"{get_settings().prefix}:triage-current:{subject}"
 
 
+def check_settings() -> None:
+    """Refuse settings under which _run_over() cannot tell an ended run.
+
+    It reads a TTL at most stream_done_ttl as "ended", which holds only while
+    a finished run's TTL is shorter than a running one's.  The SDK allows any
+    stream_done_ttl; this app needs it shorter than stream_max_run.
+    """
+    settings = get_settings()
+    if settings.stream_done_ttl >= settings.stream_max_run:
+        raise RuntimeError(
+            "This app needs REDIS_STREAM_DONE_TTL shorter than "
+            "REDIS_STREAM_MAX_RUN: it tells an ended run by its TTL."
+        )
+
+
 async def _run_over(redis: Any, subject: str, run_id: str) -> bool:
     """Whether a run is gone, or has ended: its claim is stale.
 

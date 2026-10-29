@@ -353,7 +353,8 @@ class RedisSettings(BaseSettings):
             "TTL after the final entry, in seconds: how long a client can "
             "still reconnect and read a finished stream.  At most this: ending "
             "never extends a run, so one that ends with less of its lifetime "
-            "left keeps that."
+            "left - or any run, when this is not shorter than stream_max_run - "
+            "keeps what it has."
         ),
     )
     stream_maxlen: int = Field(

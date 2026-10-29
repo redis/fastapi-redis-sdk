@@ -274,7 +274,9 @@ writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_i
 ```
 
 A process that dies cannot free its claim, so decide when one is stale: a run
-whose stream is gone, or whose TTL is at most `stream_done_ttl`, has ended.
+whose stream is gone, or whose TTL is at most `stream_done_ttl`, has ended -
+as long as `stream_done_ttl` is shorter than `stream_max_run`, so a finished
+run's TTL is always below a running one's.
 The [incident triage example](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/incident_triage_app)
 does this in `runs.py`, with tests.
 
@@ -760,7 +762,7 @@ seconds, as everywhere else in the SDK. See
 | Setting                          | Default  | Notes                                                                |
 |----------------------------------|----------|----------------------------------------------------------------------|
 | `stream_max_run`                 | `3600`   | Lifetime of a run from `open()`; at most `86400`, nothing extends it |
-| `stream_done_ttl`                | `120`    | How long a finished run stays readable; shorter than `stream_max_run` |
+| `stream_done_ttl`                | `120`    | How long a finished run stays readable, at most; ending never extends a run |
 | `stream_maxlen`                  | `10000`  | Most events one writer may append                                    |
 | `stream_max_event_bytes`         | `65536`  | Largest encoded event                                                |
 | `stream_heartbeat_interval`      | `15`     | SSE ping, blocking-read bound, how often `keepalive()` checks        |

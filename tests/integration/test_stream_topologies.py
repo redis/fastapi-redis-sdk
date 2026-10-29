@@ -170,6 +170,18 @@ async def test_a_retried_start_keeps_a_cancels_idmp_pair(stream_case: Case) -> N
     assert int(info["idmp-duration"]) == 86_400
 
 
+async def test_a_long_done_ttl_never_extends_a_run(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # stream_done_ttl may be longer than stream_max_run: a finished run then
+    # keeps what lifetime it had left, since ending only ever shortens it.
+    backend, client, _ = stream_case
+    configure(monkeypatch, stream_max_run=60, stream_done_ttl=600)
+    writer = await backend.open(scope="chat:1", stream_id="r1")
+    await writer.finish("message", {})
+    assert 0 < await client.ttl(_key("chat:1", "r1")) <= 60
+
+
 async def test_a_retried_start_is_not_created_again(stream_case: Case) -> None:
     backend, client, _ = stream_case
     results = await asyncio.gather(

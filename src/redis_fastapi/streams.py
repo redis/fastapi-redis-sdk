@@ -339,12 +339,6 @@ def check_stream_settings() -> None:
             "stream_silence_timeout must be more than twice "
             "stream_heartbeat_interval, or a live producer looks dead."
         )
-    if settings.stream_done_ttl >= settings.stream_max_run:
-        raise StreamConfigurationError(
-            "stream_done_ttl must be shorter than stream_max_run: ending a run "
-            "only ever shortens its lifetime, and a TTL at most stream_done_ttl "
-            "is what marks a run as ended."
-        )
     # Redis keeps IDMP history at most a day, and it must cover a run's life.
     if settings.stream_max_run > IDMP_WINDOW:
         raise StreamConfigurationError(

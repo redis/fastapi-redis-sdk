@@ -590,8 +590,7 @@ server support at startup and cancels spawned producers at shutdown. A
 subclass wins for that subclass. Calling it twice is a no-op. Raises
 `StreamConfigurationError` when the prefix contains braces,
 `stream_silence_timeout` is not more than twice `stream_heartbeat_interval`,
-`stream_done_ttl` is not shorter than `stream_max_run`, `stream_max_run` is
-over `86400`, or `socket_timeout` is not longer than
+`stream_max_run` is over `86400`, or `socket_timeout` is not longer than
 `stream_heartbeat_interval`.
 
 ---

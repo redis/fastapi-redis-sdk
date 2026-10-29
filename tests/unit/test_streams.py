@@ -318,12 +318,13 @@ class TestCheckStreamSettings:
             check_stream_settings()
 
     @pytest.mark.parametrize("done_ttl", [60, 120])
-    def test_a_finished_run_must_be_shorter_than_a_running_one(
+    def test_a_finished_run_may_be_kept_as_long_as_a_running_one(
         self, settings_env: Any, done_ttl: int
     ) -> None:
+        # Ending only ever shortens a run, so a long stream_done_ttl just
+        # means a finished run keeps what lifetime it has left.
         settings_env(stream_max_run=60, stream_done_ttl=done_ttl)
-        with pytest.raises(StreamConfigurationError, match="stream_done_ttl"):
-            check_stream_settings()
+        check_stream_settings()
 
     def test_no_write_trims_a_run(self) -> None:
         # Trimming could remove the final entry once writes land after it.
