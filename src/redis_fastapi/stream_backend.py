@@ -280,39 +280,18 @@ def _meta_reply(reply: Any) -> dict[str, str]:
 
 
 def _xread_entries(reply: Any) -> list[tuple[Any, dict[Any, Any]]]:
-    """Normalize one stream's RESP2 or legacy/modern RESP3 XREAD reply."""
-    if reply is None:
-        return []
-    if not isinstance(reply, (dict, list, tuple)):
-        raise StreamStoreError("invalid stream read reply")
+    """Normalize an ``XREAD`` reply for one stream, RESP2 or RESP3."""
     if not reply:
         return []
-    if len(reply) != 1:
-        raise StreamStoreError("expected one stream in the read reply")
-    try:
-        entries = next(iter(reply.values())) if isinstance(reply, dict) else reply[0][1]
-        if not isinstance(entries, (list, tuple)):
-            raise ValueError
-        # Legacy RESP3 wraps the entry sequence once; modern RESP3 does not.
-        if (
-            len(entries) == 1
-            and isinstance(entries[0], (list, tuple))
-            and (not entries[0] or isinstance(entries[0][0], (list, tuple)))
-        ):
-            entries = entries[0]
-        result = []
-        for entry in entries:
-            if (
-                not isinstance(entry, (list, tuple))
-                or len(entry) != 2
-                or not isinstance(entry[0], (bytes, str))
-                or not isinstance(entry[1], dict)
-            ):
-                raise ValueError
-            result.append((entry[0], entry[1]))
-        return result
-    except (IndexError, TypeError, ValueError) as exc:
-        raise StreamStoreError("invalid stream read reply") from exc
+    if isinstance(reply, dict):  # RESP3: {name: [entries]}
+        streams = list(reply.values())
+        if not streams:
+            return []
+        first = streams[0]
+        if first and isinstance(first[0], list):
+            return list(first[0])
+        return list(first)
+    return list(reply[0][1])  # RESP2: [[name, entries]]
 
 
 # ---------------------------------------------------------------------------
@@ -1471,11 +1450,7 @@ class StreamBackend:
                 "entries after the cursor were removed; reload from the source"
             )
         first_reply = replies[-1]
-        first = (
-            []
-            if isinstance(first_reply, Exception)
-            else _xread_entries([[keys.stream, first_reply]])
-        )
+        first = [] if isinstance(first_reply, Exception) else list(first_reply)
         if (
             meta.get(M_STATUS) == STATUS_FINISHED
             and len(first) < page

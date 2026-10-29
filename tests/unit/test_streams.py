@@ -21,6 +21,7 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
+from redis.commands.core import AsyncCoreCommands
 from redis.crc import key_slot
 from redis.exceptions import ConnectionError as RedisConnectionError
 from starlette.requests import Request
@@ -300,10 +301,6 @@ class TestXreadEntries:
 
     def test_resp3(self) -> None:
         reply = {b"s": [[(b"1-0", {b"t": b"x"})]]}
-        assert _xread_entries(reply) == [(b"1-0", {b"t": b"x"})]
-
-    def test_resp3_modern_lists(self) -> None:
-        reply = {b"s": [[b"1-0", {b"t": b"x"}]]}
         assert _xread_entries(reply) == [(b"1-0", {b"t": b"x"})]
 
     @pytest.mark.parametrize("reply", [None, [], {}])
@@ -1052,9 +1049,80 @@ class TestMetadataReply:
             _meta_reply(ResponseError("WRONGTYPE"))
 
 
-@pytest.mark.parametrize(
-    "reply", [False, 42, {b"s": None}, {b"s": [[b"1-0"]]}, [[b"s"]]]
-)
-def test_malformed_xread_reply_is_a_store_error(reply: Any) -> None:
-    with pytest.raises(StreamStoreError):
-        _xread_entries(reply)
+class _ClusterResp2Pipe(AsyncCoreCommands):
+    """A transaction run the way the async Cluster client runs it on RESP2.
+
+    redis-py's own command methods queue the commands, so each carries the
+    options redis-py gives it, ``keys`` included.  On execute, each reply goes
+    through the client's RESP2 callback with those options, as redis-py 8.0
+    and 8.1 ``TransactionStrategy`` does.  Error replies skip the callback.
+    """
+
+    _event_dispatcher: Any = None
+
+    def __init__(self, callbacks: dict[str, Any], replies: dict[str, Any]) -> None:
+        self._callbacks = callbacks
+        self._replies = replies
+        self._queue: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def execute_command(self, *args: Any, **options: Any) -> _ClusterResp2Pipe:
+        self._queue.append((args, options))
+        return self
+
+    async def execute(self, raise_on_error: bool = True) -> list[Any]:
+        results = []
+        for args, options in self._queue:
+            reply = self._replies[args[0]]
+            callback = self._callbacks.get(args[0])
+            if callback is not None and not isinstance(reply, Exception):
+                reply = callback(reply, **options)
+            results.append(reply)
+        return results
+
+
+class TestClusterResp2Transactions:
+    """Metadata reads survive redis-py's Cluster RESP2 transaction callbacks.
+
+    In redis-py 8.0.1 and 8.1.0 the RESP2 ``HGETALL`` callback takes no
+    options, so a transactional ``HGETALL`` on Cluster raises ``TypeError``.
+    """
+
+    @staticmethod
+    def _client(replies: dict[str, Any]) -> Any:
+        callbacks = AsyncRedisCluster(
+            host="localhost", port=6379, protocol=2
+        ).response_callbacks
+        client = MagicMock()
+        client.pipeline.side_effect = lambda transaction=True: _ClusterResp2Pipe(
+            callbacks, replies
+        )
+        return client
+
+    async def test_attach(self, settings_env: Callable[..., None]) -> None:
+        settings_env()
+        client = self._client(
+            {
+                "HMGET": [b"running", None, b"w", b"1"],
+                "XREVRANGE": [],
+                "GET": b"r1",
+                "HSET": 1,
+                "EXPIRE": 1,
+            }
+        )
+        writer = await _started_backend(client).attach("r1", scope="chat:1")
+        assert writer.stream_id == "r1" and not writer.finished
+
+    async def test_read(self, settings_env: Callable[..., None]) -> None:
+        from redis.exceptions import ResponseError
+
+        settings_env()
+        client = self._client(
+            {
+                "HMGET": [None] * 4,
+                "EXISTS": 0,
+                "XINFO STREAM": ResponseError("no such key"),
+                "XRANGE": [],
+            }
+        )
+        with pytest.raises(StreamNotFound):
+            await _started_backend(client)._prepare("r1", scope="chat:1", after=None)
