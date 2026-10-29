@@ -5,11 +5,6 @@
     "aliases": []
   },
   {
-    "version": "feature-session-management",
-    "title": "feature/session-management",
-    "aliases": []
-  },
-  {
     "version": "feature-resumable-streams",
     "title": "feature/resumable-streams",
     "aliases": []
