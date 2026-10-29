@@ -120,6 +120,7 @@ M_STARTED = "started"
 # and heartbeat.  A meta hash holding only this field is the remnant of an
 # expired run (a late heartbeat recreated it), and counts as no meta.
 M_ALIVE = "alive"
+_META_FIELDS = (M_STATUS, M_CANCEL, M_WRITER, M_STARTED)
 
 STATUS_RUNNING = "running"
 STATUS_FINISHED = "finished"
@@ -260,6 +261,22 @@ def _keys(scope: str, stream_id: str) -> _Keys:
         meta=f"{prefix}:stream-meta:{tag}",
         active=_active_key(scope),
     )
+
+
+def _meta_reply(reply: Any) -> dict[str, str]:
+    """Decode the fixed metadata fields read by a transactional HMGET."""
+    if isinstance(reply, Exception):
+        raise StreamStoreError("could not read stream metadata") from reply
+    if not isinstance(reply, (list, tuple)) or len(reply) != len(_META_FIELDS):
+        raise StreamStoreError("invalid stream metadata reply")
+    try:
+        return {
+            field: text
+            for field, value in zip(_META_FIELDS, reply, strict=True)
+            if (text := _text(value)) is not None
+        }
+    except UnicodeError as exc:
+        raise StreamStoreError("invalid stream metadata encoding") from exc
 
 
 def _xread_entries(reply: Any) -> list[tuple[Any, dict[Any, Any]]]:
@@ -1153,11 +1170,11 @@ class StreamBackend:
         client = self._client()
         try:
             pipe = client.pipeline(transaction=True)
-            pipe.hgetall(keys.meta)
+            pipe.hmget(keys.meta, _META_FIELDS)
             pipe.xrevrange(keys.stream, count=1)
             pipe.get(keys.active)
             meta_raw, last, holder = await pipe.execute()
-            meta = {_text(k): _text(v) for k, v in (meta_raw or {}).items()}
+            meta = _meta_reply(meta_raw)
             if M_STATUS not in meta:
                 raise StreamNotFound(f"no stream {stream_id} in this scope")
             if meta.get(M_STATUS) == STATUS_FINISHED:
@@ -1387,7 +1404,7 @@ class StreamBackend:
         page = get_settings().stream_replay_page
 
         def build(pipe: Any) -> None:
-            pipe.hgetall(keys.meta)
+            pipe.hmget(keys.meta, _META_FIELDS)
             pipe.exists(keys.stream)
             pipe.xinfo_stream(keys.stream)
             if cursor != _START:
@@ -1406,7 +1423,7 @@ class StreamBackend:
             if isinstance(reply, Exception):
                 raise StreamStoreError("could not read the stream") from reply
 
-        meta = {_text(k): _text(v) for k, v in (replies[0] or {}).items()}
+        meta = _meta_reply(replies[0])
         if M_STATUS not in meta:
             record_stream_operation(operation="read", result="not_found")
             raise StreamNotFound(f"no stream {stream_id} in this scope")
