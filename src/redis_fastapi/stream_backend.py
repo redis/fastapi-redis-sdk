@@ -1,32 +1,26 @@
 """Resumable streams: a Redis-backed event log a client can resume.
 
-One Redis Stream holds one run - one agent turn, for example.  The entry ID is
-the cursor and the SSE ``id:``, so a client that reconnects with
-``Last-Event-ID`` gets exactly the entries after the last one it saw.  The run
-is decoupled from the HTTP request: a disconnect never stops it.
+One Redis Stream holds one run - one agent turn, for example - and it is the
+only key a run has::
 
-Keys, all built from the SDK's ``prefix`` setting::
+    <prefix>:stream:<scope>:<id>
 
-    <prefix>:stream:{<scope>}:<id>        Stream   entries
-    <prefix>:stream-meta:{<scope>}:<id>   Hash     status, cancel, owner
-    <prefix>:stream-active:{<scope>}      String   the scope's active run
-    <prefix>:stream-proc:{<proc>}         Set      a process's lease: its runs
-    <prefix>:stream-cancel:{<proc>}       Set      cancels for a process's runs
+The entry ID is the cursor and the SSE ``id:``, so a client that reconnects
+with ``Last-Event-ID`` gets exactly the entries after the last one it saw.
+The run is decoupled from the HTTP request: a disconnect never stops it.
 
-The scope is part of every stream key, so a stream is reachable only through
-the scope the application authorized, and the ``{<scope>}`` hash tag keeps a
-scope's keys in one Cluster slot.
+The scope is part of the key, so a stream is reachable only through the scope
+the application authorized.  Everything about a run is an entry in its
+stream: ``stream.start`` when it opens, the events, ``stream.ping`` while an
+idle producer waits, and one final entry.  Readers stop at the final entry,
+so anything written after it is never read.
 
-TTLs are set when a run opens and shortened when it ends; an append writes
-only its entry.  A run's ``owner`` names the process running it.  That
-process keeps one lease for all its runs: a set of the runs it still has a
-writer for, rewritten on every renewal.  A reader that finds a running run
-missing from its owner's lease ends it as ``producer_lost`` - whether the
-process died, or the process lives and dropped the run without ending it.
+The run's lifetime is set once, when it opens (``stream_max_run``), and
+shortened to ``stream_done_ttl`` when it ends.  A reader that sees nothing for
+``stream_silence_timeout`` ends the run as ``producer_lost``.
 
 Entry fields: ``t`` (type), ``d`` (payload), ``q`` (writer sequence number) and
-``f`` (``1`` on the final entry only).  The first entry, ``stream.start``, is
-never shown to readers.
+``f`` (``1`` on the final entry only).
 
 The HTTP side - the SSE response, cursor selection and the exception
 handlers - lives in :mod:`redis_fastapi.streams`.
@@ -37,14 +31,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import re
 import secrets
 import time
-import weakref
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
@@ -52,17 +44,11 @@ from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import (
-    NoPermissionError,
-    RedisClusterException,
-    RedisError,
-    WatchError,
-)
+from redis.exceptions import NoPermissionError, RedisClusterException, RedisError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
-    StreamBusy,
     StreamCursorAhead,
     StreamError,
     StreamExpired,
@@ -98,7 +84,7 @@ STORE_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 # Failures after which Redis may or may not have applied a write.  Every write
-# here is safe to repeat (IDMP, EXPIRE, HSET, SET), so these are retried.
+# here is safe to repeat (IDMP, EXPIRE), so these are retried.
 _AMBIGUOUS_ERRORS: tuple[type[BaseException], ...] = (
     RedisConnectionError,
     RedisTimeoutError,
@@ -113,10 +99,6 @@ _SHUTDOWN_RETRY_SECONDS = 0.25
 
 # What ending a stream from ``spawn()`` may fail with, logged and not raised.
 _END_ERRORS: tuple[type[BaseException], ...] = (StreamError, *STORE_ERRORS)
-# What dropping the lease at shutdown may fail with: the pool may be gone too.
-_DROP_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, *STORE_ERRORS)
-# What opening a run may fail with: a driver error, or one _retry() wrapped.
-_OPEN_ERRORS: tuple[type[BaseException], ...] = (StreamStoreError, *STORE_ERRORS)
 
 _T = TypeVar("_T")
 
@@ -126,31 +108,23 @@ F_DATA = "d"
 F_SEQ = "q"
 F_FINAL = "f"
 
-# Meta fields.  ``owner`` is "<process ID>:<writer ID>": the process whose
-# lease vouches for the run, and the writer that opened or resumed it.
-M_STATUS = "status"
-M_CANCEL = "cancel"
-M_OWNER = "owner"
-_META_FIELDS = (M_STATUS, M_CANCEL, M_OWNER)
-
-STATUS_RUNNING = "running"
-STATUS_SUSPENDED = "suspended"
-STATUS_FINISHED = "finished"
-
 # Types starting with this prefix belong to the SDK.
 RESERVED_PREFIX = "stream."
 START_TYPE = "stream.start"
+PING_TYPE = "stream.ping"
 END_TYPE = "stream.end"
 GAP_TYPE = "stream.gap"
 ERROR_TYPE = "stream.error"
+# The SDK's own entries, never shown to a reader.
+_HIDDEN_TYPES = frozenset({START_TYPE, PING_TYPE})
 
-# The one IDMP pair every final entry shares, so a stream holds at most one
-# final entry even when two writers, or a writer and a reader, end it at once.
+# The one IDMP pair every final entry shares, so a stream holds one final
+# entry even when a writer, a cancel and a reader end it at once.
 _END_PRODUCER = "end"
 _END_ID = "final"
 
-# No braces, so no value can break out of the hash tag.  No ":" in an ID, so
-# "<scope>:<id>" splits in exactly one way and two pairs never share a key.
+# No ":" in an ID, so "<scope>:<id>" splits in exactly one way and two pairs
+# never share a key.  No braces, so no value can make a hash tag.
 _SCOPE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,200}")
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # ASCII digits only, and at most 20 of them: 2**64 - 1 has 20 digits, and a
@@ -201,7 +175,7 @@ def _format(cursor: Cursor) -> str:
 
 
 def check_name(scope: str, stream_id: str | None = None) -> None:
-    """Reject a scope or stream ID that could break a key's hash tag.
+    """Reject a scope or stream ID outside the allowed characters.
 
     Raises:
         StreamInvalidName: If *scope* or *stream_id* has characters outside
@@ -253,57 +227,64 @@ def _seconds(value: int | timedelta) -> int:
     return max(1, int(value))
 
 
-@dataclass(frozen=True)
-class _Keys:
-    stream: str
-    meta: str
-    active: str
+def _key(scope: str, stream_id: str) -> str:
+    """The run's one key."""
+    return f"{get_settings().prefix}:stream:{scope}:{stream_id}"
 
 
-def _active_key(scope: str) -> str:
-    return f"{get_settings().prefix}:stream-active:{{{scope}}}"
+def _xadd(
+    key: str,
+    type: str,
+    payload: str,
+    *,
+    idmp: tuple[str, str] | None,
+    seq: int | None = None,
+    final: bool = False,
+    create: bool = False,
+) -> list[Any]:
+    """The ``XADD`` for one entry, shared by every path that writes one.
+
+    ``NOMKSTREAM`` unless *create*: only ``open()`` creates the stream, so a
+    write never recreates one that expired.
+    """
+    args: list[Any] = ["XADD", key]
+    if not create:
+        args.append("NOMKSTREAM")
+    if idmp is not None:
+        args += ["IDMP", *idmp]
+    args += ["MAXLEN", "~", str(get_settings().stream_maxlen), "*"]
+    args += [F_TYPE, type, F_DATA, payload]
+    if seq is not None:
+        args += [F_SEQ, str(seq)]
+    if final:
+        args += [F_FINAL, "1"]
+    return args
 
 
-def _keys(scope: str, stream_id: str) -> _Keys:
-    # Every key of a run, and the scope's active slot, hash on the scope, so
-    # they share one Cluster slot and one transaction can cover them all.
-    prefix = get_settings().prefix
-    tag = f"{{{scope}}}:{stream_id}"
-    return _Keys(
-        stream=f"{prefix}:stream:{tag}",
-        meta=f"{prefix}:stream-meta:{tag}",
-        active=_active_key(scope),
+def _queue_end(pipe: Any, key: str, type: str, payload: str, seq: int | None) -> None:
+    """Queue the final entry and the TTL of a finished run.
+
+    Every final entry shares one IDMP pair, so a late one - a writer finishing
+    after a cancel - returns the existing entry instead of adding another.
+    ``LT`` lets ending only shorten the run's lifetime: a second end never
+    keeps a finished run around longer.
+    """
+    pipe.execute_command(
+        *_xadd(key, type, payload, idmp=(_END_PRODUCER, _END_ID), seq=seq, final=True)
     )
+    pipe.expire(key, get_settings().stream_done_ttl, lt=True)
 
 
-def _lease_key(proc: str) -> str:
-    return f"{get_settings().prefix}:stream-proc:{{{proc}}}"
+def _idmp_window() -> int:
+    """How long the stream remembers IDMP pairs, in seconds.
 
-
-def _cancel_key(proc: str) -> str:
-    # Same hash tag as the lease, so one transaction renews the lease and
-    # collects the cancels.
-    return f"{get_settings().prefix}:stream-cancel:{{{proc}}}"
-
-
-def _owner_proc(owner: str | None) -> str | None:
-    return owner.split(":", 1)[0] if owner else None
-
-
-def _meta_reply(reply: Any) -> dict[str, str]:
-    """Decode the fixed metadata fields read by an HMGET."""
-    if isinstance(reply, Exception):
-        raise StreamStoreError("could not read stream metadata") from reply
-    if not isinstance(reply, (list, tuple)) or len(reply) != len(_META_FIELDS):
-        raise StreamStoreError("invalid stream metadata reply")
-    try:
-        return {
-            field: text
-            for field, value in zip(_META_FIELDS, reply, strict=True)
-            if (text := _text(value)) is not None
-        }
-    except UnicodeError as exc:
-        raise StreamStoreError("invalid stream metadata encoding") from exc
+    As long as the stream itself can live, so a late end, a retried start or
+    a retried append is recognised for the run's whole life, not only for
+    Redis's default 100 s.  ``check_stream_settings`` keeps it within the
+    one day Redis allows.
+    """
+    settings = get_settings()
+    return max(settings.stream_max_run, settings.stream_done_ttl)
 
 
 def _xread_entries(reply: Any) -> list[tuple[Any, dict[Any, Any]]]:
@@ -340,9 +321,8 @@ class _StreamCapabilities:
 async def probe_streams_support(client: AsyncClient) -> bool | None:
     """Ask the server whether it has ``XCFGSET`` and ``DELEX``.
 
-    ``XCFGSET`` arrived in Redis 8.6 together with ``XADD ... IDMP``, and
-    ``DELEX`` (with ``SET ... IFEQ``) in 8.4, so both present means the server
-    has the commands this feature uses.  Like
+    ``XCFGSET`` arrived in Redis 8.6 together with ``XADD ... IDMP``, which
+    this feature needs; ``DELEX`` arrived in 8.4.  Like
     :func:`~redis_fastapi.ratelimit_backend.probe_increx_support` this asks
     ``COMMAND INFO`` rather than sending the commands and reading an error: on
     a cluster, redis-py rejects an unknown command client-side.
@@ -439,8 +419,7 @@ class StreamWriter:
         scope: The scope the stream belongs to.
         created: ``True`` when :meth:`~StreamBackend.open` created the run,
             ``False`` when it found the same run already started - a retried
-            start request - or when :meth:`~StreamBackend.resume` returned it.
-            Start a producer from ``open()`` only when this is ``True``.
+            start request.  Start a producer only when this is ``True``.
     """
 
     def __init__(
@@ -450,40 +429,24 @@ class StreamWriter:
         scope: str,
         stream_id: str,
         writer_id: str,
-        exclusive: bool,
         created: bool,
-        seq: int = 0,
-        expires_in: float = 0.0,
     ) -> None:
         self._backend = backend
         self.scope = scope
         self.stream_id = stream_id
         self.created = created
-        self._keys = _keys(scope, stream_id)
+        self._key = _key(scope, stream_id)
         self._writer_id = writer_id
-        self._exclusive = exclusive
-        self._seq = seq
-        # When the run's keys expire, as this process's clock sees it.  An
-        # append past half the run's lifetime pushes it out again.
-        self._expires_at = time.monotonic() + expires_in
+        self._seq = 0
+        self._last_write = time.monotonic()
         self._final_id: str | None = None
-        self._cancelled = False
-        # Set when something else ended the run - a reader that found this
-        # process's lease gone - so spawn() writes no end of its own.
-        self._ended = False
-        self._suspended = False
         # Set when spawn() starts writing the final entry, so a repeated
         # cancel at shutdown never interrupts that write.
         self._ending = False
         # A handle for a run that already exists (a retried start) writes
         # nothing: the run's own producer does.
-        self._read_only = False
+        self._read_only = not created
         self._task: asyncio.Task[None] | None = None
-
-    @property
-    def cancelled(self) -> bool:
-        """Whether a stop was requested, as last seen by this process."""
-        return self._cancelled
 
     @property
     def finished(self) -> bool:
@@ -493,76 +456,43 @@ class StreamWriter:
     async def append(self, type: str, data: Any) -> str:
         """Append one event and return its entry ID.
 
-        One round trip writes the entry and reads the run's status and cancel
-        flag.  A producer started by :meth:`StreamBackend.spawn` is cancelled
-        for you; one you run yourself checks :attr:`cancelled` and calls
-        :meth:`finish`.  A timeout or a dropped connection is retried with the
+        One ``XADD``.  A timeout or a dropped connection is retried with the
         same idempotency key, so a retried append never stores the event
-        twice.
+        twice.  An append after a cancel from another process still lands,
+        after the final entry, where no reader looks.
 
         Raises:
             ValueError: If *type* is invalid or reserved, the default coder cannot
                 encode *data*, the encoded event is larger than
                 ``stream_max_event_bytes``, or this writer is a retried
-                start's handle or was suspended.
-            StreamFinished: If the final entry was already written, by this
-                writer or by a reader that found this process's lease gone.
-            StreamExpired: If the stream expired, for example after a pause
-                longer than its TTL.
+                start's handle.
+            StreamFinished: If this writer already wrote the final entry.
+            StreamExpired: If the run outlived ``stream_max_run`` without
+                :meth:`extend`.
             StreamStoreError: If Redis cannot be reached.
         """
         check_event_type(type)
-        self._check_live()
+        self._check_writable()
         if self._backend._closing and self._is_own_task():
             # The application is shutting down.  Stop here rather than rely
             # on the cancel alone, which a concurrent await can lose.
             raise asyncio.CancelledError
         payload = self._backend._encode(data)
-        seq = self._seq + 1
-        keys = self._keys
+        # Taken before the await, and kept if the append fails: a number is
+        # never sent twice, or Redis would keep the first event under it and
+        # silently drop the second.  One that never landed shows readers a
+        # stream.gap, which is the truth.
+        self._seq = seq = self._seq + 1
         args = _xadd(
-            keys,
-            type,
-            payload,
-            idmp=(self._writer_id, str(seq)),
-            seq=seq,
-            final=False,
+            self._key, type, payload, idmp=(self._writer_id, str(seq)), seq=seq
         )
-        deadline = self._renewal()
-
-        def build(pipe: Any) -> None:
-            pipe.execute_command(*args)
-            if deadline is not None:
-                self._queue_ttl(pipe, deadline)
-            pipe.hmget(keys.meta, [M_STATUS, M_CANCEL])
-
         with stream_span("redis_fastapi.streams.append"), timed_stream("append"):
-            replies = await self._backend._pipeline(build, transaction=False)
-        entry_id = _text(replies[0])
+            entry_id = _text(await self._backend._command(args))
         if entry_id is None:
             record_stream_operation(operation="append", result="expired")
             raise StreamExpired(f"stream {self.stream_id} has expired")
-        self._seq = seq
-        if deadline is not None:
-            self._expires_at = deadline
-        status, cancel = (_text(v) for v in replies[-1])
-        if status is None:
-            record_stream_operation(operation="append", result="expired")
-            raise StreamExpired(f"stream {self.stream_id} has expired")
-        if status == STATUS_FINISHED:
-            # A reader ended the run while this process's lease was gone.  The
-            # entry landed after the final one, where no reader looks.
-            self._ended = True
-            self._backend._forget(self)
-            record_stream_operation(operation="append", result="finished")
-            raise StreamFinished(f"stream {self.stream_id} was ended by a reader")
+        self._last_write = time.monotonic()
         record_stream_operation(operation="append", result="ok")
-        if cancel == "1":
-            self._cancelled = True
-            current = asyncio.current_task()
-            if current is not None and current is self._task:
-                current.cancel()
-                await asyncio.sleep(0)  # raises CancelledError here
         return entry_id
 
     async def finish(self, type: str, data: Any = None) -> str:
@@ -570,8 +500,8 @@ class StreamWriter:
 
         The final event is an ordinary event of your chosen type, marked as
         the end.  Readers stop after it, and a reconnect after it gets 204.
-        Every final entry shares one idempotency key, so a stream has at most
-        one: if a reader ended it a moment ago, this returns that entry's ID.
+        If the run was already ended - by a cancel, or by a reader that found
+        it silent - this returns that final entry's ID and adds nothing.
 
         Returns:
             The final entry's ID.
@@ -580,78 +510,60 @@ class StreamWriter:
         return await self._end(type, data)
 
     async def extend(self, ttl: int | timedelta) -> None:
-        """Keep the stream, its metadata and its active slot for at least *ttl*.
+        """Keep the run for at least *ttl* seconds more.
 
-        For a run that will take longer than ``stream_max_run``.  An append
-        past half that lifetime extends it by itself; this is for a run that
-        waits longer than that without appending.  *ttl* is in seconds.
+        A run lives ``stream_max_run`` from :meth:`StreamBackend.open`.  This
+        is for one that needs longer; it never shortens the run.
 
         Raises:
-            ValueError: If this writer is a retried start's handle or was
-                suspended.
-            StreamFinished: If the final entry was already written.
+            ValueError: If this writer is a retried start's handle.
             StreamStoreError: If Redis cannot be reached.
         """
-        self._check_live()
-        deadline = max(self._expires_at, time.monotonic() + _seconds(ttl))
-        await self._backend._pipeline(
-            lambda pipe: self._queue_ttl(pipe, deadline), transaction=True
+        self._check_writable()
+        await self._backend._command(["EXPIRE", self._key, _seconds(ttl), "GT"])
+
+    def keepalive(self) -> AbstractAsyncContextManager[None]:
+        """Keep a quiet run from looking lost while a block runs.
+
+        A reader that sees no entry for ``stream_silence_timeout`` ends the
+        run as ``producer_lost``.  While the block runs, an entry nobody sees
+        (``stream.ping``) is written whenever the producer has been quiet long
+        enough that no reader goes more than half that timeout without an
+        entry.  :meth:`StreamBackend.spawn` runs it for you.
+        """
+        return self._keepalive()
+
+    @asynccontextmanager
+    async def _keepalive(self) -> AsyncIterator[None]:
+        pinger = asyncio.create_task(self._ping())
+        try:
+            yield
+        finally:
+            pinger.cancel()
+            await asyncio.gather(pinger, return_exceptions=True)
+
+    async def _ping(self) -> None:
+        settings = get_settings()
+        # Looked at every heartbeat, so the longest gap a reader sees is
+        # quiet + heartbeat: half the silence timeout.
+        quiet = max(
+            0.0,
+            settings.stream_silence_timeout / 2 - settings.stream_heartbeat_interval,
         )
-        self._expires_at = deadline
-
-    async def suspend(self, ttl: int | timedelta) -> None:
-        """Pause the run without ending it, for another process to resume.
-
-        For a turn that waits on a result arriving later, elsewhere: the run
-        is marked suspended and kept for at least *ttl* seconds, readers keep
-        waiting and never report it lost, and
-        :meth:`StreamBackend.resume` continues it.  This writer is done: a
-        producer started by :meth:`StreamBackend.spawn` that suspends writes
-        no end when it returns.
-
-        Raises:
-            ValueError: If this writer is a retried start's handle or was
-                already suspended.
-            StreamFinished: If the run already ended.
-            StreamExpired: If the run expired.
-            StreamStoreError: If Redis cannot be reached.
-        """
-        self._check_live()
-        deadline = max(self._expires_at, time.monotonic() + _seconds(ttl))
-
-        def build(meta: dict[str, str], pipe: Any) -> bool:
-            status = meta.get(M_STATUS)
-            if status is None:
-                raise StreamExpired(f"stream {self.stream_id} has expired")
-            if status == STATUS_FINISHED:
-                self._ended = True
-                raise StreamFinished(f"stream {self.stream_id} already ended")
-            pipe.multi()
-            pipe.hset(self._keys.meta, M_STATUS, STATUS_SUSPENDED)
-            self._queue_ttl(pipe, deadline)
-            return True
-
-        await self._backend._guarded(self._keys, build)
-        self._suspended = True
-        self._backend._forget(self)
-        record_stream_operation(operation="suspend", result="ok")
-
-    def _queue_ttl(self, pipe: Any, deadline: float) -> None:
-        """Queue TTLs that keep the run's keys until *deadline*, never shorter."""
-        seconds = max(1, math.ceil(deadline - time.monotonic()))
-        gone = get_settings().stream_gone_ttl
-        pipe.expire(self._keys.stream, seconds, gt=True)
-        pipe.expire(self._keys.meta, seconds + gone, gt=True)
-        if self._exclusive:
-            _refresh_slot(pipe, self._keys, self.stream_id, seconds)
-
-    def _renewal(self) -> float | None:
-        """The new deadline when the run is past half its lifetime, else ``None``."""
-        lifetime = get_settings().stream_max_run
-        now = time.monotonic()
-        if self._expires_at - now > lifetime / 2:
-            return None
-        return max(self._expires_at, now + lifetime)
+        while self._final_id is None:
+            await asyncio.sleep(settings.stream_heartbeat_interval)
+            if time.monotonic() - self._last_write < quiet:
+                continue
+            try:
+                reply = await self._backend._command(
+                    _xadd(self._key, PING_TYPE, "null", idmp=None)
+                )
+            except StreamStoreError:
+                logger.debug("Stream ping failed; will retry", exc_info=True)
+                continue
+            if reply is None:
+                return  # the run expired; the next append says so
+            self._last_write = time.monotonic()
 
     def _is_own_task(self) -> bool:
         task = self._task
@@ -663,118 +575,27 @@ class StreamWriter:
                 f"this writer is a retried start's handle for stream "
                 f"{self.stream_id}; the run's own producer writes to it"
             )
-        if self._suspended:
-            raise ValueError(
-                f"stream {self.stream_id} was suspended; resume() it to write"
-            )
-
-    def _check_live(self) -> None:
-        """Refuse a write through a writer that cannot write, or a run that ended."""
-        self._check_writable()
-        if self._final_id is not None or self._ended:
+        if self._final_id is not None:
             raise StreamFinished(f"stream {self.stream_id} already ended")
 
     async def _end(self, type: str, data: Any) -> str:
-        self._check_writable()
         if self._final_id is not None:
             return self._final_id
-        settings = get_settings()
-        keys = self._keys
-        seq = self._seq + 1
-        args = _final_xadd(keys, type, self._backend._encode(data), seq)
-
-        def build(pipe: Any) -> None:
-            # The status before this end: a reader may have ended the run.
-            pipe.hget(keys.meta, M_STATUS)
-            _queue_end(pipe, args, keys, self.stream_id, settings.stream_done_ttl)
-
+        self._check_writable()
+        payload = self._backend._encode(data)
+        self._seq = seq = self._seq + 1
         with stream_span("redis_fastapi.streams.finish"), timed_stream("finish"):
-            replies = await self._backend._pipeline(build, transaction=True)
-        if _text(replies[0]) == STATUS_FINISHED:
-            # Its entry, if any, landed after the final one, where no reader
-            # looks; IDMP returned the existing final entry otherwise.
-            self._ended = True
-            self._backend._forget(self)
-            record_stream_operation(operation="finish", result="finished")
-            raise StreamFinished(f"stream {self.stream_id} was ended by a reader")
-        entry_id = _text(replies[1])
+            replies = await self._backend._pipeline(
+                lambda pipe: _queue_end(pipe, self._key, type, payload, seq),
+                transaction=True,
+            )
+        entry_id = _text(replies[0])
         if entry_id is None:
             record_stream_operation(operation="finish", result="expired")
             raise StreamExpired(f"stream {self.stream_id} has expired")
-        self._seq = seq
         self._final_id = entry_id
-        self._backend._forget(self)
         record_stream_operation(operation="finish", result="ok")
         return entry_id
-
-
-def _xadd(
-    keys: _Keys,
-    type: str,
-    payload: str,
-    *,
-    idmp: tuple[str, str],
-    seq: int | None,
-    final: bool,
-    create: bool = False,
-) -> list[Any]:
-    """The ``XADD`` for one entry, shared by every path that writes one.
-
-    ``NOMKSTREAM`` unless *create*: only ``open()`` creates the stream, so an
-    append never recreates one that expired.  *seq* is ``None`` for the start
-    entry and for the final entry a reader writes for a lost producer.
-    """
-    args: list[Any] = ["XADD", keys.stream]
-    if not create:
-        args.append("NOMKSTREAM")
-    args += ["IDMP", *idmp]
-    args += ["MAXLEN", "~", str(get_settings().stream_maxlen), "*"]
-    args += [F_TYPE, type, F_DATA, payload]
-    if seq is not None:
-        args += [F_SEQ, str(seq)]
-    if final:
-        args += [F_FINAL, "1"]
-    return args
-
-
-def _final_xadd(
-    keys: _Keys, type: str, payload: str, seq: int | None = None
-) -> list[Any]:
-    """The ``XADD`` of a final entry.
-
-    Every final entry shares one IDMP pair, so a stream holds one even when a
-    writer, a reader and a cancel end it at once.  *seq* is ``None`` when the
-    entry is not the writer's: a reader's or a cancel's.
-    """
-    return _xadd(
-        keys, type, payload, idmp=(_END_PRODUCER, _END_ID), seq=seq, final=True
-    )
-
-
-def _queue_end(
-    pipe: Any, args: list[Any], keys: _Keys, stream_id: str, ttl: int
-) -> None:
-    """Queue the final entry and everything that ends a run with it."""
-    pipe.execute_command(*args)
-    pipe.hset(keys.meta, M_STATUS, STATUS_FINISHED)
-    pipe.expire(keys.stream, ttl)
-    pipe.expire(keys.meta, ttl + get_settings().stream_gone_ttl)
-    _release_slot(pipe, keys, stream_id)
-
-
-def _refresh_slot(pipe: Any, keys: _Keys, stream_id: str, seconds: int) -> None:
-    """Queue an extension of the active slot, only while it names *stream_id*."""
-    pipe.execute_command(
-        "SET", keys.active, stream_id, "IFEQ", stream_id, "EX", seconds
-    )
-
-
-def _release_slot(pipe: Any, keys: _Keys, stream_id: str) -> None:
-    """Queue freeing the active slot, only if it names *stream_id*.
-
-    A stale writer must not free the slot of a newer run.
-    """
-    pipe.execute_command("DELEX", keys.active, "IFEQ", stream_id)
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +607,7 @@ def _release_slot(pipe: Any, keys: _Keys, stream_id: str) -> None:
 class _ReadPlan:
     """What the reader learned before the first byte."""
 
-    keys: _Keys
+    key: str
     stream_id: str
     cursor: Cursor
     last_seq: int | None
@@ -863,8 +684,7 @@ class StreamBackend:
     There is one instance per process.  ``FastAPIRedis(app).streams()``
     creates it, and :data:`~redis_fastapi.deps.StreamBackendDep` returns it.
     It holds state for the whole process: the tasks started by :meth:`spawn`,
-    the live reader count, the server-support result, and the process lease
-    that vouches for every run this process owns.
+    the live reader count and the server-support result.
 
     Args:
         client: A callable returning the async Redis client, so the backend
@@ -887,17 +707,8 @@ class StreamBackend:
         self._tasks: set[asyncio.Task[None]] = set()
         self._spawned: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._writers: dict[asyncio.Task[None], StreamWriter] = {}
-        # The running writers this process owns, for cancels from elsewhere.
-        self._live: weakref.WeakValueDictionary[tuple[str, str], StreamWriter] = (
-            weakref.WeakValueDictionary()
-        )
         self._readers = 0
         self._closing = False
-        self._proc = _new_id()
-        # Runs being opened or resumed, vouched for before they are owned.
-        self._pending: set[tuple[str, str]] = set()
-        self._lease_ready = False
-        self._lease_task: asyncio.Task[None] | None = None
 
     # -- support -------------------------------------------------------------
 
@@ -954,33 +765,32 @@ class StreamBackend:
             return text
 
     async def _retry(self, attempt: Callable[[], Awaitable[_T]]) -> _T:
-        """Run *attempt* until it settles, the one retry loop of the feature.
+        """Run *attempt*, repeating it after a timeout or a dropped connection.
 
-        A ``WatchError`` - a watched key changed before ``EXEC`` - repeats the
-        attempt at once.  A timeout or a dropped connection, after which Redis
-        may or may not have applied the writes, repeats it with backoff:
-        every write the feature sends is safe to repeat.  Any other driver
-        error ends it.
+        Redis may or may not have applied a write before such a failure, and
+        every write the feature sends is safe to repeat, so it is repeated
+        with backoff.  Any other driver error ends it.
 
         The error text never carries Redis's own message, which can name the
         ACL user and the key.
 
         Raises:
-            StreamStoreError: If Redis cannot be reached, refused a command,
-                or the watched keys kept changing.
+            StreamStoreError: If Redis cannot be reached or refused a command.
         """
         for n in range(_WRITE_ATTEMPTS):
             try:
                 return await attempt()
-            except WatchError:
-                continue
             except _AMBIGUOUS_ERRORS as exc:
                 if n == _WRITE_ATTEMPTS - 1:
                     raise StreamStoreError("Redis did not answer") from exc
                 await asyncio.sleep(0.05 * 2**n)
             except STORE_ERRORS as exc:
-                raise StreamStoreError("Redis refused a stream write") from exc
-        raise StreamStoreError("the stream kept changing; retry")
+                raise StreamStoreError("Redis refused a stream command") from exc
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _command(self, args: list[Any]) -> Any:
+        """Send one command under :meth:`_retry`."""
+        return await self._retry(lambda: self._client().execute_command(*args))
 
     async def _pipeline(
         self, build: Callable[[Any], None], *, transaction: bool
@@ -994,199 +804,78 @@ class StreamBackend:
 
         return await self._retry(attempt)
 
-    async def _guarded(
-        self, keys: _Keys, build: Callable[[dict[str, str], Any], bool]
-    ) -> list[Any] | None:
-        """Run a transaction that depends on the run's metadata.
-
-        ``WATCH`` meta, read it, and hand it to *build*, which raises for a
-        state it refuses, returns ``False`` to do nothing, or calls
-        ``pipe.multi()``, queues its commands and returns ``True``.  If meta
-        changes before ``EXEC``, the read repeats.  For the rare operations -
-        cancel, suspend, resume, a reader ending a lost run - where acting on
-        a stale status would be wrong.
-
-        Returns:
-            The transaction's replies, or ``None`` when *build* declined.
-
-        Raises:
-            StreamStoreError: As :meth:`_retry`.
-        """
-        client = self._client()
-
-        async def attempt() -> list[Any] | None:
-            async with client.pipeline(transaction=True) as pipe:
-                await pipe.watch(keys.meta)
-                # Read on another connection, as _create does: EXEC still
-                # aborts if meta changes after the WATCH, whoever changes it.
-                meta = _meta_reply(await client.hmget(keys.meta, _META_FIELDS))
-                if not build(meta, pipe):
-                    return None
-                return list(await pipe.execute())
-
-        return await self._retry(attempt)
-
-    # -- the process lease ---------------------------------------------------
-
-    async def _ensure_lease(self) -> None:
-        """Hold this process's lease before it owns a run, and keep renewing it."""
-        if not self._lease_ready:
-            await self._renew_lease()
-            self._lease_ready = True
-        if self._lease_task is None or self._lease_task.done():
-            self._lease_task = asyncio.create_task(self._lease_loop())
-
-    async def _renew_lease(self) -> None:
-        """Rewrite the lease from the runs this process still has a writer for,
-        and collect the cancels other processes sent here.
-
-        A run whose writer was finished, suspended, dropped without ending, or
-        whose end could not be written drops out, so readers end it.  The
-        empty member keeps the set, and so the process, visible with no runs.
-        """
-        settings = get_settings()
-        lease, cancels = _lease_key(self._proc), _cancel_key(self._proc)
-        runs = {*self._live.keys(), *self._pending}
-        async with self._client().pipeline(transaction=True) as pipe:
-            pipe.delete(lease)
-            pipe.sadd(lease, "", *(_member(scope, sid) for scope, sid in runs))
-            pipe.expire(lease, settings.stream_lease_ttl)
-            # Not pipe.smembers(): redis-py's async Cluster transaction hands
-            # its reply callback a keyword the callback does not take.
-            pipe.execute_command("SMEMBERS", cancels)
-            pipe.delete(cancels)
-            replies = await pipe.execute()
-        for member in replies[3] or ():
-            text = _text(member)
-            if text and ":" in text:
-                scope, stream_id = text.rsplit(":", 1)
-                self._cancel_local(scope, stream_id)
-
-    async def _lease_loop(self) -> None:
-        interval = get_settings().stream_lease_interval
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                await self._renew_lease()
-            except Exception:
-                # Never let the loop die: every run this process owns would
-                # be reported lost once the lease lapsed.
-                logger.debug("Stream lease renewal failed; will retry", exc_info=True)
-
-    def _cancel_local(self, scope: str, stream_id: str) -> None:
-        key = (scope, stream_id)
-        writer = self._live.get(key)
-        if writer is not None:
-            writer._cancelled = True
-        task = self._spawned.get(key)
-        if task is not None and not task.done():
-            self._cancel_unless_ending({task})
-
-    def _own(self, writer: StreamWriter) -> None:
-        self._live[(writer.scope, writer.stream_id)] = writer
-
-    def _forget(self, writer: StreamWriter) -> None:
-        key = (writer.scope, writer.stream_id)
-        if self._live.get(key) is writer:
-            del self._live[key]
-
-    async def _vouch(self, scope: str, stream_id: str) -> None:
-        """Put a run in this process's lease now, before the next renewal.
-
-        ``EXPIRE ... NX`` gives a lease the renewal has not written yet a TTL,
-        and leaves a renewed one's alone.
-        """
-        lease = _lease_key(self._proc)
-
-        def build(pipe: Any) -> None:
-            pipe.sadd(lease, _member(scope, stream_id))
-            pipe.expire(lease, get_settings().stream_lease_ttl, nx=True)
-
-        await self._pipeline(build, transaction=True)
-
-    @asynccontextmanager
-    async def _vouching(self, scope: str, stream_id: str) -> AsyncIterator[None]:
-        """Vouch for a run this block is opening or resuming.
-
-        The run counts as this process's from before the block, so a renewal
-        that runs while the block decides keeps it in the lease.
-        """
-        key = (scope, stream_id)
-        self._pending.add(key)
-        try:
-            await self._ensure_lease()
-            await self._vouch(scope, stream_id)
-            yield
-        finally:
-            self._pending.discard(key)
-
-    async def _vouched(self, owner: str | None, scope: str, stream_id: str) -> bool:
-        """Whether the run's owner process still vouches for it."""
-        proc = _owner_proc(owner)
-        if proc is None:
-            return False
-        return bool(
-            await self._client().sismember(_lease_key(proc), _member(scope, stream_id))
-        )
+    def _check_open(self) -> None:
+        if self._closing:
+            raise StreamStoreError("the application is shutting down")
 
     # -- writer side ---------------------------------------------------------
 
-    async def open(
-        self,
-        *,
-        scope: str,
-        stream_id: str | None = None,
-        exclusive: bool = True,
-    ) -> StreamWriter:
+    async def open(self, *, scope: str, stream_id: str | None = None) -> StreamWriter:
         """Start a run, or return the same run on a retried start request.
 
-        With *exclusive* (the default) the run takes the scope's active slot,
-        so a scope holds one active run at a time.  A client-supplied
-        *stream_id* - for example an idempotency key the browser generated -
-        makes a retried ``POST`` safe: the second call finds the same run and
-        returns a writer whose ``created`` is ``False``.  Start a producer only
-        for a writer whose ``created`` is ``True``, or use :meth:`start`,
-        which does both.
-
-        The run's keys live for ``stream_max_run``; appends extend that while
-        the run goes on, and :meth:`StreamWriter.extend` covers a longer wait.
+        One transaction writes the run's first entry and gives the stream its
+        lifetime, ``stream_max_run``.  A client-supplied *stream_id* - for
+        example an idempotency key the browser generated - makes a retried
+        ``POST`` safe: the second call finds the same run and returns a writer
+        whose ``created`` is ``False``.  Start a producer only for a writer
+        whose ``created`` is ``True``, or use :meth:`start`, which does both.
 
         Raises:
             StreamInvalidName: If *scope* or *stream_id* is invalid.
-            StreamBusy: If the scope's slot names another run that is still
-                going.
             StreamUnsupported: If the server lacks support.
-            StreamStoreError: If Redis cannot be reached.
+            StreamStoreError: If Redis cannot be reached, or the key holds
+                something other than a stream.
         """
         await self._require_support()
         check_name(scope, stream_id)
         self._check_open()
         sid = stream_id or secrets.token_urlsafe(12)
-        keys = _keys(scope, sid)
-        writer_id = _new_id()
+        key = _key(scope, sid)
+        lifetime = get_settings().stream_max_run
+
+        def build(pipe: Any) -> None:
+            # No IDMP: the XCFGSET below clears the stream's IDMP history, so
+            # it could not recognise a retry anyway.  A retried start adds a
+            # second start entry, which readers skip.
+            pipe.execute_command(
+                *_xadd(key, START_TYPE, "null", idmp=None, create=True)
+            )
+            # NX sets a TTL only on a key that has none.  Every run gets its
+            # TTL here, so "had none" means this call created the stream.
+            pipe.expire(key, lifetime, nx=True)
+
+        with stream_span("redis_fastapi.streams.open"), timed_stream("open"):
+            try:
+                replies = await self._pipeline(build, transaction=True)
+            except StreamStoreError:
+                record_stream_operation(operation="open", result="error")
+                raise
+        created = bool(replies[1])
+        if created:
+            await self._remember_for_the_run(key)
+        record_stream_operation(
+            operation="open", result="created" if created else "retry"
+        )
+        return StreamWriter(
+            self, scope=scope, stream_id=sid, writer_id=_new_id(), created=created
+        )
+
+    async def _remember_for_the_run(self, key: str) -> None:
+        """Make the new stream remember IDMP pairs for its whole life.
+
+        Only for a stream this call created, before anything else writes to
+        it: ``XCFGSET`` with a new value clears the IDMP history.  Should it
+        fail, the run keeps Redis's default window and goes on.
+        """
         try:
-            with stream_span("redis_fastapi.streams.open"), timed_stream("open"):
-                async with self._vouching(scope, sid):
-                    created = await self._create(keys, scope, sid, writer_id, exclusive)
-                    if created:
-                        writer = StreamWriter(
-                            self,
-                            scope=scope,
-                            stream_id=sid,
-                            writer_id=writer_id,
-                            exclusive=exclusive,
-                            created=True,
-                            expires_in=get_settings().stream_max_run,
-                        )
-                        self._own(writer)
-        except _OPEN_ERRORS as exc:
-            record_stream_operation(operation="open", result="error")
-            raise StreamStoreError("could not open the stream") from exc
-        if not created:
-            record_stream_operation(operation="open", result="retry")
-            return self._handle(scope, sid, exclusive)
-        record_stream_operation(operation="open", result="created")
-        return writer
+            await self._command(["XCFGSET", key, "IDMP-DURATION", _idmp_window()])
+        except StreamStoreError:
+            logger.warning(
+                "Could not widen the IDMP window of %s; late ends and retries "
+                "older than Redis's default are not recognised",
+                key,
+                exc_info=True,
+            )
 
     async def start(
         self,
@@ -1194,7 +883,6 @@ class StreamBackend:
         *,
         scope: str,
         stream_id: str | None = None,
-        exclusive: bool = True,
     ) -> StreamWriter:
         """Open a run and :meth:`spawn` *fn* on it, unless it already exists.
 
@@ -1205,198 +893,9 @@ class StreamBackend:
         Raises:
             The same as :meth:`open`.
         """
-        writer = await self.open(scope=scope, stream_id=stream_id, exclusive=exclusive)
+        writer = await self.open(scope=scope, stream_id=stream_id)
         if writer.created:
             self.spawn(writer, fn)
-        return writer
-
-    async def _create(
-        self,
-        keys: _Keys,
-        scope: str,
-        stream_id: str,
-        writer_id: str,
-        exclusive: bool,
-    ) -> bool:
-        """Create the run unless it exists, in one optimistic transaction.
-
-        ``WATCH`` the slot and meta, read them, then take the slot, create
-        meta, and write the stream's first entry in one ``MULTI``, every key
-        with its TTL.  If another start changes either key in between,
-        ``EXEC`` aborts and the read repeats.  So a run appears whole or not
-        at all, and a process killed at any point leaves keys that expire.
-
-        The run's meta, not the slot, marks a retried start: the slot is freed
-        when a run ends, but meta outlives it.  A slot held by a run that
-        ended, expired, or whose owner's lease is gone is taken over.
-
-        Returns:
-            ``True`` if this call created the run, ``False`` if the run
-            already existed.
-
-        Raises:
-            StreamBusy: If the slot names another run that is still going.
-            StreamStoreError: As :meth:`_retry`.
-        """
-        settings = get_settings()
-        client = self._client()
-        owner = f"{self._proc}:{writer_id}"
-        watched = [keys.active, keys.meta] if exclusive else [keys.meta]
-
-        async def attempt() -> bool:
-            async with client.pipeline(transaction=True) as pipe:
-                await pipe.watch(*watched)
-                # Read on another connection: EXEC still aborts if either
-                # key changes after the WATCH, whoever changes it.
-                async with client.pipeline(transaction=True) as read:
-                    read.hmget(keys.meta, [M_STATUS, M_OWNER])
-                    read.get(keys.active)
-                    (status, current), holder = await read.execute()
-                if _text(current) == owner:
-                    return True  # this call's EXEC applied; its reply was lost
-                if status is not None:
-                    return False
-                holder = _text(holder)
-                if exclusive and holder is not None and holder != stream_id:
-                    # Same slot: EXEC aborts if the holder resumes or ends
-                    # while this start decides whether to take its place.
-                    await pipe.watch(_keys(scope, holder).meta)
-                    if await self._holds(scope, holder):
-                        record_stream_operation(operation="open", result="busy")
-                        raise StreamBusy(holder)
-                lifetime = settings.stream_max_run
-                pipe.multi()  # type: ignore[no-untyped-call]
-                if exclusive:
-                    pipe.set(keys.active, stream_id, ex=lifetime)
-                pipe.hset(
-                    keys.meta,
-                    mapping={
-                        M_STATUS: STATUS_RUNNING,
-                        M_CANCEL: "0",
-                        M_OWNER: owner,
-                    },
-                )
-                pipe.expire(keys.meta, lifetime + settings.stream_gone_ttl)
-                pipe.execute_command(
-                    *_xadd(
-                        keys,
-                        START_TYPE,
-                        "null",
-                        idmp=(writer_id, "0"),
-                        seq=None,
-                        final=False,
-                        create=True,
-                    )
-                )
-                pipe.expire(keys.stream, lifetime)
-                await pipe.execute()
-                return True
-
-        return await self._retry(attempt)
-
-    async def _holds(self, scope: str, holder: str) -> bool:
-        """Whether the run *holder* still holds the scope's slot.
-
-        It does while it is suspended, or running and vouched for by its
-        owner's lease.
-        """
-        meta = _keys(scope, holder).meta
-        status, owner = (
-            _text(v) for v in await self._client().hmget(meta, [M_STATUS, M_OWNER])
-        )
-        if status == STATUS_SUSPENDED:
-            return True
-        if status != STATUS_RUNNING:
-            return False
-        return await self._vouched(owner, scope, holder)
-
-    def _handle(self, scope: str, stream_id: str, exclusive: bool) -> StreamWriter:
-        """A writer for a run that already exists, returned on a retried start.
-
-        It never writes: the run's own producer does.
-        """
-        handle = StreamWriter(
-            self,
-            scope=scope,
-            stream_id=stream_id,
-            writer_id=_new_id(),
-            exclusive=exclusive,
-            created=False,
-        )
-        handle._read_only = True
-        return handle
-
-    async def resume(self, stream_id: str, *, scope: str) -> StreamWriter:
-        """Continue a run in this process: one that was suspended, or whose
-        producer is gone.
-
-        The new writer continues the sequence numbers, and this process's
-        lease vouches for the run from now on.  A run that is running and
-        still vouched for by its owner is refused, so a resume delivered
-        twice starts one writer, not two.
-
-        Raises:
-            StreamInvalidName: If *scope* or *stream_id* is invalid.
-            StreamNotFound: If there is no such stream.
-            StreamBusy: If the run is running and its owner still vouches for
-                it - another resume got there first, for example.
-            StreamFinished: If the stream already has its final entry.
-            StreamExpired: If the stream expired.
-            StreamStoreError: If Redis cannot be reached.
-        """
-        await self._require_support()
-        check_name(scope, stream_id)
-        self._check_open()
-        keys = _keys(scope, stream_id)
-        writer_id = _new_id()
-        owner = f"{self._proc}:{writer_id}"
-        try:
-            async with self._vouching(scope, stream_id):
-                async with self._client().pipeline(transaction=True) as pipe:
-                    pipe.hmget(keys.meta, [M_STATUS, M_OWNER])
-                    pipe.xrevrange(keys.stream, count=1)
-                    pipe.pttl(keys.stream)
-                    pipe.get(keys.active)
-                    (status, previous), last, left_ms, holder = await pipe.execute()
-                previous = _text(previous)
-                if _text(status) == STATUS_RUNNING and await self._vouched(
-                    previous, scope, stream_id
-                ):
-                    raise StreamBusy(stream_id)
-
-                def build(meta: dict[str, str], pipe: Any) -> bool:
-                    status = meta.get(M_STATUS)
-                    if status is None:
-                        raise StreamNotFound(f"no stream {stream_id} in this scope")
-                    if status == STATUS_FINISHED:
-                        raise StreamFinished(f"stream {stream_id} already ended")
-                    if status == STATUS_RUNNING and meta.get(M_OWNER) != previous:
-                        raise StreamBusy(stream_id)  # resumed elsewhere meanwhile
-                    if not last or left_ms is None or left_ms < 0:
-                        raise StreamExpired(f"stream {stream_id} has expired")
-                    pipe.multi()
-                    pipe.hset(
-                        keys.meta,
-                        mapping={M_STATUS: STATUS_RUNNING, M_OWNER: owner},
-                    )
-                    return True
-
-                await self._guarded(keys, build)
-                fields = {_text(k): _text(v) for k, v in last[0][1].items()}
-                writer = StreamWriter(
-                    self,
-                    scope=scope,
-                    stream_id=stream_id,
-                    writer_id=writer_id,
-                    exclusive=_text(holder) == stream_id,
-                    created=False,
-                    seq=int(fields.get(F_SEQ) or 0),
-                    expires_in=left_ms / 1000,
-                )
-                self._own(writer)
-        except STORE_ERRORS as exc:
-            raise StreamStoreError("could not resume the stream") from exc
-        record_stream_operation(operation="resume", result="ok")
         return writer
 
     def spawn(
@@ -1406,12 +905,13 @@ class StreamBackend:
     ) -> asyncio.Task[None]:
         """Run *fn* as a task the backend owns, outside the request.
 
-        A disconnect never stops it.  When *fn* returns, raises or is
-        cancelled without having called :meth:`StreamWriter.finish` or
-        :meth:`StreamWriter.suspend`, the task writes a final ``stream.end``
-        event whose data gives the reason: ``{"reason": "done"}``,
-        ``{"reason": "error", "code": ...}`` or ``{"reason": "cancelled"}``.
-        On application shutdown the remaining tasks are cancelled.
+        A disconnect never stops it.  :meth:`StreamWriter.keepalive` runs
+        around it.  When *fn* returns, raises or is cancelled without having
+        called :meth:`StreamWriter.finish`, the task writes a final
+        ``stream.end`` event whose data gives the reason:
+        ``{"reason": "done"}``, ``{"reason": "error", "code": ...}`` or
+        ``{"reason": "cancelled"}``.  On application shutdown the remaining
+        tasks are cancelled.
 
         Raises:
             ValueError: If *writer* is a handle from a retried start
@@ -1430,17 +930,11 @@ class StreamBackend:
             # From here on a repeated cancel, from cancel() or shutdown, must
             # not interrupt the final write.
             writer._ending = True
-            if writer.finished or writer._ended or writer._suspended:
+            if writer.finished:
                 return
             try:
                 await writer._end(END_TYPE, data)
-            except StreamFinished:
-                if not writer._ended:
-                    raise
             except _END_ERRORS:
-                # Stop vouching for the run: at the next renewal it leaves the
-                # lease, and its readers end it as producer_lost.
-                self._forget(writer)
                 logger.warning(
                     "Could not end stream %s; readers will see it as lost",
                     writer.stream_id,
@@ -1449,14 +943,11 @@ class StreamBackend:
 
         async def run() -> None:
             try:
-                await fn(writer)
+                async with writer.keepalive():
+                    await fn(writer)
             except asyncio.CancelledError:
                 await end({"reason": "cancelled"})
                 return
-            except StreamFinished:
-                if writer._ended:
-                    return  # a reader ended the run; nothing to add
-                raise
             except Exception as exc:
                 logger.exception("Stream producer for %s failed", writer.stream_id)
                 code = getattr(exc, "code", None)
@@ -1485,75 +976,33 @@ class StreamBackend:
         task.add_done_callback(forget)
         return task
 
-    async def cancel(self, stream_id: str, *, scope: str) -> bool:
-        """Ask the run to stop.
+    async def cancel(self, stream_id: str, *, scope: str) -> None:
+        """End the run now, with a ``stream.end`` whose reason is ``cancelled``.
 
-        Sets the cancel flag, which the producer reads on its next append, and
-        tells the owning process, which cancels a producer started by
-        :meth:`spawn` within ``stream_lease_interval`` - at once when the
-        owner is this process.  A suspended run has no producer, so it is
-        ended here, with a ``stream.end`` whose reason is ``cancelled``.
-
-        Returns:
-            ``True`` if the run was still going, ``False`` if it had ended.
+        Readers stop at once.  A producer started by :meth:`spawn` in this
+        process is cancelled too; one in another process is not told, and
+        whatever it writes afterwards lands after the final entry, where no
+        reader looks.  Cancelling a run that already ended changes nothing.
 
         Raises:
             StreamInvalidName: If *scope* or *stream_id* is invalid.
             StreamNotFound: If there is no such stream in this scope.
+            StreamStoreError: If Redis cannot be reached.
         """
         await self._require_support()
         check_name(scope, stream_id)
-        keys = _keys(scope, stream_id)
-        found: dict[str, str] = {}
-        end = _final_xadd(keys, END_TYPE, self._encode({"reason": "cancelled"}))
-
-        def build(meta: dict[str, str], pipe: Any) -> bool:
-            status = meta.get(M_STATUS)
-            if status is None:
-                raise StreamNotFound(f"no stream {stream_id} in this scope")
-            if status == STATUS_FINISHED:
-                return False
-            found.update(meta)
-            pipe.multi()
-            pipe.hset(keys.meta, M_CANCEL, "1")
-            if status == STATUS_SUSPENDED:
-                _queue_end(pipe, end, keys, stream_id, get_settings().stream_done_ttl)
-            return True
-
-        if await self._guarded(keys, build) is None:
-            return False
-        if found.get(M_STATUS) == STATUS_SUSPENDED:
-            record_stream_operation(operation="cancel", result="ok")
-            return True
-        proc = _owner_proc(found.get(M_OWNER))
-        if proc == self._proc:
-            self._cancel_local(scope, stream_id)
-        elif proc is not None:
-            cancels = _cancel_key(proc)
-            try:
-                async with self._client().pipeline(transaction=True) as pipe:
-                    pipe.sadd(cancels, _member(scope, stream_id))
-                    pipe.expire(cancels, get_settings().stream_lease_ttl)
-                    await pipe.execute()
-            except STORE_ERRORS:
-                # The flag is set; the producer still sees it on its next
-                # append.
-                logger.debug("Could not notify the owner of a cancel", exc_info=True)
+        key = _key(scope, stream_id)
+        payload = self._encode({"reason": "cancelled"})
+        replies = await self._pipeline(
+            lambda pipe: _queue_end(pipe, key, END_TYPE, payload, None),
+            transaction=True,
+        )
+        if _text(replies[0]) is None:
+            raise StreamNotFound(f"no stream {stream_id} in this scope")
+        task = self._spawned.get((scope, stream_id))
+        if task is not None and not task.done():
+            self._cancel_unless_ending({task})
         record_stream_operation(operation="cancel", result="ok")
-        return True
-
-    async def active(self, scope: str) -> str | None:
-        """Return the ID of the scope's active run, or ``None``.
-
-        Raises:
-            StreamInvalidName: If *scope* is invalid.
-        """
-        await self._require_support()
-        check_name(scope)
-        try:
-            return _text(await self._client().get(_active_key(scope)))
-        except STORE_ERRORS as exc:
-            raise StreamStoreError("could not read the active run") from exc
 
     # -- reader side ---------------------------------------------------------
 
@@ -1579,8 +1028,8 @@ class StreamBackend:
         With no *after* it reads the whole stream, and fails if anything was
         trimmed.  The reader replays the events after *after*, follows the
         live stream, and stops after the final event; it is empty when
-        *after* is already at or past the final event.  It holds nothing in
-        Redis until iterated, and closes on ``async with`` exit or
+        *after* is already the final event.  It holds nothing in Redis until
+        iterated, and closes on ``async with`` exit or
         :meth:`StreamReader.aclose`.
 
         Unlike :meth:`sse` it takes no reader slot, so
@@ -1588,9 +1037,9 @@ class StreamBackend:
 
         Raises:
             StreamInvalidName: *scope* or *stream_id* is invalid.
-            StreamNotFound: Unknown stream, or one from another scope.
-            StreamExpired: The stream expired, or entries after *after* were
-                trimmed.
+            StreamNotFound: No such stream in this scope: unknown, expired,
+                or another scope's.
+            StreamExpired: Entries after *after* were trimmed.
             StreamCursorAhead: *after* is past the stream's last entry.
             StreamInvalidCursor: *after* is not a valid entry ID.
         """
@@ -1624,24 +1073,23 @@ class StreamBackend:
     ) -> _ReadPlan | None:
         """Check the stream and the cursor, and read the first page.
 
-        Returns ``None`` when the cursor is at or past the final entry.  Runs
-        as one transaction, so the checks and the first page are one snapshot
-        and no trim can fall between them.
+        Returns ``None`` when the cursor is the final entry.  Runs as one
+        transaction, so the checks and the first page are one snapshot and no
+        trim can fall between them.
         """
         check_name(scope, stream_id)
         cursor = parse_cursor(after) if after is not None else _START
-        keys = _keys(scope, stream_id)
+        key = _key(scope, stream_id)
         page = get_settings().stream_replay_page
 
         def build(pipe: Any) -> None:
-            pipe.hmget(keys.meta, _META_FIELDS)
-            pipe.exists(keys.stream)
-            pipe.xinfo_stream(keys.stream)
+            pipe.exists(key)
+            pipe.xinfo_stream(key)
             if cursor != _START:
-                pipe.xrange(keys.stream, _format(cursor), _format(cursor))
+                pipe.xrange(key, _format(cursor), _format(cursor))
             # XRANGE with an exclusive start, not XREAD: redis-py cannot
             # queue XREAD, whose keys move, in an async Cluster transaction.
-            pipe.xrange(keys.stream, f"({_format(cursor)}", "+", count=page)
+            pipe.xrange(key, f"({_format(cursor)}", "+", count=page)
 
         try:
             async with self._client().pipeline(transaction=True) as pipe:
@@ -1649,26 +1097,20 @@ class StreamBackend:
                 replies = list(await pipe.execute(raise_on_error=False))
         except STORE_ERRORS as exc:
             raise StreamStoreError("could not read the stream") from exc
-        for reply in (replies[0], replies[1]):
-            if isinstance(reply, Exception):
-                raise StreamStoreError("could not read the stream") from reply
-
-        meta = _meta_reply(replies[0])
-        if M_STATUS not in meta:
+        if isinstance(replies[0], Exception):
+            raise StreamStoreError("could not read the stream") from replies[0]
+        if not replies[0]:
             record_stream_operation(operation="read", result="not_found")
             raise StreamNotFound(f"no stream {stream_id} in this scope")
-        if not replies[1]:
-            # open() creates the stream with meta, so meta alone is a run whose
-            # entries expired.
-            record_stream_operation(operation="read", result="expired")
-            raise StreamExpired(f"stream {stream_id} has expired")
+        info = replies[1]
+        if isinstance(info, Exception):
+            raise StreamStoreError("could not read the stream") from info
 
-        info = replies[2] if not isinstance(replies[2], Exception) else None
         last_generated = _info_id(info, "last-generated-id")
         if cursor != _START and (last_generated is None or cursor > last_generated):
             record_stream_operation(operation="read", result="ahead")
             raise StreamCursorAhead(f"cursor {_format(cursor)} is ahead of the stream")
-        own = replies[3] if cursor != _START else None
+        own = replies[2] if cursor != _START else None
         own_fields: dict[str | None, str | None] = {}
         if own and not isinstance(own, Exception):
             own_fields = {_text(k): _text(v) for k, v in own[0][1].items()}
@@ -1682,16 +1124,6 @@ class StreamBackend:
             )
         first_reply = replies[-1]
         first = [] if isinstance(first_reply, Exception) else list(first_reply)
-        if (
-            meta.get(M_STATUS) == STATUS_FINISHED
-            and len(first) < page
-            and not any(_to_entry(i, f)[0].final for i, f in first)
-        ):
-            # The run ended, and everything after the cursor fits in one page
-            # with no final entry in it: the cursor is past the final entry,
-            # where at most a late writer's one entry can follow.
-            record_stream_operation(operation="read", result="finished")
-            return None
 
         last_seq: int | None = 0 if cursor == _START else None
         if own_fields:
@@ -1701,7 +1133,7 @@ class StreamBackend:
             operation="read", result="started" if cursor == _START else "resumed"
         )
         return _ReadPlan(
-            keys=keys,
+            key=key,
             stream_id=stream_id,
             cursor=cursor,
             last_seq=last_seq,
@@ -1717,27 +1149,37 @@ class StreamBackend:
         a Redis failure, or *deadline* (a ``time.monotonic()`` value) reached.
         No blocking read runs past *deadline*, so a caller that stops there
         stops on time.  The page with the final entry is the last.
+
+        Silence is measured here, on this process's clock: from the start of
+        the read, and from every entry it receives.  Past
+        ``stream_silence_timeout`` the reader ends the run as
+        ``producer_lost``.
         """
         settings = get_settings()
         heartbeat_ms = settings.stream_heartbeat_interval * 1000  # BLOCK is in ms
         cursor = plan.cursor
         last_seq = plan.last_seq
         pending = plan.first
+        last_seen = time.monotonic()
         failing_since: float | None = None
         while True:
             if pending:
+                last_seen = time.monotonic()
                 page: list[_Entry] = []
                 for raw_id, raw_fields in pending:
                     entry, seq = _to_entry(raw_id, raw_fields)
-                    if entry.type == START_TYPE:
-                        continue  # the SDK's own marker, never shown
+                    if entry.type in _HIDDEN_TYPES:
+                        continue  # the SDK's own markers, never shown
                     if seq is not None:
                         if last_seq is not None and seq > last_seq + 1:
                             record_stream_operation(operation="gap", result="ok")
                             page.append(
                                 _Entry.own(GAP_TYPE, {"missing": seq - last_seq - 1})
                             )
-                        last_seq = seq
+                        # The highest seen: appends in flight together can be
+                        # stored out of order, and a late lower number must
+                        # not make the next entry look like a second gap.
+                        last_seq = seq if last_seq is None else max(last_seq, seq)
                     page.append(entry)
                     if entry.final:
                         yield page
@@ -1757,10 +1199,14 @@ class StreamBackend:
                 block_ms = min(block_ms, left_ms)
             try:
                 reply = await self._client().xread(
-                    {plan.keys.stream: _format(cursor)},
+                    {plan.key: _format(cursor)},
                     count=settings.stream_replay_page,
                     block=max(1, block_ms),  # BLOCK 0 would wait forever
                 )
+                if failing_since is not None:
+                    # Redis was out, so silence proved nothing: the producer
+                    # gets a full timeout of reachable Redis again.
+                    last_seen = time.monotonic()
                 failing_since = None
             except STORE_ERRORS:
                 now = time.monotonic()
@@ -1774,102 +1220,61 @@ class StreamBackend:
             pending = _xread_entries(reply)
             if pending:
                 continue
-            if block_ms < heartbeat_ms:
-                yield []  # cut short by the deadline, not a quiet heartbeat
+            if time.monotonic() - last_seen < settings.stream_silence_timeout:
+                yield []
                 continue
-            state = await self._check_producer(plan)
+            state, final_id = await self._end_lost(plan)
+            if state == "ended" and final_id and parse_cursor(final_id) <= cursor:
+                return  # the run ended before this cursor: nothing will follow
             if state == "gone":
-                return
+                return  # the stream itself is gone: the reconnect gets 404
             if state == "lost_read_only":
                 yield [_Entry.own(ERROR_TYPE, {"code": "producer_lost"})]
                 return
-            if state == "ended":
-                continue  # the next read returns the final entry
-            yield []
+            if state == "retry":
+                last_seen = time.monotonic()  # Redis failed; ask again later
+            # "ended": the next read returns the final entry
 
     def _event(self, entry: _Entry) -> StreamEvent:
         data = entry.data if entry.id is None else self._decode(entry.raw)
         return StreamEvent(entry.id, entry.type, data, entry.final)
 
-    async def _check_producer(self, plan: _ReadPlan) -> str:
-        """On a quiet heartbeat: is the producer alive, and does the stream exist?
+    async def _end_lost(self, plan: _ReadPlan) -> tuple[str, str | None]:
+        """Write the final entry a silent producer never wrote.
 
-        A running run its owner no longer vouches for will never be ended by
-        its producer, so the reader writes the final entry it never wrote.  A
-        suspended run is left alone: another process will resume it.  A run
-        whose entries expired, whatever its status, is gone.
+        The same entry and the same idempotency key as a writer's final
+        entry, so a producer that was only slow and ends the run a moment
+        later adds nothing, and a run that already ended returns its final
+        entry instead.
+
+        Returns:
+            ``("ended", final entry ID)``, ``("gone", None)`` when the stream
+            no longer exists, ``("lost_read_only", None)`` when this client
+            may not write, or ``("retry", None)`` when Redis failed.
         """
+        payload = self._encode({"reason": "producer_lost"})
         try:
-            async with self._client().pipeline(transaction=True) as pipe:
-                pipe.hmget(plan.keys.meta, [M_STATUS, M_OWNER])
-                pipe.exists(plan.keys.stream)
-                (status, owner), exists = await pipe.execute()
-            status, owner = _text(status), _text(owner)
-            if status is None or not exists:
-                return "gone"  # expired or evicted mid-read: the reconnect gets 410
-            if status != STATUS_RUNNING or await self._vouched(
-                owner, _scope_of(plan.keys), plan.stream_id
-            ):
-                return "quiet"
-        except STORE_ERRORS:
-            return "quiet"
-        try:
-            final_id = await self._end_lost(plan, owner)
+            replies = await self._pipeline(
+                lambda pipe: _queue_end(pipe, plan.key, END_TYPE, payload, None),
+                transaction=True,
+            )
         except StreamStoreError as exc:
             if isinstance(exc.__cause__, NoPermissionError):
-                return "lost_read_only"
-            logger.debug("Could not end a lost producer's stream", exc_info=True)
-            return "quiet"
-        if final_id == "":
-            return "quiet"
-        # No final entry means the stream itself is gone: stop, and the
-        # reconnect gets 410.
-        return "ended" if final_id is not None else "gone"
-
-    async def _end_lost(self, plan: _ReadPlan, owner: str | None) -> str | None:
-        """Write the final entry a lost producer never wrote, and return its ID.
-
-        The same entry, the same idempotency key and the same transaction as
-        a writer's final entry, run only while meta still shows the run going
-        under the same owner.  Returns ``None`` when the stream is gone, and
-        ``""`` when the run changed hands or state meanwhile.
-        """
-        settings = get_settings()
-        keys = plan.keys
-        args = _final_xadd(keys, END_TYPE, self._encode({"reason": "producer_lost"}))
-
-        def build(meta: dict[str, str], pipe: Any) -> bool:
-            if meta.get(M_STATUS) != STATUS_RUNNING or meta.get(M_OWNER) != owner:
-                return False
-            pipe.multi()
-            _queue_end(pipe, args, keys, plan.stream_id, settings.stream_done_ttl)
-            return True
-
-        replies = await self._guarded(keys, build)
-        if replies is None:
-            return ""  # the run moved on meanwhile; leave it be
+                return "lost_read_only", None
+            logger.debug("Could not end a silent producer's stream", exc_info=True)
+            return "retry", None
         final_id = _text(replies[0])
         if final_id is None:
-            return None
+            return "gone", None
         record_stream_operation(operation="producer_lost", result="ok")
-        return final_id
+        return "ended", final_id
 
     # -- readers and lifecycle -----------------------------------------------
 
     def _start(self, capabilities: _StreamCapabilities) -> None:
-        """Bind to a freshly built pool.  Called by the lifespan at startup.
-
-        A fresh process ID too: the backend is built with the app, and every
-        worker forked from that process must hold a lease of its own.
-        """
+        """Bind to a freshly built pool.  Called by the lifespan at startup."""
         self._caps = capabilities
         self._closing = False
-        self._proc = _new_id()
-        self._lease_ready = False
-
-    def _check_open(self) -> None:
-        if self._closing:
-            raise StreamStoreError("the application is shutting down")
 
     def _reserve_reader(self) -> bool:
         if self._closing or self._readers >= get_settings().stream_max_readers:
@@ -1886,9 +1291,8 @@ class StreamBackend:
         """Stop the feature: close live readers and cancel spawned producers.
 
         Each cancelled producer writes a ``stream.end`` with reason
-        ``cancelled``, so its readers do not hang.  Then the process lease is
-        dropped, so readers of a producer that did not stop see it lost at
-        once.  Called by the lifespan before the connection pool closes.
+        ``cancelled``, so its readers do not hang.  Called by the lifespan
+        before the connection pool closes.
         """
         self._closing = True
         # Let producers spawned a moment ago start first: a task cancelled
@@ -1914,25 +1318,12 @@ class StreamBackend:
             # for socket writes, can lose a cancel that arrives as the write
             # completes.  Repeat it.
             self._cancel_unless_ending(pending)
-        await self._drop_lease()
-
-    async def _drop_lease(self) -> None:
-        task, self._lease_task = self._lease_task, None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        if self._lease_ready:
-            self._lease_ready = False
-            try:
-                await self._client().delete(_lease_key(self._proc))
-            except _DROP_ERRORS:
-                logger.debug("Could not drop the stream lease", exc_info=True)
 
     def _cancel_unless_ending(self, tasks: set[asyncio.Task[None]]) -> None:
         """Cancel spawned producers, except one already writing its final entry.
 
         A cancel there would abort that write, and readers would wait out the
-        heartbeat to see ``producer_lost`` instead of the real reason.
+        silence timeout to see ``producer_lost`` instead of the real reason.
         """
         for task in tasks:
             writer = self._writers.get(task)
@@ -1942,16 +1333,6 @@ class StreamBackend:
 
 def _new_id() -> str:
     return secrets.token_urlsafe(9)
-
-
-def _member(scope: str, stream_id: str) -> str:
-    # Splits back in one way only: a stream ID never holds ":".
-    return f"{scope}:{stream_id}"
-
-
-def _scope_of(keys: _Keys) -> str:
-    """The scope in a run's keys: what sits between the active key's braces."""
-    return keys.active[keys.active.index("{") + 1 : -1]
 
 
 def _history_lost(info: Any, cursor: Cursor, *, own_present: bool) -> bool:
@@ -1967,7 +1348,7 @@ def _history_lost(info: Any, cursor: Cursor, *, own_present: bool) -> bool:
     cursor (``0-0``, the whole stream) any removal is a gap.
     """
     if not isinstance(info, dict):
-        return False  # no stream yet, so nothing was removed
+        return False
     max_deleted = _info_id(info, "max-deleted-entry-id")
     if max_deleted is not None and cursor < max_deleted:
         return True

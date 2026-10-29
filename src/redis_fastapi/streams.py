@@ -328,14 +328,26 @@ def check_stream_settings() -> None:
     settings = get_settings()
     if "{" in settings.prefix or "}" in settings.prefix:
         raise StreamConfigurationError(
-            "The key prefix must not contain '{' or '}': Redis hashes on the "
-            "first braces in a key, which would put every stream in one slot."
+            "The key prefix must not contain '{' or '}': Redis Cluster hashes "
+            "on the first braces in a key, which would put every stream in "
+            "one slot."
         )
     block = settings.stream_heartbeat_interval
-    if settings.stream_lease_ttl <= settings.stream_lease_interval:
+    if settings.stream_silence_timeout <= 2 * block:
         raise StreamConfigurationError(
-            "stream_lease_ttl must be longer than "
-            "stream_lease_interval, or a live producer looks dead."
+            "stream_silence_timeout must be more than twice "
+            "stream_heartbeat_interval, or a live producer looks dead."
+        )
+    if settings.stream_done_ttl > settings.stream_max_run:
+        raise StreamConfigurationError(
+            "stream_done_ttl must not exceed stream_max_run: ending a run only "
+            "ever shortens its lifetime."
+        )
+    # Redis keeps IDMP history at most a day, and it must cover a run's life.
+    if max(settings.stream_max_run, settings.stream_done_ttl) > 86_400:
+        raise StreamConfigurationError(
+            "stream_max_run and stream_done_ttl must be at most 86400 s: Redis "
+            "remembers a stream's idempotency keys for at most a day."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(

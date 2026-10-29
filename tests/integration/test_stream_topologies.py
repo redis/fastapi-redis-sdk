@@ -1,4 +1,4 @@
-"""The write path, the process lease and run handoff, on every Redis topology.
+"""The write path, silence, cancels and support detection, on every topology.
 
 Each test runs once per endpoint ``stream_case`` was given: standalone always,
 an OSS Cluster and Redis Enterprise when their URLs are set.  Every process in
@@ -9,26 +9,18 @@ be.
 from __future__ import annotations
 
 import asyncio
-import gc
 from typing import Any
 
 import pytest
 from redis.asyncio import Redis
 
-from redis_fastapi import (
-    StreamBackend,
-    StreamBusy,
-    StreamFinished,
-    StreamNotFound,
-    StreamWriter,
-)
+from redis_fastapi import StreamBackend, StreamNotFound, StreamWriter
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import _keys, _lease_key, probe_streams_support
+from redis_fastapi.stream_backend import _key, probe_streams_support
 from tests.stream_support import (
     collect,
     command_calls,
     configure,
-    crash,
     gated_exec,
     stream_backend,
     stream_client,
@@ -64,154 +56,252 @@ class _Processes:
             await client.aclose()
 
 
-async def test_an_append_writes_only_its_entry(stream_case: Case) -> None:
+async def _sent(client: Any, before: dict[str, int]) -> dict[str, int]:
+    """The commands the server ran since *before*, without the INFO reads."""
+    after = await command_calls(client)
+    return {
+        name: after[name] - before.get(name, 0)
+        for name in after
+        if after[name] != before.get(name, 0) and not name.startswith("info")
+    }
+
+
+def _finals(entries: list[Any]) -> list[dict[str, Any]]:
+    return [fields for _, fields in entries if fields.get("f") == "1"]
+
+
+# ---------------------------------------------------------------------------
+# What each operation sends
+# ---------------------------------------------------------------------------
+
+
+async def test_open_is_one_transaction_and_one_config(stream_case: Case) -> None:
+    backend, client, _ = stream_case
+    before = await command_calls(client)
+    writer = await backend.open(scope="chat:1", stream_id="r1")
+    assert writer.created
+    sent = await _sent(client, before)
+    assert sent.pop("xadd") == 1 and sent.pop("expire") == 1
+    assert sent.pop("xcfgset") == 1  # only for the call that created the run
+    assert set(sent) <= {"multi", "exec"}
+    before = await command_calls(client)
+    assert not (await backend.open(scope="chat:1", stream_id="r1")).created
+    assert "xcfgset" not in await _sent(client, before)
+    assert 0 < await client.ttl(_key("chat:1", "r1")) <= get_settings().stream_max_run
+
+
+async def test_an_append_is_one_xadd(stream_case: Case) -> None:
     backend, client, _ = stream_case
     writer = await backend.open(scope="chat:1", stream_id="r1")
-    keys = _keys("chat:1", "r1")
-    await client.expire(keys.stream, 2000)
+    await writer.append("delta", {"n": 0})
+    before = await command_calls(client)
+    await writer.append("delta", {"n": 1})
+    assert await _sent(client, before) == {"xadd": 1}
+
+
+async def test_an_append_leaves_the_lifetime_alone(stream_case: Case) -> None:
+    backend, client, _ = stream_case
+    writer = await backend.open(scope="chat:1", stream_id="r1")
+    key = _key("chat:1", "r1")
+    await client.expire(key, 2000)
     for n in range(3):
         await writer.append("delta", {"n": n})
-    assert 1990 <= await client.ttl(keys.stream) <= 2000  # no TTL write
+    assert 1990 <= await client.ttl(key) <= 2000
     await writer.finish("message", {})
     events = await collect(backend, "r1", "chat:1")
     assert [e.data for e in events] == [{"n": 0}, {"n": 1}, {"n": 2}, {}]
 
 
-async def test_a_crashed_process_is_reported_lost_and_frees_the_scope(
-    stream_case: Case, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async with _Processes() as processes:
-        backend, _, _ = stream_case
-        configure(monkeypatch, stream_heartbeat_interval=1)
-        crashed, crashed_client = processes.spawn()
-        writer = await crashed.open(scope="chat:1", stream_id="r1")
-        await writer.append("delta", {})
-        with pytest.raises(StreamBusy):
-            await backend.open(scope="chat:1", stream_id="r2")
-        await crash(crashed, crashed_client)
-        events = await asyncio.wait_for(collect(backend, "r1", "chat:1"), 5)
-        assert events[-1].data == {"reason": "producer_lost"}
-        with pytest.raises(StreamFinished, match="reader"):
-            await writer.append("delta", {})
-        assert (await backend.open(scope="chat:1", stream_id="r2")).created
-
-
-async def test_a_dropped_writer_is_reported_lost(
-    stream_case: Case, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async with _Processes() as processes:
-        backend, _, _ = stream_case
-        configure(monkeypatch, stream_heartbeat_interval=1, stream_lease_interval=1)
-        owner, _ = processes.spawn()
-        writer = await owner.open(scope="chat:1", stream_id="r1")
-        await writer.append("delta", {})
-        del writer
-        gc.collect()
-        events = await asyncio.wait_for(collect(backend, "r1", "chat:1"), 5)
-        assert events[-1].data == {"reason": "producer_lost"}
-
-
-async def test_a_cancel_reaches_another_process_during_a_tool_call(
-    stream_case: Case, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async with _Processes() as processes:
-        backend, _, _ = stream_case
-        configure(monkeypatch, stream_lease_interval=1, stream_lease_ttl=3)
-        owner, _ = processes.spawn()
-
-        async def tool_call(writer: StreamWriter) -> None:
-            await writer.append("tool_call", {})
-            await asyncio.sleep(3600)
-
-        task = (await owner.start(tool_call, scope="chat:1", stream_id="r1"))._task
-        assert task is not None
-        await asyncio.sleep(0.05)
-        assert await backend.cancel("r1", scope="chat:1")
-        await asyncio.wait_for(task, 5)
-        events = await collect(backend, "r1", "chat:1")
-        assert events[-1].data == {"reason": "cancelled"}
-
-
-async def test_suspend_then_resume_once_in_another_process(stream_case: Case) -> None:
-    async with _Processes() as processes:
-        backend, client, _ = stream_case
-        writer = await backend.open(scope="chat:1", stream_id="r1")
-        await writer.append("tool_call", {"n": 1})
-        await writer.suspend(600)
-        keys = _keys("chat:1", "r1")
-        assert await client.hget(keys.meta, "status") == "suspended"
-        assert await client.ttl(keys.stream) >= 600
-        with pytest.raises(ValueError, match="suspended"):
-            await writer.append("delta", {})
-        later, _ = processes.spawn()
-        again, _ = processes.spawn()
-        resumed = await later.resume("r1", scope="chat:1")
-        with pytest.raises(StreamBusy):
-            await again.resume("r1", scope="chat:1")  # a resume delivered twice
-        await resumed.append("tool_result", {"n": 2})
-        await resumed.finish("message", {"n": 3})
-        events = await collect(backend, "r1", "chat:1")
-        assert [(e.type, e.data) for e in events] == [
-            ("tool_call", {"n": 1}),
-            ("tool_result", {"n": 2}),
-            ("message", {"n": 3}),
-        ]
-        entries = await client.xrange(keys.stream)
-        # The sequence goes on without a hole, so no reader sees a gap.
-        assert [f.get("q") for _, f in entries] == [None, "1", "2", "3"]
-
-
-async def test_cancel_ends_a_suspended_run(stream_case: Case) -> None:
-    backend, _, _ = stream_case
+async def test_concurrent_appends_store_every_event(stream_case: Case) -> None:
+    # Each append takes its own sequence number before it is sent, so two in
+    # flight never share an idempotency key, and Redis keeps both.
+    backend, client, _ = stream_case
     writer = await backend.open(scope="chat:1", stream_id="r1")
-    await writer.suspend(86_400)
-    assert await backend.cancel("r1", scope="chat:1")
-    events = await asyncio.wait_for(collect(backend, "r1", "chat:1"), 5)
-    assert events[-1].data == {"reason": "cancelled"}
-    assert await backend.active("chat:1") is None
-    assert await backend.cancel("r1", scope="chat:1") is False
+    first, second = await asyncio.gather(
+        writer.append("tool_call", {"n": 1}), writer.append("tool_call", {"n": 2})
+    )
+    assert first != second
+    entries = await client.xrange(_key("chat:1", "r1"))
+    assert sorted(f["q"] for _, f in entries if "q" in f) == ["1", "2"]
 
 
-async def test_a_reader_never_ends_a_run_resumed_before_its_exec(
-    stream_case: Case, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async with _Processes() as processes:
-        # The reader decided the run was lost; another process resumes it before
-        # the reader's EXEC.  The WATCH on meta aborts the end.
-        backend, _, _ = stream_case
-        crashed, crashed_client = processes.spawn()
-        writer = await crashed.open(scope="chat:1", stream_id="r1")
-        await writer.append("delta", {})
-        await crash(crashed, crashed_client)
-        reader, reader_client = processes.spawn()
-        plan = await reader._prepare("r1", scope="chat:1", after=None)
-        assert plan is not None
-        owner = await reader_client.hget(plan.keys.meta, "owner")
-        with gated_exec(reader_client, monkeypatch) as gate:
-            ending = asyncio.create_task(reader._end_lost(plan, owner))
-            await asyncio.wait_for(gate["entered"].wait(), 3)
-            resumed = await backend.resume("r1", scope="chat:1")
-            gate["release"].set()
-            assert await asyncio.wait_for(ending, 5) == ""  # moved on: left alone
-        await resumed.append("delta", {})
-        final = await resumed.finish("message", {})
-        events = await collect(backend, "r1", "chat:1")
-        assert events[-1].id == final and events[-1].type == "message"
+async def test_ending_twice_never_extends_the_run(stream_case: Case) -> None:
+    backend, client, _ = stream_case
+    writer = await backend.open(scope="chat:1", stream_id="r1")
+    final = await writer.finish("message", {})
+    key = _key("chat:1", "r1")
+    await client.expire(key, 30)  # most of stream_done_ttl has passed
+    await backend.cancel("r1", scope="chat:1")
+    assert await client.ttl(key) <= 30
+    assert len(_finals(await client.xrange(key))) == 1
+    assert (await collect(backend, "r1", "chat:1"))[-1].id == final
 
 
-async def test_concurrent_starts_admit_one_run(stream_case: Case) -> None:
+async def test_a_created_run_widens_its_idmp_window_first(stream_case: Case) -> None:
+    # Redis's default IDMP window is 100 s.  open() widens it to the run's
+    # whole life before anything else writes, because XCFGSET clears the
+    # IDMP history: an append made after open() is still deduplicated.
+    backend, client, _ = stream_case
+    writer = await backend.open(scope="chat:1", stream_id="r1")
+    first = await writer.append("delta", {})
+    retried = await backend._command(
+        ["XADD", _key("chat:1", "r1"), "NOMKSTREAM", "IDMP", writer._writer_id, "1"]
+        + ["*", "t", "delta", "d", "{}", "q", "1"]
+    )
+    assert retried == first  # the same pair again: deduplicated
+    info = await client.xinfo_stream(_key("chat:1", "r1"))
+    settings = get_settings()
+    assert int(info["idmp-duration"]) == max(
+        settings.stream_max_run, settings.stream_done_ttl
+    )
+
+
+async def test_a_retried_start_is_not_created_again(stream_case: Case) -> None:
     backend, client, _ = stream_case
     results = await asyncio.gather(
-        *(backend.open(scope="chat:1", stream_id=f"r{i}") for i in range(6)),
-        return_exceptions=True,
+        *(backend.open(scope="chat:1", stream_id="r1") for _ in range(6))
     )
-    created = [r for r in results if isinstance(r, StreamWriter)]
-    assert len(created) == 1
-    assert all(isinstance(r, StreamBusy) for r in results if r not in created)
-    # Only the winner left keys behind: no other run has meta.
-    for i in range(6):
-        meta = _keys("chat:1", f"r{i}").meta
-        assert bool(await client.exists(meta)) == (f"r{i}" == created[0].stream_id)
+    assert sum(w.created for w in results) == 1
+    entries = await client.xrange(_key("chat:1", "r1"))
+    assert {f["t"] for _, f in entries} == {"stream.start"}  # hidden from readers
+    writer = next(w for w in results if w.created)
+    await writer.finish("message", {})
+    assert [e.type for e in await collect(backend, "r1", "chat:1")] == ["message"]
+
+
+# ---------------------------------------------------------------------------
+# Silence: a lost producer, and keepalive()
+# ---------------------------------------------------------------------------
+
+
+async def test_a_silent_producer_is_reported_lost(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend, client, _ = stream_case
+    configure(monkeypatch, stream_heartbeat_interval=1, stream_silence_timeout=3)
+    async with _Processes() as processes:
+        crashed, _ = processes.spawn()
+        writer = await crashed.open(scope="chat:1", stream_id="r1")
+        await writer.append("delta", {})
+        # The producer writes nothing more, as after a hard kill.
+        events = await asyncio.wait_for(collect(backend, "r1", "chat:1"), 10)
+        assert [e.type for e in events] == ["delta", "stream.end"]
+        assert events[-1].data == {"reason": "producer_lost"}
+        key = _key("chat:1", "r1")
+        assert await client.ttl(key) <= get_settings().stream_done_ttl
+        # A producer that was only stalled keeps writing, after the end.
+        await writer.append("delta", {"late": True})
+        assert await writer.finish("message", {}) == events[-1].id
+        assert len(_finals(await client.xrange(key))) == 1
+
+
+async def test_keepalive_keeps_a_quiet_producer_alive(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend, _, _ = stream_case
+    configure(monkeypatch, stream_heartbeat_interval=1, stream_silence_timeout=3)
+    released = asyncio.Event()
+
+    async def slow_tool(writer: StreamWriter) -> None:
+        await writer.append("tool_call", {})
+        await released.wait()  # quiet for longer than the silence timeout
+        await writer.append("tool_result", {})
+
+    async with _Processes() as processes:
+        owner, _ = processes.spawn()
+        await owner.start(slow_tool, scope="chat:1", stream_id="r1")
+        reading = asyncio.create_task(collect(backend, "r1", "chat:1"))
+        await asyncio.sleep(5)  # the quiet stretch itself
+        assert not reading.done()
+        released.set()
+        events = await asyncio.wait_for(reading, 10)
+    assert [e.type for e in events] == ["tool_call", "tool_result", "stream.end"]
+    assert events[-1].data == {"reason": "done"}  # pings never shown
+
+
+async def test_a_reader_stops_when_the_stream_disappears(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend, client, _ = stream_case
+    configure(monkeypatch, stream_heartbeat_interval=1, stream_silence_timeout=3)
+    await backend.open(scope="chat:1", stream_id="r1")
+    reader = await backend.follow("r1", scope="chat:1")  # checks pass first
+
+    async def drain() -> list[Any]:
+        async with reader:
+            return [event async for event in reader]
+
+    reading = asyncio.create_task(drain())
+    await client.delete(_key("chat:1", "r1"))
+    assert await asyncio.wait_for(reading, 10) == []
+    assert not await client.exists(_key("chat:1", "r1"))  # never recreated
+
+
+# ---------------------------------------------------------------------------
+# Cancels and concurrent ends
+# ---------------------------------------------------------------------------
+
+
+async def _forever(writer: StreamWriter) -> None:
+    while True:
+        await writer.append("delta", {})
+        await asyncio.sleep(0.05)
+
+
+async def test_a_cancel_in_the_producers_process_stops_it(stream_case: Case) -> None:
+    backend, client, _ = stream_case
+    writer = await backend.start(_forever, scope="chat:1", stream_id="r1")
+    assert writer._task is not None
+    await backend.cancel("r1", scope="chat:1")
+    await asyncio.wait_for(writer._task, 5)
+    events = await collect(backend, "r1", "chat:1")
+    assert events[-1].data == {"reason": "cancelled"}
+    assert len(_finals(await client.xrange(_key("chat:1", "r1")))) == 1
+
+
+async def test_a_cancel_from_another_process_ends_the_run_for_readers(
+    stream_case: Case,
+) -> None:
+    backend, client, _ = stream_case
+    async with _Processes() as processes:
+        owner, _ = processes.spawn()
+        writer = await owner.start(_forever, scope="chat:1", stream_id="r1")
+        assert writer._task is not None
+        await backend.cancel("r1", scope="chat:1")
+        events = await asyncio.wait_for(collect(backend, "r1", "chat:1"), 5)
+        assert events[-1].data == {"reason": "cancelled"}
+        # The producer is not told: it goes on until its own process stops it.
+        await asyncio.sleep(0.2)
+        assert not writer._task.done()
+    key = _key("chat:1", "r1")
+    assert len(_finals(await client.xrange(key))) == 1  # its end added nothing
+
+
+async def test_a_cancel_racing_a_finish_leaves_one_final_entry(
+    stream_case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend, client, _ = stream_case
+    async with _Processes() as processes:
+        canceller, canceller_client = processes.spawn()
+        writer = await backend.open(scope="chat:1", stream_id="r1")
+        await writer.append("delta", {})
+        with gated_exec(canceller_client, monkeypatch) as gate:
+            cancelling = asyncio.create_task(canceller.cancel("r1", scope="chat:1"))
+            await asyncio.wait_for(gate["entered"].wait(), 3)
+            final = await writer.finish("message", {"won": True})
+            gate["release"].set()
+            await asyncio.wait_for(cancelling, 5)
+    finals = _finals(await client.xrange(_key("chat:1", "r1")))
+    assert [f["t"] for f in finals] == ["message"]
+    events = await collect(backend, "r1", "chat:1")
+    assert events[-1].id == final
+
+
+async def test_cancelling_an_unknown_run_is_not_found(stream_case: Case) -> None:
+    backend, client, _ = stream_case
+    with pytest.raises(StreamNotFound):
+        await backend.cancel("nope", scope="chat:1")
+    assert not await client.exists(_key("chat:1", "nope"))  # never created
 
 
 # ---------------------------------------------------------------------------
@@ -257,124 +347,26 @@ async def test_detection_runs_once_and_asks_again_after_unknown(
 
 
 # ---------------------------------------------------------------------------
-# What an append sends, and the process lease
-# ---------------------------------------------------------------------------
-
-
-async def test_an_append_runs_one_xadd_and_one_read(
-    stream_case: Case, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    backend, client, _ = stream_case
-    configure(monkeypatch, stream_lease_interval=3600)  # no renewal mid-test
-    writer = await backend.open(scope="chat:1", stream_id="r1")
-    await writer.append("delta", {"n": 0})
-    before = await command_calls(client)
-    await writer.append("delta", {"n": 1})
-    after = await command_calls(client)
-    sent = {
-        name: after[name] - before.get(name, 0)
-        for name in after
-        if after[name] != before.get(name, 0) and not name.startswith("info")
-    }
-    assert sent == {"xadd": 1, "hmget": 1}
-
-
-async def test_lease_renewal_lists_the_runs_and_collects_cancels(
-    stream_case: Case,
-) -> None:
-    backend, client, prefix = stream_case
-    writer = await backend.open(scope="chat:1", stream_id="r1")
-    lease = _lease_key(backend._proc)
-    assert 0 < await client.ttl(lease) <= get_settings().stream_lease_ttl
-    # Another process asks this one to cancel r1.
-    cancels = f"{prefix}:stream-cancel:{{{backend._proc}}}"
-    await client.sadd(cancels, "chat:1:r1")
-    await backend._renew_lease()
-    assert await client.smembers(lease) == {"", "chat:1:r1"}
-    assert writer.cancelled
-    assert not await client.exists(cancels)
-
-
-async def test_a_dropped_writer_leaves_the_lease(stream_case: Case) -> None:
-    backend, client, _ = stream_case
-    writer = await backend.open(scope="chat:1", stream_id="r1")
-    await writer.append("delta", {})
-    del writer
-    gc.collect()
-    await backend._renew_lease()
-    assert await client.smembers(_lease_key(backend._proc)) == {""}
-
-
-# ---------------------------------------------------------------------------
-# What a reader concludes about a quiet run
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("state", "entries", "expected"),
-    [
-        ("running", "kept", "quiet"),
-        ("suspended", "kept", "quiet"),
-        ("finished", "kept", "quiet"),
-        ("lost", "kept", "ended"),
-        ("running", "expired", "gone"),
-        ("suspended", "expired", "gone"),
-        ("finished", "expired", "gone"),
-        ("lost", "expired", "gone"),
-    ],
-)
-async def test_a_quiet_reader_checks_the_producer(
-    stream_case: Case, state: str, entries: str, expected: str
-) -> None:
-    backend, client, _ = stream_case
-    keys = _keys("chat:1", "r1")
-    async with _Processes() as processes:
-        owner, owner_client = processes.spawn()
-        writer = await owner.open(scope="chat:1", stream_id="r1")
-        await writer.append("delta", {})
-        if state == "suspended":
-            await writer.suspend(600)
-        elif state == "finished":
-            await writer.finish("message", {})
-        elif state == "lost":
-            await crash(owner, owner_client)
-        plan = await backend._prepare("r1", scope="chat:1", after=None)
-        assert plan is not None
-        if entries == "expired":
-            await client.delete(keys.stream)
-        assert await backend._check_producer(plan) == expected
-    if entries == "expired":
-        assert not await client.exists(keys.stream)  # never recreated
-    if expected == "ended":
-        events = await collect(backend, "r1", "chat:1")
-        assert events[-1].data == {"reason": "producer_lost"}
-        assert await client.ttl(keys.stream) <= get_settings().stream_done_ttl
-        assert await client.get(keys.active) is None  # the slot is free
-
-
-# ---------------------------------------------------------------------------
-# Transactions through each client protocol
+# Through each client protocol
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("protocol", [2, 3])
-async def test_resume_and_read_through_either_protocol(
-    stream_case: Case, protocol: int
-) -> None:
+async def test_a_run_through_either_protocol(stream_case: Case, protocol: int) -> None:
     # redis-py applies a reply callback per command inside a transaction, and
-    # some RESP2 Cluster callbacks take no options: the lease renewal's
-    # SMEMBERS and the reads in resume() and follow() all go through them.
+    # some RESP2 Cluster callbacks take no options.
     client = stream_client(protocol)
     backend = stream_backend(client)
     try:
-        first = await backend.open(scope="chat:1", stream_id="r1")
-        await first.append("tool_call", {"n": 1})
-        await first.suspend(600)
-        resumed = await backend.resume("r1", scope="chat:1")
-        await resumed.append("tool_result", {"n": 2})
-        await resumed.finish("message", {"n": 3})
+        writer = await backend.open(scope="chat:1", stream_id="r1")
+        assert writer.created
+        assert not (await backend.open(scope="chat:1", stream_id="r1")).created
+        await writer.append("delta", {"n": 1})
+        await writer.append("delta", {"n": 2})
+        await writer.finish("message", {"n": 3})
         events = await collect(backend, "r1", "chat:1")
         assert [e.data for e in events] == [{"n": 1}, {"n": 2}, {"n": 3}]
+        await backend.cancel("r1", scope="chat:1")  # after the end: no change
         with pytest.raises(StreamNotFound):
             await backend.follow("nope", scope="chat:1")
     finally:

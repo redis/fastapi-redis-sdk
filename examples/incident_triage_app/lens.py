@@ -54,55 +54,26 @@ def _text(value: Any) -> Any:
 
 
 async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str, Any]]:
-    """The run's Redis keys, read as they are, under the SDK's key layout.
+    """The run's Redis key, read as it is, under the SDK's key layout.
 
-    The layout is documented in the streams guide: the scope is the hash
-    tag of every key, and every key uses the SDK's prefix setting.
+    The layout is documented in the streams guide: one stream per run, named
+    from the SDK's prefix setting, the scope and the run ID.
     """
-    prefix = get_settings().prefix
-    tag = f"{{{scope}}}"
-    stream = f"{prefix}:stream:{tag}:{stream_id}"
-    meta = f"{prefix}:stream-meta:{tag}:{stream_id}"
-    active = f"{prefix}:stream-active:{tag}"
-
-    keys: list[dict[str, Any]] = []
-    if await redis.exists(stream):
-        last = await redis.xrevrange(stream, count=1)
-        keys.append(
-            _key(
-                stream,
-                "Stream",
-                {
-                    "XLEN": await redis.xlen(stream),
-                    "last ID": _text(last[0][0]) if last else None,
-                    "TTL": await redis.ttl(stream),
-                },
-            )
+    stream = f"{get_settings().prefix}:stream:{scope}:{stream_id}"
+    if not await redis.exists(stream):
+        return []
+    last = await redis.xrevrange(stream, count=1)
+    return [
+        _key(
+            stream,
+            "Stream",
+            {
+                "XLEN": await redis.xlen(stream),
+                "last ID": _text(last[0][0]) if last else None,
+                "TTL": await redis.ttl(stream),
+            },
         )
-    raw_meta = await redis.hgetall(meta)
-    fields = {_text(k): _text(v) for k, v in raw_meta.items()}
-    if "status" in fields:
-        # The owner is "<process>:<writer>"; that process's lease vouches for
-        # the run.
-        proc = (fields.get("owner") or "").split(":", 1)[0]
-        lease = f"{prefix}:stream-proc:{{{proc}}}"
-        keys.append(
-            _key(
-                meta,
-                "Hash",
-                {
-                    "status": fields.get("status"),
-                    "cancel": int(fields.get("cancel") or 0),
-                    "owner lease TTL": (await redis.ttl(lease)) if proc else None,
-                    "TTL": await redis.ttl(meta),
-                },
-            )
-        )
-    if _text(await redis.get(active)) == stream_id:
-        keys.append(
-            _key(active, "String", {"value": stream_id, "TTL": await redis.ttl(active)})
-        )
-    return keys
+    ]
 
 
 @router.get("/lens")
@@ -117,12 +88,24 @@ async def lens(
 ) -> dict[str, Any]:
     keys: list[dict[str, Any]] = []
 
-    # The run: the stream ID the page follows, or the active one.
-    scope = f"triage:{subject}"
+    # The run: the stream ID the page follows, or the engineer's current one,
+    # which this app keeps itself (runs.py).
+    from examples.incident_triage_app.runs import _current, _scope
+
+    current = _current(subject)
+    current_id = _text(await redis.get(current))
+    if current_id is not None:
+        keys.append(
+            _key(
+                current,
+                "String",
+                {"value": current_id, "TTL": await redis.ttl(current)},
+            )
+        )
     if streams.supported is not False:  # streams off: show the other keys
-        stream_id = stream_id or await streams.active(scope)
+        stream_id = stream_id or current_id
         if stream_id:
-            keys.extend(await _stream_keys(redis, scope, stream_id))
+            keys.extend(await _stream_keys(redis, _scope(subject), stream_id))
 
     # The session: the key's TTL is the absolute clock, field d's the idle one.
     session_id = session_state_of(request).session_id

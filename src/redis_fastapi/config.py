@@ -341,10 +341,9 @@ class RedisSettings(BaseSettings):
         default=3600,
         gt=0,
         description=(
-            "TTL of a running stream, in seconds, set when it opens, so a "
-            "producer killed mid-run leaves a stream that expires by itself.  "
-            "An append past half of it extends it; StreamWriter.extend() "
-            "covers a longer wait."
+            "Lifetime of a run, in seconds, set when it opens, so a producer "
+            "killed mid-run leaves a stream that expires by itself.  Appends "
+            "never extend it; StreamWriter.extend() keeps a longer run."
         ),
     )
     stream_done_ttl: int = Field(
@@ -352,15 +351,9 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "TTL after the final entry, in seconds: how long a client can "
-            "still reconnect and read a finished stream."
-        ),
-    )
-    stream_gone_ttl: int = Field(
-        default=3600,
-        ge=0,
-        description=(
-            "How long a stream's metadata outlives the stream, in seconds, so "
-            "a late reconnect gets 410 (gone) instead of 404 (unknown)."
+            "still reconnect and read a finished stream.  At most this: ending "
+            "never extends a run, so one that ends with less of its lifetime "
+            "left keeps that."
         ),
     )
     stream_maxlen: int = Field(
@@ -381,24 +374,17 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "SSE ping interval, in seconds.  Also bounds each blocking read, "
-            "and so how often a reader checks that the producer is alive."
+            "and sets how often an idle producer's keepalive() looks at "
+            "whether it must write a ping."
         ),
     )
-    stream_lease_interval: int = Field(
-        default=15,
+    stream_silence_timeout: int = Field(
+        default=60,
         gt=0,
         description=(
-            "How often a process renews its lease and collects the cancels "
-            "sent to it, in seconds."
-        ),
-    )
-    stream_lease_ttl: int = Field(
-        default=45,
-        gt=0,
-        description=(
-            "Lifetime of a process's lease, in seconds.  When it lapses, a "
-            "reader ends the process's running streams as producer_lost.  "
-            "Must be longer than stream_lease_interval."
+            "How long a run may go without a new entry, in seconds, before a "
+            "reader ends it as producer_lost.  keepalive() pings after half "
+            "of it.  Must be more than twice stream_heartbeat_interval."
         ),
     )
     stream_replay_page: int = Field(

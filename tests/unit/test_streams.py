@@ -37,7 +37,6 @@ from redis_fastapi import (
 )
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
-    StreamBusy,
     StreamCredentialExpired,
     StreamCursorAhead,
     StreamExpired,
@@ -48,8 +47,7 @@ from redis_fastapi.exceptions import (
 from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
-    _keys,
-    _meta_reply,
+    _key,
     _seconds,
     _StreamCapabilities,
     _xread_entries,
@@ -203,19 +201,16 @@ class TestNames:
 
     def test_scope_and_id_pairs_never_share_a_key(self) -> None:
         # ":" is allowed in a scope but not in an ID, so the split is unique.
-        assert _keys("a:b", "c").stream != _keys("a", "b-c").stream
+        assert _key("a:b", "c") != _key("a", "b-c")
 
-    def test_keys_share_a_cluster_slot_with_the_active_slot(self) -> None:
-        keys = _keys("chat:42", "run1")
-        slots = {key_slot(k.encode()) for k in (keys.stream, keys.meta, keys.active)}
-        assert len(slots) == 1
-
-    def test_keys_use_the_prefix_setting(self, settings_env: Any) -> None:
+    def test_the_key_uses_the_prefix_setting(self, settings_env: Any) -> None:
         settings_env(prefix="myapp")
-        keys = _keys("chat:1", "r")
-        assert keys.stream == "myapp:stream:{chat:1}:r"
-        assert keys.meta == "myapp:stream-meta:{chat:1}:r"
-        assert keys.active == "myapp:stream-active:{chat:1}"
+        assert _key("chat:1", "r") == "myapp:stream:chat:1:r"
+
+    def test_runs_of_one_scope_spread_over_cluster_slots(self) -> None:
+        # One key per run needs no hash tag, so a busy scope is not one shard.
+        slots = {key_slot(_key("chat:42", f"run{n}").encode()) for n in range(20)}
+        assert len(slots) > 1
 
 
 class TestEventTypes:
@@ -322,9 +317,21 @@ class TestCheckStreamSettings:
         with pytest.raises(StreamConfigurationError, match="prefix"):
             check_stream_settings()
 
-    def test_lease_must_outlive_its_renewal(self, settings_env: Any) -> None:
-        settings_env(stream_lease_interval=10, stream_lease_ttl=10)
-        with pytest.raises(StreamConfigurationError, match="lease"):
+    def test_a_finished_run_cannot_outlive_its_lifetime(
+        self, settings_env: Any
+    ) -> None:
+        settings_env(stream_max_run=60, stream_done_ttl=120)
+        with pytest.raises(StreamConfigurationError, match="stream_done_ttl"):
+            check_stream_settings()
+
+    def test_a_run_must_fit_the_idempotency_window(self, settings_env: Any) -> None:
+        settings_env(stream_max_run=86_401)
+        with pytest.raises(StreamConfigurationError, match="86400"):
+            check_stream_settings()
+
+    def test_silence_must_outlast_two_heartbeats(self, settings_env: Any) -> None:
+        settings_env(stream_heartbeat_interval=10, stream_silence_timeout=20)
+        with pytest.raises(StreamConfigurationError, match="silence"):
             check_stream_settings()
 
     def test_socket_timeout_must_exceed_the_block(self, settings_env: Any) -> None:
@@ -382,7 +389,6 @@ class TestErrorHandler:
         [
             (StreamNotFound("x"), 404),
             (StreamExpired("x"), 410),
-            (StreamBusy("r1"), 409),
             (StreamCursorAhead("x"), 409),
             (StreamFinished("x"), 409),
             (StreamInvalidCursor("x"), 422),
@@ -404,7 +410,6 @@ class TestErrorHandler:
         [
             (StreamNotFound("x"), "stream_not_found"),
             (StreamExpired("x"), "stream_expired"),
-            (StreamBusy("r1"), "stream_busy"),
             (StreamCursorAhead("x"), "cursor_ahead"),
             (StreamInvalidCursor("x"), "invalid_cursor"),
             (StreamInvalidName("x"), "invalid_stream_name"),
@@ -414,9 +419,6 @@ class TestErrorHandler:
     async def test_body_has_a_stable_code(self, exc: Exception, code: str) -> None:
         response = await stream_error_handler(_request(), exc)
         assert json.loads(bytes(response.body)) == {"detail": str(exc), "code": code}
-
-    def test_busy_names_the_run(self) -> None:
-        assert StreamBusy("r1").stream_id == "r1"
 
 
 # ---------------------------------------------------------------------------
@@ -571,11 +573,7 @@ class TestUnsupported:
         with pytest.raises(StreamUnsupported):
             await backend.open(scope="chat:1")
         with pytest.raises(StreamUnsupported):
-            await backend.resume("r", scope="chat:1")
-        with pytest.raises(StreamUnsupported):
             await backend.cancel("r", scope="chat:1")
-        with pytest.raises(StreamUnsupported):
-            await backend.active("chat:1")
         with pytest.raises(StreamUnsupported):
             await backend.sse("r", request=_request(), scope="chat:1")
         with pytest.raises(StreamUnsupported):
@@ -601,8 +599,6 @@ class TestWriterValidation:
             await backend.open(scope="bad scope")
         with pytest.raises(StreamInvalidName):
             await backend.open(scope="ok", stream_id="bad:id")
-        with pytest.raises(StreamInvalidName):
-            await backend.resume("bad:id", scope="ok")
 
     async def test_invalid_names_on_every_path_are_the_same_error(
         self, settings_env: Any
@@ -614,8 +610,6 @@ class TestWriterValidation:
             await backend.cancel("../x", scope="chat:1")
         with pytest.raises(StreamInvalidName):
             await backend.follow("../x", scope="chat:1")
-        with pytest.raises(StreamInvalidName):
-            await backend.active("bad scope")
 
     def test_oversized_event(self, settings_env: Any) -> None:
         settings_env(stream_max_event_bytes=10)
@@ -649,15 +643,8 @@ async def _noop(writer: StreamWriter) -> None:
 
 class TestSpawnGuards:
     def _writer(self, backend: StreamBackend, *, created: bool) -> StreamWriter:
-        if not created:
-            return backend._handle("chat:1", "r1", True)
         return StreamWriter(
-            backend,
-            scope="chat:1",
-            stream_id="r1",
-            writer_id="w",
-            exclusive=True,
-            created=True,
+            backend, scope="chat:1", stream_id="r1", writer_id="w", created=created
         )
 
     async def test_a_retry_handle_is_refused(self, settings_env: Any) -> None:
@@ -683,8 +670,6 @@ class TestSpawnGuards:
             await handle.extend(60)
         with pytest.raises(ValueError, match="retried start"):
             await handle.append("delta", {})
-        with pytest.raises(ValueError, match="retried start"):
-            await handle.suspend(60)
 
 
 class TestHistoryLost:
@@ -749,16 +734,6 @@ class TestHistoryLost:
 
 
 class TestLifecycle:
-    def test_each_lifespan_gets_its_own_process_id(
-        self, settings_env: Callable[..., None]
-    ) -> None:
-        # The backend is built with the app, before a server forks workers.
-        settings_env()
-        backend = StreamBackend(_no_redis)
-        before = backend._proc
-        backend._start(_StreamCapabilities())
-        assert backend._proc != before
-
     async def test_no_run_starts_while_closing(
         self, settings_env: Callable[..., None]
     ) -> None:
@@ -768,27 +743,3 @@ class TestLifecycle:
         backend._closing = True
         with pytest.raises(StreamStoreError, match="shutting down"):
             await backend.open(scope="chat:1")
-        with pytest.raises(StreamStoreError, match="shutting down"):
-            await backend.resume("r1", scope="chat:1")
-
-
-class TestMetadataReply:
-    def test_binary_fields_and_missing_values(self) -> None:
-        assert _meta_reply([b"running", None, b"p:w"]) == {
-            "status": "running",
-            "owner": "p:w",
-        }
-
-    def test_missing_metadata(self) -> None:
-        assert _meta_reply([None] * 3) == {}
-
-    @pytest.mark.parametrize("reply", [None, {}, ["short"], [None] * 4])
-    def test_invalid_shapes(self, reply: Any) -> None:
-        with pytest.raises(StreamStoreError):
-            _meta_reply(reply)
-
-    def test_command_error_is_a_store_error(self) -> None:
-        from redis.exceptions import ResponseError
-
-        with pytest.raises(StreamStoreError):
-            _meta_reply(ResponseError("WRONGTYPE"))

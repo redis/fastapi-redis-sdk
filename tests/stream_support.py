@@ -23,11 +23,7 @@ from redis.asyncio import Redis, RedisCluster
 
 from redis_fastapi import StreamBackend
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import (
-    _lease_key,
-    _StreamCapabilities,
-    probe_streams_support,
-)
+from redis_fastapi.stream_backend import _StreamCapabilities, probe_streams_support
 from tests.conftest import REDIS_URL
 
 
@@ -84,13 +80,6 @@ async def collect(
     """Every event of a stream, read to its end."""
     async with await backend.follow(stream_id, scope=scope, after=after) as reader:
         return [event async for event in reader]
-
-
-async def crash(backend: StreamBackend, client: Any) -> None:
-    """A hard kill: *backend*'s lease stops being renewed and is gone."""
-    assert backend._lease_task is not None
-    backend._lease_task.cancel()
-    await client.delete(_lease_key(backend._proc))
 
 
 @pytest.fixture(params=["standalone", "cluster", "enterprise"])
