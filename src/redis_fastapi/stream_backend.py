@@ -43,10 +43,11 @@ import secrets
 import time
 import weakref
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
 
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
@@ -114,6 +115,10 @@ _SHUTDOWN_RETRY_SECONDS = 0.25
 _END_ERRORS: tuple[type[BaseException], ...] = (StreamError, *STORE_ERRORS)
 # What dropping the lease at shutdown may fail with: the pool may be gone too.
 _DROP_ERRORS: tuple[type[BaseException], ...] = (RuntimeError, *STORE_ERRORS)
+# What opening a run may fail with: a driver error, or one _retry() wrapped.
+_OPEN_ERRORS: tuple[type[BaseException], ...] = (StreamStoreError, *STORE_ERRORS)
+
+_T = TypeVar("_T")
 
 # Entry fields.
 F_TYPE = "t"
@@ -507,9 +512,7 @@ class StreamWriter:
             StreamStoreError: If Redis cannot be reached.
         """
         check_event_type(type)
-        self._check_writable()
-        if self._final_id is not None or self._ended:
-            raise StreamFinished(f"stream {self.stream_id} already ended")
+        self._check_live()
         if self._backend._closing and self._is_own_task():
             # The application is shutting down.  Stop here rather than rely
             # on the cancel alone, which a concurrent await can lose.
@@ -589,9 +592,7 @@ class StreamWriter:
             StreamFinished: If the final entry was already written.
             StreamStoreError: If Redis cannot be reached.
         """
-        self._check_writable()
-        if self._final_id is not None or self._ended:
-            raise StreamFinished(f"stream {self.stream_id} already ended")
+        self._check_live()
         deadline = max(self._expires_at, time.monotonic() + _seconds(ttl))
         await self._backend._pipeline(
             lambda pipe: self._queue_ttl(pipe, deadline), transaction=True
@@ -615,9 +616,7 @@ class StreamWriter:
             StreamExpired: If the run expired.
             StreamStoreError: If Redis cannot be reached.
         """
-        self._check_writable()
-        if self._final_id is not None or self._ended:
-            raise StreamFinished(f"stream {self.stream_id} already ended")
+        self._check_live()
         deadline = max(self._expires_at, time.monotonic() + _seconds(ttl))
 
         def build(meta: dict[str, str], pipe: Any) -> bool:
@@ -669,22 +668,20 @@ class StreamWriter:
                 f"stream {self.stream_id} was suspended; resume() it to write"
             )
 
+    def _check_live(self) -> None:
+        """Refuse a write through a writer that cannot write, or a run that ended."""
+        self._check_writable()
+        if self._final_id is not None or self._ended:
+            raise StreamFinished(f"stream {self.stream_id} already ended")
+
     async def _end(self, type: str, data: Any) -> str:
         self._check_writable()
         if self._final_id is not None:
             return self._final_id
         settings = get_settings()
         keys = self._keys
-        payload = self._backend._encode(data)
         seq = self._seq + 1
-        args = _xadd(
-            keys,
-            type,
-            payload,
-            idmp=(_END_PRODUCER, _END_ID),
-            seq=seq,
-            final=True,
-        )
+        args = _final_xadd(keys, type, self._backend._encode(data), seq)
 
         def build(pipe: Any) -> None:
             # The status before this end: a reader may have ended the run.
@@ -738,6 +735,20 @@ def _xadd(
     if final:
         args += [F_FINAL, "1"]
     return args
+
+
+def _final_xadd(
+    keys: _Keys, type: str, payload: str, seq: int | None = None
+) -> list[Any]:
+    """The ``XADD`` of a final entry.
+
+    Every final entry shares one IDMP pair, so a stream holds one even when a
+    writer, a reader and a cancel end it at once.  *seq* is ``None`` when the
+    entry is not the writer's: a reader's or a cancel's.
+    """
+    return _xadd(
+        keys, type, payload, idmp=(_END_PRODUCER, _END_ID), seq=seq, final=True
+    )
 
 
 def _queue_end(
@@ -942,33 +953,46 @@ class StreamBackend:
             logger.warning("Undecodable stream payload; passing it as text")
             return text
 
-    async def _pipeline(
-        self, build: Callable[[Any], None], *, transaction: bool
-    ) -> list[Any]:
-        """Run a pipeline, retrying the ambiguous failures.
+    async def _retry(self, attempt: Callable[[], Awaitable[_T]]) -> _T:
+        """Run *attempt* until it settles, the one retry loop of the feature.
 
-        Every command the feature sends this way is safe to repeat, so a
-        timeout or a dropped connection, after which Redis may or may not have
-        applied the writes, is retried with backoff.
+        A ``WatchError`` - a watched key changed before ``EXEC`` - repeats the
+        attempt at once.  A timeout or a dropped connection, after which Redis
+        may or may not have applied the writes, repeats it with backoff:
+        every write the feature sends is safe to repeat.  Any other driver
+        error ends it.
 
         The error text never carries Redis's own message, which can name the
         ACL user and the key.
 
         Raises:
-            StreamStoreError: If Redis cannot be reached.
+            StreamStoreError: If Redis cannot be reached, refused a command,
+                or the watched keys kept changing.
         """
-        for attempt in range(_WRITE_ATTEMPTS):
+        for n in range(_WRITE_ATTEMPTS):
             try:
-                async with self._client().pipeline(transaction=transaction) as pipe:
-                    build(pipe)
-                    return list(await pipe.execute())
+                return await attempt()
+            except WatchError:
+                continue
             except _AMBIGUOUS_ERRORS as exc:
-                if attempt == _WRITE_ATTEMPTS - 1:
+                if n == _WRITE_ATTEMPTS - 1:
                     raise StreamStoreError("Redis did not answer") from exc
-                await asyncio.sleep(0.05 * 2**attempt)
+                await asyncio.sleep(0.05 * 2**n)
             except STORE_ERRORS as exc:
                 raise StreamStoreError("Redis refused a stream write") from exc
-        raise AssertionError("unreachable")  # pragma: no cover
+        raise StreamStoreError("the stream kept changing; retry")
+
+    async def _pipeline(
+        self, build: Callable[[Any], None], *, transaction: bool
+    ) -> list[Any]:
+        """Run a pipeline under :meth:`_retry`."""
+
+        async def attempt() -> list[Any]:
+            async with self._client().pipeline(transaction=transaction) as pipe:
+                build(pipe)
+                return list(await pipe.execute())
+
+        return await self._retry(attempt)
 
     async def _guarded(
         self, keys: _Keys, build: Callable[[dict[str, str], Any], bool]
@@ -986,29 +1010,21 @@ class StreamBackend:
             The transaction's replies, or ``None`` when *build* declined.
 
         Raises:
-            StreamStoreError: If Redis cannot be reached, or meta kept
-                changing.
+            StreamStoreError: As :meth:`_retry`.
         """
         client = self._client()
-        for attempt in range(_WRITE_ATTEMPTS):
-            try:
-                async with client.pipeline(transaction=True) as pipe:
-                    await pipe.watch(keys.meta)
-                    # Read on another connection, as _create does: EXEC still
-                    # aborts if meta changes after the WATCH, whoever changes it.
-                    meta = _meta_reply(await client.hmget(keys.meta, _META_FIELDS))
-                    if not build(meta, pipe):
-                        return None
-                    return list(await pipe.execute())
-            except WatchError:
-                continue
-            except _AMBIGUOUS_ERRORS as exc:
-                if attempt == _WRITE_ATTEMPTS - 1:
-                    raise StreamStoreError("Redis did not answer") from exc
-                await asyncio.sleep(0.05 * 2**attempt)
-            except STORE_ERRORS as exc:
-                raise StreamStoreError("Redis refused a stream write") from exc
-        raise StreamStoreError("the stream kept changing; retry")
+
+        async def attempt() -> list[Any] | None:
+            async with client.pipeline(transaction=True) as pipe:
+                await pipe.watch(keys.meta)
+                # Read on another connection, as _create does: EXEC still
+                # aborts if meta changes after the WATCH, whoever changes it.
+                meta = _meta_reply(await client.hmget(keys.meta, _META_FIELDS))
+                if not build(meta, pipe):
+                    return None
+                return list(await pipe.execute())
+
+        return await self._retry(attempt)
 
     # -- the process lease ---------------------------------------------------
 
@@ -1088,6 +1104,22 @@ class StreamBackend:
 
         await self._pipeline(build, transaction=True)
 
+    @asynccontextmanager
+    async def _vouching(self, scope: str, stream_id: str) -> AsyncIterator[None]:
+        """Vouch for a run this block is opening or resuming.
+
+        The run counts as this process's from before the block, so a renewal
+        that runs while the block decides keeps it in the lease.
+        """
+        key = (scope, stream_id)
+        self._pending.add(key)
+        try:
+            await self._ensure_lease()
+            await self._vouch(scope, stream_id)
+            yield
+        finally:
+            self._pending.discard(key)
+
     async def _vouched(self, owner: str | None, scope: str, stream_id: str) -> bool:
         """Whether the run's owner process still vouches for it."""
         proc = _owner_proc(owner)
@@ -1132,29 +1164,24 @@ class StreamBackend:
         sid = stream_id or secrets.token_urlsafe(12)
         keys = _keys(scope, sid)
         writer_id = _new_id()
-        self._pending.add((scope, sid))
         try:
             with stream_span("redis_fastapi.streams.open"), timed_stream("open"):
-                try:
-                    await self._ensure_lease()
-                    await self._vouch(scope, sid)
+                async with self._vouching(scope, sid):
                     created = await self._create(keys, scope, sid, writer_id, exclusive)
-                except STORE_ERRORS as exc:
-                    record_stream_operation(operation="open", result="error")
-                    raise StreamStoreError("could not open the stream") from exc
-            if created:
-                writer = StreamWriter(
-                    self,
-                    scope=scope,
-                    stream_id=sid,
-                    writer_id=writer_id,
-                    exclusive=exclusive,
-                    created=True,
-                    expires_in=get_settings().stream_max_run,
-                )
-                self._own(writer)
-        finally:
-            self._pending.discard((scope, sid))
+                    if created:
+                        writer = StreamWriter(
+                            self,
+                            scope=scope,
+                            stream_id=sid,
+                            writer_id=writer_id,
+                            exclusive=exclusive,
+                            created=True,
+                            expires_in=get_settings().stream_max_run,
+                        )
+                        self._own(writer)
+        except _OPEN_ERRORS as exc:
+            record_stream_operation(operation="open", result="error")
+            raise StreamStoreError("could not open the stream") from exc
         if not created:
             record_stream_operation(operation="open", result="retry")
             return self._handle(scope, sid, exclusive)
@@ -1209,68 +1236,63 @@ class StreamBackend:
 
         Raises:
             StreamBusy: If the slot names another run that is still going.
-            StreamStoreError: If the keys kept changing between attempts.
+            StreamStoreError: As :meth:`_retry`.
         """
         settings = get_settings()
         client = self._client()
         owner = f"{self._proc}:{writer_id}"
         watched = [keys.active, keys.meta] if exclusive else [keys.meta]
-        for attempt in range(_WRITE_ATTEMPTS):
-            try:
-                async with client.pipeline(transaction=True) as pipe:
-                    await pipe.watch(*watched)
-                    # Read on another connection: EXEC still aborts if either
-                    # key changes after the WATCH, whoever changes it.
-                    async with client.pipeline(transaction=True) as read:
-                        read.hmget(keys.meta, [M_STATUS, M_OWNER])
-                        read.get(keys.active)
-                        (status, current), holder = await read.execute()
-                    if _text(current) == owner:
-                        return True  # this call's EXEC applied; its reply was lost
-                    if status is not None:
-                        return False
-                    holder = _text(holder)
-                    if exclusive and holder is not None and holder != stream_id:
-                        # Same slot: EXEC aborts if the holder resumes or ends
-                        # while this start decides whether to take its place.
-                        await pipe.watch(_keys(scope, holder).meta)
-                        if await self._holds(scope, holder):
-                            record_stream_operation(operation="open", result="busy")
-                            raise StreamBusy(holder)
-                    lifetime = settings.stream_max_run
-                    pipe.multi()  # type: ignore[no-untyped-call]
-                    if exclusive:
-                        pipe.set(keys.active, stream_id, ex=lifetime)
-                    pipe.hset(
-                        keys.meta,
-                        mapping={
-                            M_STATUS: STATUS_RUNNING,
-                            M_CANCEL: "0",
-                            M_OWNER: owner,
-                        },
+
+        async def attempt() -> bool:
+            async with client.pipeline(transaction=True) as pipe:
+                await pipe.watch(*watched)
+                # Read on another connection: EXEC still aborts if either
+                # key changes after the WATCH, whoever changes it.
+                async with client.pipeline(transaction=True) as read:
+                    read.hmget(keys.meta, [M_STATUS, M_OWNER])
+                    read.get(keys.active)
+                    (status, current), holder = await read.execute()
+                if _text(current) == owner:
+                    return True  # this call's EXEC applied; its reply was lost
+                if status is not None:
+                    return False
+                holder = _text(holder)
+                if exclusive and holder is not None and holder != stream_id:
+                    # Same slot: EXEC aborts if the holder resumes or ends
+                    # while this start decides whether to take its place.
+                    await pipe.watch(_keys(scope, holder).meta)
+                    if await self._holds(scope, holder):
+                        record_stream_operation(operation="open", result="busy")
+                        raise StreamBusy(holder)
+                lifetime = settings.stream_max_run
+                pipe.multi()  # type: ignore[no-untyped-call]
+                if exclusive:
+                    pipe.set(keys.active, stream_id, ex=lifetime)
+                pipe.hset(
+                    keys.meta,
+                    mapping={
+                        M_STATUS: STATUS_RUNNING,
+                        M_CANCEL: "0",
+                        M_OWNER: owner,
+                    },
+                )
+                pipe.expire(keys.meta, lifetime + settings.stream_gone_ttl)
+                pipe.execute_command(
+                    *_xadd(
+                        keys,
+                        START_TYPE,
+                        "null",
+                        idmp=(writer_id, "0"),
+                        seq=None,
+                        final=False,
+                        create=True,
                     )
-                    pipe.expire(keys.meta, lifetime + settings.stream_gone_ttl)
-                    pipe.execute_command(
-                        *_xadd(
-                            keys,
-                            START_TYPE,
-                            "null",
-                            idmp=(writer_id, "0"),
-                            seq=None,
-                            final=False,
-                            create=True,
-                        )
-                    )
-                    pipe.expire(keys.stream, lifetime)
-                    await pipe.execute()
-                    return True
-            except WatchError:
-                continue  # another start changed the keys: read them again
-            except _AMBIGUOUS_ERRORS:
-                if attempt == _WRITE_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(0.05 * 2**attempt)
-        raise StreamStoreError("the run kept changing while it started; retry")
+                )
+                pipe.expire(keys.stream, lifetime)
+                await pipe.execute()
+                return True
+
+        return await self._retry(attempt)
 
     async def _holds(self, scope: str, holder: str) -> bool:
         """Whether the run *holder* still holds the scope's slot.
@@ -1328,11 +1350,8 @@ class StreamBackend:
         keys = _keys(scope, stream_id)
         writer_id = _new_id()
         owner = f"{self._proc}:{writer_id}"
-        self._pending.add((scope, stream_id))
         try:
-            try:
-                await self._ensure_lease()
-                await self._vouch(scope, stream_id)
+            async with self._vouching(scope, stream_id):
                 async with self._client().pipeline(transaction=True) as pipe:
                     pipe.hmget(keys.meta, [M_STATUS, M_OWNER])
                     pipe.xrevrange(keys.stream, count=1)
@@ -1344,38 +1363,39 @@ class StreamBackend:
                     previous, scope, stream_id
                 ):
                     raise StreamBusy(stream_id)
-            except STORE_ERRORS as exc:
-                raise StreamStoreError("could not resume the stream") from exc
 
-            def build(meta: dict[str, str], pipe: Any) -> bool:
-                status = meta.get(M_STATUS)
-                if status is None:
-                    raise StreamNotFound(f"no stream {stream_id} in this scope")
-                if status == STATUS_FINISHED:
-                    raise StreamFinished(f"stream {stream_id} already ended")
-                if status == STATUS_RUNNING and meta.get(M_OWNER) != previous:
-                    raise StreamBusy(stream_id)  # resumed elsewhere meanwhile
-                if not last or left_ms is None or left_ms < 0:
-                    raise StreamExpired(f"stream {stream_id} has expired")
-                pipe.multi()
-                pipe.hset(keys.meta, mapping={M_STATUS: STATUS_RUNNING, M_OWNER: owner})
-                return True
+                def build(meta: dict[str, str], pipe: Any) -> bool:
+                    status = meta.get(M_STATUS)
+                    if status is None:
+                        raise StreamNotFound(f"no stream {stream_id} in this scope")
+                    if status == STATUS_FINISHED:
+                        raise StreamFinished(f"stream {stream_id} already ended")
+                    if status == STATUS_RUNNING and meta.get(M_OWNER) != previous:
+                        raise StreamBusy(stream_id)  # resumed elsewhere meanwhile
+                    if not last or left_ms is None or left_ms < 0:
+                        raise StreamExpired(f"stream {stream_id} has expired")
+                    pipe.multi()
+                    pipe.hset(
+                        keys.meta,
+                        mapping={M_STATUS: STATUS_RUNNING, M_OWNER: owner},
+                    )
+                    return True
 
-            await self._guarded(keys, build)
-            fields = {_text(k): _text(v) for k, v in last[0][1].items()}
-            writer = StreamWriter(
-                self,
-                scope=scope,
-                stream_id=stream_id,
-                writer_id=writer_id,
-                exclusive=_text(holder) == stream_id,
-                created=False,
-                seq=int(fields.get(F_SEQ) or 0),
-                expires_in=left_ms / 1000,
-            )
-            self._own(writer)
-        finally:
-            self._pending.discard((scope, stream_id))
+                await self._guarded(keys, build)
+                fields = {_text(k): _text(v) for k, v in last[0][1].items()}
+                writer = StreamWriter(
+                    self,
+                    scope=scope,
+                    stream_id=stream_id,
+                    writer_id=writer_id,
+                    exclusive=_text(holder) == stream_id,
+                    created=False,
+                    seq=int(fields.get(F_SEQ) or 0),
+                    expires_in=left_ms / 1000,
+                )
+                self._own(writer)
+        except STORE_ERRORS as exc:
+            raise StreamStoreError("could not resume the stream") from exc
         record_stream_operation(operation="resume", result="ok")
         return writer
 
@@ -1485,14 +1505,7 @@ class StreamBackend:
         check_name(scope, stream_id)
         keys = _keys(scope, stream_id)
         found: dict[str, str] = {}
-        end = _xadd(
-            keys,
-            END_TYPE,
-            self._encode({"reason": "cancelled"}),
-            idmp=(_END_PRODUCER, _END_ID),
-            seq=None,
-            final=True,
-        )
+        end = _final_xadd(keys, END_TYPE, self._encode({"reason": "cancelled"}))
 
         def build(meta: dict[str, str], pipe: Any) -> bool:
             status = meta.get(M_STATUS)
@@ -1823,14 +1836,7 @@ class StreamBackend:
         """
         settings = get_settings()
         keys = plan.keys
-        args = _xadd(
-            keys,
-            END_TYPE,
-            self._encode({"reason": "producer_lost"}),
-            idmp=(_END_PRODUCER, _END_ID),
-            seq=None,
-            final=True,
-        )
+        args = _final_xadd(keys, END_TYPE, self._encode({"reason": "producer_lost"}))
 
         def build(meta: dict[str, str], pipe: Any) -> bool:
             if meta.get(M_STATUS) != STATUS_RUNNING or meta.get(M_OWNER) != owner:
