@@ -231,7 +231,7 @@ class TestUnsupportedServer:
             assert client.get("/health").status_code == 200
             assert client.post(f"/{scope}/runs/r1").status_code == 503
             assert client.get(f"/{scope}/runs/r1/events").status_code == 503
-            assert client.get(f"/{scope}/active").status_code == 503
+            assert client.post(f"/{scope}/runs/r1/cancel").status_code == 503
         assert "Resumable streams are off" in caplog.text
 
 
