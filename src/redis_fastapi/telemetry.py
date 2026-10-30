@@ -438,10 +438,10 @@ def record_stream_operation(*, operation: str, result: str) -> None:
     """Count a stream operation.
 
     Args:
-        operation: ``open``, ``attach``, ``append``, ``finish``, ``cancel``,
-            ``read``, ``gap``, ``producer_lost`` or ``slow_consumer``.
-        result: ``ok``, ``created``, ``retry``, ``busy``, ``expired``,
-            ``fenced``, ``error``, or for ``read``: ``started``, ``resumed``,
+        operation: ``open``, ``append``, ``finish``, ``cancel``, ``read``,
+            ``gap``, ``producer_lost`` or ``slow_consumer``.
+        result: ``ok``, ``created``, ``retry``, ``expired``, ``error``, or
+            for ``read``: ``started``, ``resumed``,
             ``finished``, ``not_found``, ``expired`` or ``ahead``.
     """
     if not _state.enabled or _state.stream_operations is None:

@@ -359,12 +359,12 @@ producer is a short loop that turns their events into appends.
 Each recipe below maps its SDK's events to the same four event types, so the
 browser code is the same whichever SDK you use:
 
-| Type          | Data                            | Written with |
-|---------------|---------------------------------|--------------|
-| `delta`       | `{"text": ...}`                 | `append()`   |
-| `tool_call`   | `{"id": ..., "name": ..., "args": ...}` | `append()` |
-| `tool_result` | `{"id": ..., "output": ...}`    | `append()`   |
-| `message`     | `{"text": ...}`, the whole answer | `finish()` |
+| Type          | Data                                    | Written with |
+|---------------|-----------------------------------------|--------------|
+| `delta`       | `{"text": ...}`                         | `append()`   |
+| `tool_call`   | `{"id": ..., "name": ..., "args": ...}` | `append()`   |
+| `tool_result` | `{"id": ..., "output": ...}`            | `append()`   |
+| `message`     | `{"text": ...}`, the whole answer       | `finish()`   |
 
 Each recipe returns a producer for one turn. Start it from your route as any
 other producer:
@@ -620,15 +620,15 @@ run with its own stream ID; the checkpointer carries the graph between them.
 Before the first byte, a problem is an ordinary status code. Your own
 dependency answers `401` or `403` before the SDK runs.
 
-| Status | Cause                                                                    | Exception                 |
-|--------|--------------------------------------------------------------------------|---------------------------|
-| `204`  | The cursor is at or past the final event                                 | -                         |
-| `401`  | `expires_at` had already passed                                          | `StreamCredentialExpired` |
-| `404`  | No such stream in this scope: unknown, expired, or another scope's       | `StreamNotFound`          |
-| `409`  | The cursor is past the stream's last entry                               | `StreamCursorAhead`       |
-| `410`  | Entries after the cursor were removed                                    | `StreamExpired`           |
-| `422`  | A malformed or repeated cursor; a scope or stream ID outside the rules   | `StreamInvalidCursor`, `StreamInvalidName` |
-| `503`  | Too many live readers; Redis unavailable; the server lacks support       | -, `StreamStoreError`, `StreamUnsupported` |
+| Status | Cause                                                                  | Exception                                  |
+|--------|------------------------------------------------------------------------|--------------------------------------------|
+| `204`  | The cursor is the final event                                          | -                                          |
+| `401`  | `expires_at` had already passed                                        | `StreamCredentialExpired`                  |
+| `404`  | No such stream in this scope: unknown, expired, or another scope's     | `StreamNotFound`                           |
+| `409`  | The cursor is past the stream's last entry                             | `StreamCursorAhead`                        |
+| `410`  | Entries after the cursor were removed                                  | `StreamExpired`                            |
+| `422`  | A malformed or repeated cursor; a scope or stream ID outside the rules | `StreamInvalidCursor`, `StreamInvalidName` |
+| `503`  | Too many live readers; Redis unavailable; the server lacks support     | -, `StreamStoreError`, `StreamUnsupported` |
 
 `StreamError` is the base of every stream exception. The body is
 `{"detail": ..., "code": ...}`, where `code` is a stable name such as
@@ -759,19 +759,19 @@ Every setting is an environment variable prefixed `REDIS_`, so
 seconds, as everywhere else in the SDK. See
 [Configuration](configuration.md) for how these are loaded.
 
-| Setting                          | Default  | Notes                                                                |
-|----------------------------------|----------|----------------------------------------------------------------------|
-| `stream_max_run`                 | `3600`   | Lifetime of a run from `open()`; at most `86400`, nothing extends it |
-| `stream_done_ttl`                | `120`    | How long a finished run stays readable, at most; ending never extends a run |
-| `stream_maxlen`                  | `10000`  | Most events one writer may append                                    |
-| `stream_max_event_bytes`         | `65536`  | Largest encoded event                                                |
-| `stream_heartbeat_interval`      | `15`     | SSE ping, blocking-read bound, how often `keepalive()` checks        |
-| `stream_silence_timeout`         | `60`     | Silence after which a reader ends the run as `producer_lost`; more than twice the heartbeat |
-| `stream_replay_page`             | `100`    | Entries per read                                                     |
-| `stream_max_readers`             | `256`    | Live SSE readers per process                                         |
-| `stream_max_connection_duration` | `300`    | Longest SSE connection before the client reconnects                  |
-| `stream_read_retry_window`       | `30`     | How long a reader retries a failing Redis read                       |
-| `stream_send_timeout`            | `10`     | Longest wait for one send to a client                                |
+| Setting                          | Default | Notes                                                                                       |
+|----------------------------------|---------|---------------------------------------------------------------------------------------------|
+| `stream_max_run`                 | `3600`  | Lifetime of a run from `open()`; at most `86400`, nothing extends it                        |
+| `stream_done_ttl`                | `120`   | How long a finished run stays readable, at most; ending never extends a run                 |
+| `stream_maxlen`                  | `10000` | Most events one writer may append                                                           |
+| `stream_max_event_bytes`         | `65536` | Largest encoded event                                                                       |
+| `stream_heartbeat_interval`      | `15`    | SSE ping, blocking-read bound, how often `keepalive()` checks                               |
+| `stream_silence_timeout`         | `60`    | Silence after which a reader ends the run as `producer_lost`; more than twice the heartbeat |
+| `stream_replay_page`             | `100`   | Entries per read                                                                            |
+| `stream_max_readers`             | `256`   | Live SSE readers per process                                                                |
+| `stream_max_connection_duration` | `300`   | Longest SSE connection before the client reconnects                                         |
+| `stream_read_retry_window`       | `30`    | How long a reader retries a failing Redis read                                              |
+| `stream_send_timeout`            | `10`    | Longest wait for one send to a client                                                       |
 
 ---
 

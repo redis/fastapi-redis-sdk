@@ -638,7 +638,7 @@ Event types are 1 to 128 characters with no CR, LF or NUL. Types starting with
 | Type | Contents |
 |---|---|
 | `StreamEvent` | `id` (the entry ID, the cursor; `None` for the reader's own events), `type`, `data` (decoded), `final`. |
-| `StreamReader` | What `follow()` returns: an async iterator of `StreamEvent` and an async context manager that closes it. It reads nothing until iterated, and is empty when the cursor is at or past the final event. `await aclose()` stops it. It takes no reader slot. |
+| `StreamReader` | What `follow()` returns: an async iterator of `StreamEvent` and an async context manager that closes it. It reads nothing until iterated, and is empty when the cursor is the final event. `await aclose()` stops it. It takes no reader slot. |
 
 ---
 
