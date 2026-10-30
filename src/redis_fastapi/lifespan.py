@@ -166,6 +166,28 @@ async def _check_cache_eviction_safety(ps: _PoolState) -> None:
         )
 
 
+async def _start_streams(app: FastAPI, ps: _PoolState) -> Any:
+    """Bind the stream backend to the new pool and detect server support.
+
+    Best-effort, like :func:`_probe_rate_limit_capabilities`: a Redis that is
+    unreachable at boot leaves support unknown, and the first stream call
+    asks again.  A server without support turns the feature off with one
+    warning; the application still starts.
+    """
+    backend = getattr(app.state, "_redis_streams", None)
+    if backend is None:
+        return None
+    from redis_fastapi.stream_backend import _StreamCapabilities
+
+    ps.stream_capabilities = _StreamCapabilities()
+    backend._start(ps.stream_capabilities)
+    try:
+        await backend.detect()
+    except Exception:
+        logger.debug("Stream capability probe skipped", exc_info=True)
+    return backend
+
+
 @asynccontextmanager
 async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage Redis connection pools across the application lifecycle.
@@ -207,15 +229,23 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         ps.async_pool = _PoolState.build_async_pool()
 
-    if getattr(app.state, "_redis_rate_limiting", False):
-        await _probe_rate_limit_capabilities(ps)
-
-    if getattr(app.state, "_redis_caching", False):
-        await _check_cache_eviction_safety(ps)
-
+    streams = None
     try:
+        # The startup checks swallow errors but not cancellation, so they
+        # run inside the try: the pool still closes if startup is cancelled.
+        if getattr(app.state, "_redis_rate_limiting", False):
+            await _probe_rate_limit_capabilities(ps)
+
+        if getattr(app.state, "_redis_caching", False):
+            await _check_cache_eviction_safety(ps)
+
+        streams = await _start_streams(app, ps)
         yield
     finally:
+        if streams is not None:
+            # Before the pool closes: cancelled producers write their final
+            # entries, and live readers close.
+            await streams.aclose()
         ps.clear()
         if settings.cluster:
             await ps.async_cluster.aclose()  # type: ignore[union-attr]

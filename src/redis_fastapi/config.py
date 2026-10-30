@@ -336,6 +336,97 @@ class RedisSettings(BaseSettings):
         ),
     )
 
+    # -- Resumable streams -----------------------------------------------------
+    stream_max_run: int = Field(
+        default=3600,
+        gt=0,
+        description=(
+            "Lifetime of a run, in seconds, set when it opens, so a producer "
+            "killed mid-run leaves a stream that expires by itself.  Nothing "
+            "extends it: a run longer than this expires.  At most 86400."
+        ),
+    )
+    stream_done_ttl: int = Field(
+        default=120,
+        gt=0,
+        description=(
+            "TTL after the final entry, in seconds: how long a client can "
+            "still reconnect and read a finished stream.  At most this: ending "
+            "never extends a run, so one that ends with less of its lifetime "
+            "left - or any run, when this is not shorter than stream_max_run - "
+            "keeps what it has."
+        ),
+    )
+    stream_maxlen: int = Field(
+        default=10_000,
+        gt=0,
+        description=(
+            "Most events one writer may append to a run.  Past it append() "
+            "raises; Redis never trims a run, so its history and its final "
+            "entry stay whole."
+        ),
+    )
+    stream_max_event_bytes: int = Field(
+        default=65_536,
+        gt=0,
+        description="Largest accepted encoded event, in bytes.",
+    )
+    stream_heartbeat_interval: int = Field(
+        default=15,
+        gt=0,
+        description=(
+            "SSE ping interval, in seconds.  Also bounds each blocking read, "
+            "and sets how often an idle producer's keepalive() looks at "
+            "whether it must write a ping."
+        ),
+    )
+    stream_silence_timeout: int = Field(
+        default=60,
+        gt=0,
+        description=(
+            "How long a run may go without a new entry, in seconds, before a "
+            "reader ends it as producer_lost.  keepalive() pings after half "
+            "of it.  Must be more than twice stream_heartbeat_interval."
+        ),
+    )
+    stream_replay_page: int = Field(
+        default=100,
+        gt=0,
+        description="Entries per read (XREAD COUNT).",
+    )
+    stream_max_readers: int = Field(
+        default=256,
+        gt=0,
+        description=(
+            "Concurrent live SSE readers per process.  Over the limit a new "
+            "reader gets 503 with Retry-After."
+        ),
+    )
+    stream_max_connection_duration: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "Longest SSE connection, in seconds.  The browser then reconnects and the "
+            "application's access check runs again."
+        ),
+    )
+    stream_read_retry_window: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "How long a reader retries a failing Redis read, in seconds, "
+            "still sending pings, before it closes and lets the client reconnect."
+        ),
+    )
+    stream_send_timeout: int = Field(
+        default=10,
+        gt=0,
+        description=(
+            "Longest wait for one send to a client, in seconds.  Past it the reader "
+            "closes and frees its slot."
+        ),
+    )
+
     # -- Telemetry -------------------------------------------------------------
     otel_enabled: bool = Field(
         default=False,

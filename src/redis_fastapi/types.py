@@ -15,6 +15,7 @@ from typing import (
 
 from fastapi.security.base import SecurityBase
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -38,6 +39,25 @@ class JsonCoder:
     @classmethod
     def encode(cls, value: Any) -> str:
         return json.dumps(value)
+
+    @classmethod
+    def decode(cls, value: str) -> Any:
+        return json.loads(value)
+
+
+class JsonableCoder:
+    """JSON coder that also takes Pydantic models, dataclasses and datetimes.
+
+    The default for resumable streams.  A value that ``json.dumps`` cannot
+    encode goes through ``pydantic_core.to_jsonable_python`` first, so
+    Pydantic models and dataclasses can be appended as they are.  Decoding returns plain JSON values, not the
+    original objects.  A value that neither can encode raises
+    ``PydanticSerializationError``, a ``ValueError``.
+    """
+
+    @classmethod
+    def encode(cls, value: Any) -> str:
+        return json.dumps(value, default=to_jsonable_python)
 
     @classmethod
     def decode(cls, value: str) -> Any:

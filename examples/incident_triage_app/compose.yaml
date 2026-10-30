@@ -1,0 +1,30 @@
+# Redis 8.8 and the demo, for local runs.
+#
+#   docker compose -f examples/incident_triage_app/compose.yaml up
+#
+# Then open http://localhost:8000.  Set ANTHROPIC_API_KEY in your shell to use
+# the model planner; without it the scripted planner answers.
+services:
+  redis:
+    image: redis:8.8
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  app:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    working_dir: /repo
+    volumes:
+      - ../..:/repo
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      REDIS_SESSION_COOKIE_HTTPS_ONLY: "false"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Keep the container's virtualenv out of the mounted repository.
+      UV_PROJECT_ENVIRONMENT: /tmp/venv
+    command: >
+      uv run --with "fastapi[standard]" --with anthropic
+      fastapi run examples/incident_triage_app/main.py --host 0.0.0.0 --port 8000
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      - redis

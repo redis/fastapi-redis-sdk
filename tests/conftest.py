@@ -1,7 +1,9 @@
 """Shared test fixtures for fastapi-redis-sdk."""
 
+import asyncio
 import os
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator, Generator
 
@@ -9,8 +11,6 @@ from collections.abc import AsyncIterator, Generator
 # Force SelectorEventLoop.  3.12+ works fine with Proactor, and 3.14 deprecates
 # the policy API entirely.
 if sys.platform == "win32" and sys.version_info < (3, 12):
-    import asyncio
-
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import fakeredis
@@ -26,6 +26,8 @@ from redis_fastapi.deps import get_async_redis
 from redis_fastapi.setup import FastAPIRedis
 
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+pytest_plugins = ("tests.stream_support",)
 
 # Env-var keys that pydantic-settings would read via ``env_prefix="REDIS_"``.
 # CI runners often export REDIS_HOST, REDIS_PORT, etc. for the service
@@ -79,6 +81,31 @@ def about(actual: int, expected: int) -> bool:
     absolute clock is as wrong as extending it.
     """
     return expected - 1 <= actual <= expected
+
+
+def expire_now(redis: sync_redis.Redis, key: str, field: str | None = None) -> None:
+    """Let a key's TTL, or one hash field's, run out now.
+
+    Redis does the expiring, as it would at the real deadline; the test skips
+    only the wait.  Assert the TTL the SDK set before calling this, since the
+    call overwrites it.
+    """
+    if field is None:
+        redis.pexpire(key, 1)
+    else:
+        redis.execute_command("HPEXPIRE", key, 1, "FIELDS", 1, field)
+    time.sleep(0.01)
+
+
+async def aexpire_now(
+    redis: async_redis.Redis, key: str, field: str | None = None
+) -> None:
+    """:func:`expire_now` for an async client."""
+    if field is None:
+        await redis.pexpire(key, 1)
+    else:
+        await redis.execute_command("HPEXPIRE", key, 1, "FIELDS", 1, field)
+    await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------

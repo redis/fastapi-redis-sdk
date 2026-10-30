@@ -70,8 +70,13 @@ def security(session: nox.Session) -> None:
     uv_sync(session, "--only-group", "security")
     # JSON report for CI artifact upload (non-fatal); text report (fatal).
     session.run(
-        "bandit", "-r", "src/",
-        "-f", "json", "-o", "bandit-report.json",
+        "bandit",
+        "-r",
+        "src/",
+        "-f",
+        "json",
+        "-o",
+        "bandit-report.json",
         success_codes=[0, 1],
     )
     session.run("bandit", "-r", "src/")
@@ -105,6 +110,35 @@ def tests_unit(session: nox.Session) -> None:
     session.run("pytest", "tests/unit", *session.posargs)
 
 
+# Resumable streams need Redis 8.6.2 or later.  On an older server (the 7.4 CI
+# entry) the stream tests skip by design and only the "feature turns itself
+# off" test runs, so the stream modules are left out of coverage there rather
+# than lowering the floor for every server.  The probe is the SDK's own
+# support check, run inside the session's environment.
+_STREAMS_PROBE = """
+import os
+import redis
+
+url = os.environ.get("REDIS_URL") or "redis://{}:{}/0".format(
+    os.environ.get("REDIS_HOST", "localhost"), os.environ.get("REDIS_PORT", "6379")
+)
+try:
+    client = redis.Redis.from_url(url)
+    client.ping()
+except Exception:
+    print("unreachable")
+    raise SystemExit(0)
+try:
+    reply = client.execute_command("COMMAND", "INFO", "XCFGSET", "DELEX")
+except TypeError:
+    print("unsupported")
+    raise SystemExit(0)
+entries = list(reply.values()) if isinstance(reply, dict) else list(reply)
+print("supported" if len(entries) == 2 and all(entries) else "unsupported")
+"""
+_STREAM_MODULES = "*/redis_fastapi/stream*.py"
+
+
 @nox.session(python=PYTHON_VERSIONS, default=False)
 def tests_integration(session: nox.Session) -> None:
     """Run the integration suite against a real Redis server on localhost:6379.
@@ -113,8 +147,15 @@ def tests_integration(session: nox.Session) -> None:
     That cannot pass vacuously: with all of them skipped coverage drops to
     ~35% and the floor below fails the session, so a missing server surfaces
     as a failure rather than a green all-skipped run.
+
+    Against a Redis without resumable-stream support, the stream modules are
+    left out of coverage: their tests skip there by design.
     """
     uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
+    support = session.run("python", "-c", _STREAMS_PROBE, silent=True)
+    if isinstance(support, str) and support.strip() == "unsupported":
+        session.log("Redis lacks stream support; stream modules are out of coverage")
+        session.env["COV_OMIT_STREAMS"] = _STREAM_MODULES
     session.run(
         "pytest",
         "tests/integration",
@@ -149,3 +190,23 @@ def fix(session: nox.Session) -> None:
     uv_sync(session, "--only-group", "lint")
     session.run("ruff", "check", "--fix", *SOURCES)
     session.run("ruff", "format", *SOURCES)
+
+
+@nox.session(python=PYTHON_DEFAULT, default=False)
+def streams_clients(session: nox.Session) -> None:
+    """Exercise stream replay and live delivery with selected redis-py clients."""
+    import os
+
+    version = os.getenv("STREAMS_REDIS_PY_VERSION", "8.0.1")
+    if version not in {"8.0.1", "8.1.0"}:
+        session.error("STREAMS_REDIS_PY_VERSION must be 8.0.1 or 8.1.0")
+    uv_sync(session, "--extra", "otel", "--no-default-groups", "--group", "test")
+    session.run_install(
+        "uv", "pip", "install", f"redis=={version}",
+        env={"VIRTUAL_ENV": session.virtualenv.location},
+    )
+    session.run(
+        "pytest", "tests/integration/test_streams_integration.py",
+        "-k", "client_response_modes", "-o", "addopts=", "-q", "-rs",
+        *session.posargs,
+    )

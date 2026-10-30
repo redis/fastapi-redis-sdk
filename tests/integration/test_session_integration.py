@@ -5,8 +5,6 @@ server itself, that the index prunes itself with no help from us, and that the
 capability probe picks the right command tier for whatever server is running.
 """
 
-import asyncio
-
 import pytest
 import redis.asyncio as async_redis
 
@@ -16,7 +14,7 @@ from redis_fastapi.session_backend import (
     _StoreCapabilities,
     probe_hsetex_support,
 )
-from tests.conftest import about, requires_redis
+from tests.conftest import about, aexpire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis, pytest.mark.asyncio]
 
@@ -146,12 +144,14 @@ async def test_redis_enforces_the_idle_clock(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
     """The server expires the field; nothing here counts down."""
-    store = _store(real_async_redis, test_prefix, idle_ttl=1, absolute_ttl=600)
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=600)
     sid = store.new_id()
+    key = store.session_key(sid)
     await store.create(sid, store.new_record({"user_id": 42}))
     assert await store.load(sid) is not None
+    assert about(await _httl(real_async_redis, key, FIELD_DATA), 60)
 
-    await asyncio.sleep(1.5)
+    await aexpire_now(real_async_redis, key, FIELD_DATA)
     assert await store.load(sid) is None, "the idle clock was not enforced"
 
 
@@ -163,21 +163,22 @@ async def test_redis_enforces_the_absolute_clock_despite_activity(
     The session is loaded continuously - each load refreshes the idle clock -
     and it must still die on schedule.
     """
-    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=2)
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=600)
     sid = store.new_id()
+    key = store.session_key(sid)
     await store.create(sid, store.new_record({"user_id": 42}))
+    await real_async_redis.expire(key, 30)  # some of the absolute clock has run
 
     for _ in range(4):
-        await asyncio.sleep(0.6)
-        result = await store.load(sid)
+        assert await store.load(sid) is not None
         await store.save(sid, store.new_record({"user_id": 42}))
-        if result is None:
-            break
-    else:
-        pytest.fail(
-            "the session outlived its absolute deadline under continuous "
-            "activity - writing the payload extended the key's TTL"
-        )
+    assert about(await real_async_redis.ttl(key), 30), (
+        "activity moved the absolute deadline - writing the payload extended "
+        "the key's TTL"
+    )
+
+    await aexpire_now(real_async_redis, key)
+    assert await store.load(sid) is None
 
 
 async def test_no_reader_can_see_a_session_past_its_absolute_deadline(
@@ -189,15 +190,14 @@ async def test_no_reader_can_see_a_session_past_its_absolute_deadline(
     still has most of a minute left. A raw ``HGET`` - which knows nothing
     about deadlines - must still find nothing.
     """
-    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=3)
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=600)
     sid = store.new_id()
     key = store.session_key(sid)
     await store.create(sid, store.new_record({"user_id": 42}))
-
-    await asyncio.sleep(1.0)
     assert await store.load(sid) is not None  # refreshes d to 60 s
+    assert about(await real_async_redis.ttl(key), 600)  # the deadline is the key's
 
-    await asyncio.sleep(2.5)
+    await aexpire_now(real_async_redis, key)  # the absolute deadline arrives
     assert await real_async_redis.hget(key, FIELD_DATA) is None
     assert await real_async_redis.exists(key) == 0
 
@@ -213,14 +213,14 @@ async def test_a_save_after_the_session_ended_does_not_revive_it(
     which is why this case is tested here. The next load must treat the key
     as over, and delete it.
     """
-    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1)
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=600)
     sid = store.new_id()
     key = store.session_key(sid)
     await store.create(sid, store.new_record({"user_id": 42}))
     assert await store.load(sid) is not None
 
     if ended_by == "expiry":
-        await asyncio.sleep(1.5)
+        await aexpire_now(real_async_redis, key)
         assert await real_async_redis.exists(key) == 0
     else:
         await store.delete(sid)
@@ -241,15 +241,17 @@ async def test_the_index_prunes_itself_with_no_help_from_us(
     DynamoDB's sweeper runs up to 48 hours late, Memcached cannot express the
     question at all.
     """
-    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=1)
+    store = _store(real_async_redis, test_prefix, idle_ttl=60, absolute_ttl=600)
     sid = store.new_id()
     record = store.new_record({"user_id": "42"})
     await store.create(sid, record)
-    await store.index("42", sid, record, absolute_remaining=1)
+    await store.index("42", sid, record, absolute_remaining=600)
     assert len(await store.list_for_subject("42")) == 1
+    index_key = store.index_key("42")
+    assert about(await _httl(real_async_redis, index_key, sid), 600)
 
-    await asyncio.sleep(1.5)
-    raw = await real_async_redis.hgetall(store.index_key("42"))
+    await aexpire_now(real_async_redis, index_key, sid)
+    raw = await real_async_redis.hgetall(index_key)
     assert raw == {}, "Redis did not expire the index entry on its own"
 
 

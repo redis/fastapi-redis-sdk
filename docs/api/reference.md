@@ -11,6 +11,7 @@ FastAPIRedis(app).lifespan()                    # connection pools only
 FastAPIRedis(app).lifespan().caching()          # + DI caching support
 FastAPIRedis(app).lifespan().rate_limiting()    # + DI rate limiting support
 FastAPIRedis(app).lifespan().sessions()         # + server-side sessions
+FastAPIRedis(app).lifespan().streams()          # + resumable streams
 ```
 
 Or compose the lifespan directly:
@@ -542,3 +543,153 @@ returns its response.
 A failed **read** yields an empty session unless `session_fail_closed` is set.
 A failed **write** always raises. `count_for_subject` always raises, because
 there the store is the authorization answer.
+
+---
+
+## Stream dependencies
+
+### `StreamBackendDep`
+
+```python
+from redis_fastapi import StreamBackendDep
+
+@app.post("/chats/{chat_id}/runs/{run_id}/cancel", status_code=204)
+async def stop(chat_id: str, run_id: str, streams: StreamBackendDep) -> None:
+    await streams.cancel(run_id, scope=f"chat:{chat_id}")
+```
+
+`Annotated[StreamBackend, Depends(get_stream_backend)]`. Requires `.streams()`.
+
+### `get_stream_backend()`
+
+Returns the application's one `StreamBackend`, the instance `.streams()`
+created. Unlike `get_cache_backend()` it does not build a backend per request:
+the backend holds the tasks from `spawn()` and the live reader count for the
+whole process. Raises `StreamConfigurationError` when streams are not set up.
+
+---
+
+## Stream setup
+
+### `add_redis_streams()` / `FastAPIRedis.streams()`
+
+```python
+FastAPIRedis(app).lifespan().streams(coder=None)
+# or, without the builder:
+add_redis_streams(app, coder=None)
+```
+
+| Argument | Purpose |
+|---|---|
+| `coder` | Serializer for event payloads. Defaults to `JsonableCoder`: JSON that also takes Pydantic models, dataclasses and datetimes. |
+
+Creates the backend, registers one handler for `StreamError` that turns
+stream errors into status codes, and marks the app so the lifespan detects
+server support at startup and cancels spawned producers at shutdown. A
+`StreamError` handler the application set first is kept, and one it sets for a
+subclass wins for that subclass. Calling it twice is a no-op. Raises
+`StreamConfigurationError` when the prefix contains braces,
+`stream_silence_timeout` is not more than twice `stream_heartbeat_interval`,
+`stream_max_run` is over `86400`, or `socket_timeout` is not longer than
+`stream_heartbeat_interval`.
+
+---
+
+## `StreamBackend`
+
+| Method | Purpose |
+|---|---|
+| `await start(fn, *, scope, stream_id=None) -> StreamWriter` | `open()`, then `spawn(writer, fn)` unless the run already existed. The usual start route in one call. |
+| `await open(*, scope, stream_id=None) -> StreamWriter` | Create a run, one transaction giving it its lifetime, `stream_max_run`, and return its `StreamWriter`. A retried start with the same `stream_id`, while the stream exists, returns a writer whose `created` is `False`. Raises `StreamStoreError` when the key holds something other than a stream. |
+| `spawn(writer, fn) -> asyncio.Task` | Run `fn(writer)` as a task the backend owns, with `writer.keepalive()` around it. Writes a final `stream.end` with the reason unless `fn` called `finish()`. Raises `ValueError` for a writer whose `created` is `False`, or one already spawned. |
+| `await sse(stream_id, *, request, scope, after=None, expires_at=None) -> Response` | Prepare an SSE response. Every check that decides the status runs first. Reads `Last-Event-ID` and `?after=` itself; `after` overrides both. Ends at `expires_at` with `stream.error` `credential_expired`. |
+| `await follow(stream_id, *, scope, after=None) -> StreamReader` | The same read without HTTP. Every check runs at the `await`, before any event. |
+| `await cancel(stream_id, *, scope) -> None` | End the run now with `stream.end` `{"reason": "cancelled"}`, and cancel its producer if `spawn()` started it in this process. A producer in another process is not told. A run that already ended is left as it is. Raises `StreamNotFound`. |
+| `await detect() -> bool \| None` | Detect server support. The lifespan calls it at startup; the result is cached. |
+| `supported` | `True`, `False`, or `None` while unknown. |
+
+Every method except `spawn()` and `detect()` raises `StreamUnsupported` when
+the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
+`[A-Za-z0-9_.:-]{1,200}` and stream IDs `[A-Za-z0-9_-]{1,64}`; others raise
+`StreamInvalidName` (`422`, also a `ValueError`) on every method.
+
+---
+
+## `StreamWriter`
+
+| Member | Purpose |
+|---|---|
+| `stream_id`, `scope` | The run's identity. |
+| `created` | `True` when `open()` created the run; `False` for a retried start. Start a producer only when `True`. |
+| `await append(type, data) -> str` | Store one event and return its entry ID: one `XADD`. Retried safely after a timeout. Appends from one writer go out one at a time. Raises `ValueError` for an invalid or reserved type, an event over `stream_max_event_bytes`, a writer that already appended `stream_maxlen` events, or a retried start's handle; `StreamFinished` after this writer's final event; `StreamExpired` when the run outlived `stream_max_run`. |
+| `await finish(type, data=None) -> str` | Write the final event and end the stream; its lifetime shortens to at most `stream_done_ttl`. Returns its ID; if the stream already ended, by a cancel or a reader, returns that final event's ID and adds nothing. |
+| `keepalive()` | Async context manager that writes a hidden `stream.ping` while the producer is quiet, so readers do not end the run as `producer_lost`. `spawn()` runs it. |
+| `finished` | Whether this writer wrote the final event. |
+
+Event types are 1 to 128 characters with no CR, LF or NUL. Types starting with
+`stream.` are reserved: `stream.end` (a final event the SDK writes),
+`stream.start` and `stream.ping` (stored, never shown to readers), and
+`stream.gap` and `stream.error` (sent by the reader, never stored).
+
+---
+
+## Stream data types
+
+| Type | Contents |
+|---|---|
+| `StreamEvent` | `id` (the entry ID, the cursor; `None` for the reader's own events), `type`, `data` (decoded), `final`. |
+| `StreamReader` | What `follow()` returns: an async iterator of `StreamEvent` and an async context manager that closes it. It reads nothing until iterated, and is empty when the cursor is the final event. `await aclose()` stops it. It takes no reader slot. |
+
+---
+
+## `session_expiry()`
+
+```python
+from redis_fastapi import session_expiry
+
+return await streams.sse(stream_id, request=request, scope=scope,
+                         expires_at=session_expiry(request))
+```
+
+The absolute deadline of the request's SDK session as an aware `datetime`, or
+`None` without session middleware or without a deadline.
+
+---
+
+## Stream errors
+
+```
+StreamError
+├── StreamNotFound             404  no stream under this scope and ID: unknown or expired
+├── StreamExpired              410  the run expired mid-write, or entries after the cursor removed
+├── StreamCursorAhead          409  the cursor is past the stream's last entry
+├── StreamFinished             409  a write after this writer's final event
+├── StreamInvalidCursor        422  malformed or repeated cursor (also a ValueError)
+├── StreamInvalidName          422  scope or stream ID outside the allowed set (also a ValueError)
+├── StreamCredentialExpired    401  expires_at had already passed
+├── StreamUnsupported          503  the server lacks support
+├── StreamStoreError           503  Redis failed
+└── StreamConfigurationError   500  a setting cannot work, or no .streams()
+```
+
+Each class carries its `status_code` and a stable `code`. The handler
+`.streams()` registers answers before the first byte with
+`{"detail": ..., "code": ...}`; a `503` carries `Retry-After`. Branch on
+`code`, not on `detail`.
+
+| Class | `code` |
+|---|---|
+| `StreamNotFound` | `stream_not_found` |
+| `StreamExpired` | `stream_expired` |
+| `StreamCursorAhead` | `cursor_ahead` |
+| `StreamFinished` | `stream_finished` |
+| `StreamInvalidCursor` | `invalid_cursor` |
+| `StreamInvalidName` | `invalid_stream_name` |
+| `StreamCredentialExpired` | `credential_expired` |
+| `StreamUnsupported` | `stream_unsupported` |
+| `StreamStoreError` | `stream_unavailable` |
+| `StreamConfigurationError` | `stream_configuration_error` |
+
+Over `stream_max_readers`, the SSE response answers `503` with code
+`stream_capacity_exceeded`; no exception is raised for it.
+

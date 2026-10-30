@@ -10,7 +10,7 @@ import pytest
 import redis.asyncio as async_redis
 
 from redis_fastapi.ratelimit_backend import RateLimitBackend
-from tests.conftest import requires_redis
+from tests.conftest import about, aexpire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis, pytest.mark.asyncio]
 
@@ -50,9 +50,11 @@ async def test_window_expiry_resets(
     real_async_redis: async_redis.Redis, test_prefix: str
 ) -> None:
     backend = RateLimitBackend(real_async_redis)
-    r1 = await backend.hit(test_prefix, limit=1, window=1)
+    r1 = await backend.hit(test_prefix, limit=1, window=60)
     assert r1.allowed
-    assert (await backend.hit(test_prefix, limit=1, window=1)).allowed is False
-    await asyncio.sleep(1.2)
+    assert (await backend.hit(test_prefix, limit=1, window=60)).allowed is False
+    key = backend._build_key(test_prefix)
+    assert about(await real_async_redis.ttl(key), 60)  # the window is the key's TTL
+    await aexpire_now(real_async_redis, key)
     # window elapsed → counter reset
-    assert (await backend.hit(test_prefix, limit=1, window=1)).allowed is True
+    assert (await backend.hit(test_prefix, limit=1, window=60)).allowed is True

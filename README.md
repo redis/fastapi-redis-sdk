@@ -24,18 +24,19 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 - **Dependency injection** — `cache()`, `cache_evict()`, `cache_put()` as `Depends()` factories, plus `CacheBackend` for complex invalidation and conditional logic
 - **HTTP-native caching** — [`ETag`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag), [`304 Not Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/304), [`Cache-Control`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control) directives out of the box
 - **Rate limiting** — `rate_limit()` dependency with a fluent rate language (`"10/second"`), `X-RateLimit-*` / `Retry-After` headers, and distributed per-client counters
+- **Resumable streams** — Server-Sent Events backed by Redis Streams: a client that reconnects resumes from its last event, and the run survives the disconnect
 - **Testable** — full `dependency_overrides` support; no need for monkey-patching
 - **Pydantic-validated configuration** — fully configurable via environment variables or via an `.env` file
 
 ### Requirements
 
-| Dependency   | Supported versions |
-|--------------|--------------------|
-| Python       | 3.10 to 3.14       |
-| FastAPI      | 0.115+             |
-| redis-py     | 6.0+               |
-| Pydantic     | 2.0+               |
-| Redis server | 7.4+               |
+| Dependency   | Supported versions                  |
+|--------------|-------------------------------------|
+| Python       | 3.10 to 3.14                        |
+| FastAPI      | 0.115+                              |
+| redis-py     | 6.2+                                |
+| Pydantic     | 2.0+                                |
+| Redis server | 7.4+ (8.6.2+ for resumable streams) |
 
 ## Installation
 
@@ -113,6 +114,36 @@ async def me(session: SessionDep):
 Redis enforces an idle timeout and an absolute timeout. `valid_session()` returns `401` when a request has no live session, and `request.session` works as it does with Starlette's `SessionMiddleware`.
 
 See the [Sessions Guide](docs/guide/sessions.md) for timeouts, sign-out everywhere, CSRF, encryption and migration.
+
+## Resumable streams
+
+Stream an agent's output through Redis, so a client that loses its connection resumes from the last event it saw. The run is decoupled from the request: a disconnect never stops it.
+
+```python
+from fastapi import FastAPI, Request
+from redis_fastapi import FastAPIRedis, StreamBackendDep, StreamWriter
+
+app = FastAPI()
+FastAPIRedis(app).lifespan().streams()
+
+async def run_agent(writer: StreamWriter):
+    async for chunk in model.stream(prompt):
+        await writer.append("delta", {"text": chunk})
+
+@app.post("/chats/{chat_id}/runs", status_code=202)
+async def start(chat_id: str, run_id: str, streams: StreamBackendDep):
+    # A retried POST with the same run_id finds the run and starts nothing.
+    writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_id)
+    return {"stream_id": writer.stream_id}
+
+@app.get("/chats/{chat_id}/runs/{stream_id}/events")
+async def events(chat_id: str, stream_id: str, request: Request, streams: StreamBackendDep):
+    return await streams.sse(stream_id, request=request, scope=f"chat:{chat_id}")
+```
+
+A browser `EventSource` on the events route reconnects with `Last-Event-ID` and gets exactly the events after it. A second tab or device follows the same run, `cancel()` stops it, and a producer that dies is detected and its stream ended. Resumable streams need Redis 8.6.2 or later; on an older server the feature turns itself off and the rest of the application runs.
+
+See the [Resumable Streams Guide](docs/guide/streams.md) for access control, cursors, error handling, the browser side and the settings.
 
 ## Configuration
 
