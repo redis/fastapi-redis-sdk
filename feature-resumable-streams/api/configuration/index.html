@@ -1576,11 +1576,11 @@
 <td>Enable redis-py native OTel</td>
 </tr>
 <tr>
-<td><code>stream_active_ttl</code></td>
+<td><code>stream_max_run</code></td>
 <td><code>int</code></td>
-<td><code>600</code></td>
-<td>&gt; 0</td>
-<td>TTL of a running stream, refreshed by every append</td>
+<td><code>3600</code></td>
+<td>&gt; 0, &lt;= 86400</td>
+<td>Lifetime of a run from <code>open()</code>; nothing extends it</td>
 </tr>
 <tr>
 <td><code>stream_done_ttl</code></td>
@@ -1590,18 +1590,11 @@
 <td>How long a finished stream stays readable</td>
 </tr>
 <tr>
-<td><code>stream_gone_ttl</code></td>
-<td><code>int</code></td>
-<td><code>3600</code></td>
-<td>&gt;= 0</td>
-<td>How long stream metadata outlives the stream</td>
-</tr>
-<tr>
 <td><code>stream_maxlen</code></td>
 <td><code>int</code></td>
 <td><code>10000</code></td>
 <td>&gt; 0</td>
-<td>Approximate entries kept per stream</td>
+<td>Most events one writer may append</td>
 </tr>
 <tr>
 <td><code>stream_max_event_bytes</code></td>
@@ -1615,14 +1608,14 @@
 <td><code>int</code></td>
 <td><code>15</code></td>
 <td>&gt; 0</td>
-<td>SSE ping, read bound, producer heartbeat</td>
+<td>SSE ping, read bound, <code>keepalive()</code> cadence</td>
 </tr>
 <tr>
-<td><code>stream_alive_ttl</code></td>
+<td><code>stream_silence_timeout</code></td>
 <td><code>int</code></td>
-<td><code>45</code></td>
-<td>&gt; heartbeat</td>
-<td>Lifetime of the producer heartbeat field</td>
+<td><code>60</code></td>
+<td>&gt; 2 × heartbeat</td>
+<td>Silence after which a reader ends the run as <code>producer_lost</code></td>
 </tr>
 <tr>
 <td><code>stream_replay_page</code></td>
@@ -1791,7 +1784,7 @@ model-specific <code>CacheBackend</code> provider and inject it (the default
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 13:07:01 UTC">October 30, 2026</span>
   </span>
 
     

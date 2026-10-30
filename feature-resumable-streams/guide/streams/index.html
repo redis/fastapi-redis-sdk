@@ -849,6 +849,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#one-run-at-a-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One run at a time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ending-a-connection-with-the-credential" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1414,6 +1425,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#one-run-at-a-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One run at a time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ending-a-connection-with-the-credential" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1673,11 +1695,13 @@ disconnect does not stop it.</p>
 all a client needs: it reconnects by itself and sends the last event ID.</p>
 <hr />
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>One Redis Stream holds one run. Each event is a stream entry, and the entry ID
-is the cursor: it goes out as the SSE <code>id:</code>, and the browser sends it back in
-<code>Last-Event-ID</code> when it reconnects. The response replays the entries after the
-cursor and then waits for new ones, in one read loop, so nothing is spliced
-from two sources.</p>
+<p>One Redis Stream holds one run, and it is the only key a run has. Each event
+is a stream entry, and the entry ID is the cursor: it goes out as the SSE
+<code>id:</code>, and the browser sends it back in <code>Last-Event-ID</code> when it reconnects.
+The response replays the entries after the cursor and then waits for new ones,
+in one read loop, so nothing is spliced from two sources. Everything else
+about the run is an entry too: one when it starts, and exactly one final
+entry when it ends.</p>
 <p>The producer and the reader share nothing but Redis. The producer is a task
 that <code>spawn()</code> starts outside the request, and any process of the application
 can serve the reader. When a client disconnects, only its reader ends. When an
@@ -1686,9 +1710,9 @@ API process restarts, the browser reconnects to another one.</p>
 <h2 id="setup">Setup<a class="headerlink" href="#setup" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">streams</span><span class="p">()</span>
 </code></pre></div>
-<p>The feature needs <strong>Redis 8.6.2 or later</strong>: it uses idempotent <code>XADD … IDMP</code>,
-<code>DELEX</code> and <code>SET … IFEQ</code>. Caching, rate limiting and sessions keep their own,
-lower requirements.</p>
+<p>The feature needs <strong>Redis 8.6.2 or later</strong>: it uses idempotent <code>XADD … IDMP</code>
+and <code>XCFGSET</code>. Caching, rate limiting and sessions keep their own, lower
+requirements.</p>
 <p>At startup the SDK asks the server whether it has the commands, the way the
 rate limiter and sessions check for theirs (<code>COMMAND INFO XCFGSET DELEX</code>).
 Without them the feature turns itself off. The application starts, its other
@@ -1702,14 +1726,9 @@ If Redis is unreachable at startup, the first stream call asks again.</p>
 explicit RESP2, and explicit RESP3 with both legacy and modern responses.
 Both binary and decoded responses are covered. The reader accepts the
 corresponding XREAD layouts without requiring a particular response mode.</p>
-<p>Initial replay uses a nonblocking XRANGE inside the metadata transaction;
-live delivery uses XREAD. Both return events strictly after the cursor.
-Metadata reads use fixed-field HMGET to avoid the redis-py RESP2 Cluster
-HGETALL callback incompatibility in these client versions.</p>
-<p>These compatibility checks do not qualify network failure or failover.
-The watched-transaction retry fix in redis/redis-py#4486 is absent from these
-released clients; select a released client containing it and repeat failure
-and transaction-race checks before qualifying Cluster recovery.</p>
+<p>Initial replay uses a nonblocking XRANGE inside the check transaction; live
+delivery uses XREAD. Both return events strictly after the cursor.</p>
+<p>These compatibility checks do not qualify network failure or failover.</p>
 <hr />
 <h2 id="starting-a-run">Starting a run<a class="headerlink" href="#starting-a-run" title="Permanent link">&para;</a></h2>
 <p><code>start()</code> creates the run, starts your producer on it, and returns its
@@ -1723,13 +1742,11 @@ and transaction-race checks before qualifying Cluster recovery.</p>
 <li><strong><code>stream_id</code></strong> is optional. Let the browser generate one before it sends
   the request, and a retried <code>POST</code> finds the same run: <code>start()</code> starts no
   second producer, and the writer it returns has <code>created</code> set to <code>False</code>.
-  This holds while the run goes on and for
-  <code>stream_done_ttl + stream_gone_ttl</code> after it ends; later,
-  the same ID starts a new run. Without a <code>stream_id</code>, the SDK generates one.</li>
-<li><strong>One active run per scope.</strong> By default a run takes the scope's slot, and a
-  second <code>open()</code> in the same scope raises <code>StreamBusy</code> (<code>409</code>), whose
-  <code>stream_id</code> names the running one. Pass <code>exclusive=False</code> to allow several
-  runs at once.</li>
+  This holds for as long as the stream exists: while the run goes on, and for
+  <code>stream_done_ttl</code> after it ends. Later, the same ID starts a new run.
+  Without a <code>stream_id</code>, the SDK generates one.</li>
+<li><strong>Runs per scope.</strong> The SDK does not limit how many runs a scope has. For
+  one run at a time, see <a href="#one-run-at-a-time">One run at a time</a>.</li>
 </ul>
 <p>Scopes may use letters, digits and <code>_ . : -</code>, up to 200 characters. Stream IDs
 may use letters, digits and <code>_ -</code>, up to 64. Any other value raises
@@ -1743,9 +1760,9 @@ spending a budget only for a new run, call <code>open()</code> and <code>spawn()
 <p><code>spawn()</code> refuses a writer whose <code>created</code> is <code>False</code> with <code>ValueError</code>.</p>
 <h3 id="producing">Producing<a class="headerlink" href="#producing" title="Permanent link">&para;</a></h3>
 <p><code>spawn()</code>, which <code>start()</code> calls, runs your producer as a task the backend
-owns. It keeps a reference
-so the task is not garbage-collected, refreshes the producer heartbeat while
-it runs, and cancels it at shutdown.</p>
+owns. It keeps a reference so the task is not garbage-collected, runs
+<code>writer.keepalive()</code> around it (see <a href="#producers-that-stop">Producers that stop</a>),
+and cancels it at shutdown.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run_agent</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span> <span class="n">StreamWriter</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="k">for</span> <span class="n">tool</span> <span class="ow">in</span> <span class="n">plan</span><span class="p">:</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>        <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call</span><span class="p">(</span><span class="n">tool</span><span class="p">)</span>
@@ -1763,6 +1780,10 @@ also takes Pydantic models, dataclasses and datetimes, which is what agent
 SDKs hand you; readers get plain JSON back. A timeout or a dropped connection
 is retried with the same idempotency key, so a retried append never stores
 the event twice.</p>
+<p>Appends from one writer go out one at a time, in order. Await each one: an
+append left running in a task of its own holds up the final event. A writer
+may append at most <code>stream_maxlen</code> events; past that, <code>append()</code> raises
+<code>ValueError</code>, so a runaway producer stops instead of filling Redis.</p>
 <p>For the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph, see
 <a href="#agent-sdk-recipes">Agent SDK recipes</a>.</p>
 <h3 id="ending">Ending<a class="headerlink" href="#ending" title="Permanent link">&para;</a></h3>
@@ -1777,9 +1798,16 @@ reconnect after it gets <code>204</code>, which stops <code>EventSource</code> f
   <code>{"reason": "cancelled"}</code>. An exception with a string <code>code</code> attribute
   reports that code instead.</li>
 </ul>
-<p>After the final event the writer refuses further appends with
+<p>After its own final event the writer refuses further appends with
 <code>StreamFinished</code>. Every final event shares one idempotency key, so a stream
-holds at most one, even if two writers end it at the same time.</p>
+holds one, however a producer, a cancel and a reader race to end it. A
+<code>finish()</code> that comes after a cancel returns the cancel's final event and
+adds nothing.</p>
+<p>A run lives <code>stream_max_run</code> (an hour by default) from <code>open()</code>, and nothing
+extends it. When it ends, its lifetime shortens to <code>stream_done_ttl</code>, so
+clients can still read it for that long. An append after the lifetime has run
+out raises <code>StreamExpired</code>; set <code>stream_max_run</code> for the longest run you
+expect.</p>
 <hr />
 <h2 id="reading">Reading<a class="headerlink" href="#reading" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">return</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">sse</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">request</span><span class="o">=</span><span class="n">request</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="n">scope</span><span class="p">)</span>
@@ -1831,13 +1859,26 @@ chat A cannot read chat B's run by sending its ID under chat A's URL. Build the
 scope from the object your dependency authorized, not from the raw path, when
 you resolve aliases or tenant-local IDs.</p>
 <p>Because access attaches to the resource and not to a session, every member of
-a shared chat, every tab and every device of a user reaches the same streams.
-A second device finds the current run with <code>active()</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/chats/</span><span class="si">{chat_id}</span><span class="s2">/runs/active&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>         <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">require_chat_access</span><span class="p">)])</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">active</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;stream_id&quot;</span><span class="p">:</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">active</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)}</span>
+a shared chat, every tab and every device of a user reaches the same streams.</p>
+<h3 id="one-run-at-a-time">One run at a time<a class="headerlink" href="#one-run-at-a-time" title="Permanent link">&para;</a></h3>
+<p>The SDK keeps nothing but each run's own stream, so it does not know which run
+is a chat's current one. When your application allows one run at a time, or a
+second device must find the current run, keep a pointer of your own: claim it
+when a run starts, read it from the second device, and free it when the run
+ends.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">current</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;app:current-run:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">if</span> <span class="ow">not</span> <span class="k">await</span> <span class="n">redis</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">current</span><span class="p">,</span> <span class="n">run_id</span><span class="p">,</span> <span class="n">nx</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">ex</span><span class="o">=</span><span class="mi">3600</span><span class="p">):</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="mi">409</span><span class="p">,</span> <span class="s2">&quot;A run is already active&quot;</span><span class="p">)</span>   <span class="c1"># or take it over</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">writer</span> <span class="o">=</span> <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">run_agent</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">stream_id</span><span class="o">=</span><span class="n">run_id</span><span class="p">)</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># ... the second device: await redis.get(current)</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># ... when the run ends:  await redis.execute_command(&quot;DELEX&quot;, current, &quot;IFEQ&quot;, run_id)</span>
 </code></pre></div>
+<p>A process that dies cannot free its claim, so decide when one is stale: a run
+whose stream is gone, or whose TTL is at most <code>stream_done_ttl</code>, has ended -
+as long as <code>stream_done_ttl</code> is shorter than <code>stream_max_run</code>, so a finished
+run's TTL is always below a running one's.
+The <a href="https://github.com/redis/fastapi-redis-sdk/tree/main/examples/incident_triage_app">incident triage example</a>
+does this in <code>runs.py</code>, with tests.</p>
 <h3 id="ending-a-connection-with-the-credential">Ending a connection with the credential<a class="headerlink" href="#ending-a-connection-with-the-credential" title="Permanent link">&para;</a></h3>
 <p>Your access check runs once, when the connection opens. To end an open stream
 when the credential does, pass its deadline:</p>
@@ -1860,31 +1901,33 @@ revoked session keeps reading for at most that long.</p>
 <a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">stream_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">streams</span><span class="p">:</span> <span class="n">StreamBackendDep</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="k">await</span> <span class="n">streams</span><span class="o">.</span><span class="n">cancel</span><span class="p">(</span><span class="n">stream_id</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;chat:</span><span class="si">{</span><span class="n">chat_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div>
-<p><code>cancel()</code> sets a flag in Redis and returns <code>False</code> if the run had already
-ended. A producer started by <code>spawn()</code> in the same process is cancelled at
-once; one in another process sees the flag at its next append or heartbeat. A
-producer you run yourself checks <code>writer.cancelled</code> after each append and calls
-<code>finish()</code>. A cancel that arrives while the producer writes its final event
-lets that write finish.</p>
+<p><code>cancel()</code> ends the run at once: it writes the final event, <code>stream.end</code> with
+<code>{"reason": "cancelled"}</code>, so every reader stops. Cancelling a run that already
+ended changes nothing. A producer started by <code>spawn()</code> in the same process is
+cancelled too, and the cancel reaches the model call or tool it waits on. A
+cancel that arrives while that producer writes its final event lets the write
+finish.</p>
+<p>A producer in <strong>another process is not told</strong>. It runs to completion, and
+what it writes lands after the final event, where no reader looks. If your
+stop requests can reach a different process than the producer, for example
+behind a load balancer with several workers, the run stops for the user at
+once, but its model call keeps running until it ends on its own.</p>
 <hr />
 <h2 id="producers-that-stop">Producers that stop<a class="headerlink" href="#producers-that-stop" title="Permanent link">&para;</a></h2>
-<p>A producer keeps a short-lived heartbeat in Redis, an <code>alive</code> field in the
-run's metadata hash with its own TTL, which every append and every heartbeat
-refreshes. When a reader has waited a full heartbeat with no new entry, it
-checks that field. If the field has lapsed and the stream has no final event, the producer is gone, and the reader writes the final event the
-producer never wrote: <code>stream.end</code> with <code>{"reason": "producer_lost"}</code>. Every
-reader then stops, and reconnects get <code>204</code> instead of waiting again.</p>
+<p>A reader that sees no new entry for <code>stream_silence_timeout</code> (a minute by
+default) decides the producer is gone, and writes the final event it never
+wrote: <code>stream.end</code> with <code>{"reason": "producer_lost"}</code>. Every reader then
+stops, and reconnects get <code>204</code> instead of waiting again. Each reader measures
+the silence on its own clock, from when it connected or last saw an entry, and
+a Redis outage does not count as silence.</p>
 <ul>
 <li><strong>Long tool calls.</strong> <code>spawn()</code> runs <code>writer.keepalive()</code> around your
-  producer. If you run a producer yourself, wrap long waits in
-  <code>async with writer.keepalive():</code>.</li>
-<li><strong>Slow waits.</strong> <code>writer.extend(ttl)</code> keeps the stream, the heartbeat and
-  the active slot for <code>ttl</code> seconds, for a run that waits on something slow.</li>
-<li><strong>Another process continues.</strong> <code>streams.attach(stream_id, scope=...)</code>
-  returns a writer that continues the run's sequence numbers. The old writer is
-  fenced: its next append or heartbeat raises <code>StreamFenced</code>, and at most that
-  one append lands after the takeover. Its <code>finish()</code> raises <code>StreamFenced</code>
-  before it writes, so it can never end the new writer's run.</li>
+  producer: while it waits, it writes a hidden <code>stream.ping</code> entry often
+  enough that no reader goes half the silence timeout without one. If you run
+  a producer yourself, wrap long waits in <code>async with writer.keepalive():</code>.</li>
+<li><strong>A producer that was only stalled</strong> keeps writing after a reader ended its
+  run. Its events land after the final event, unread, and its <code>finish()</code>
+  returns the reader's final event.</li>
 </ul>
 <p>A reader that cannot write, because its Redis ACL is read-only, sends a
 <code>stream.error</code> event with code <code>producer_lost</code> and closes instead.</p>
@@ -1954,17 +1997,17 @@ their events, so check a recipe against the version you run. Checked with
 <li><strong>Send deltas, not snapshots.</strong> Every event must fit in
   <code>stream_max_event_bytes</code>. A large tool result, such as retrieved documents,
   is better sent as a summary.</li>
-<li><strong>Cancel works as it is.</strong> <code>cancel()</code> cancels the producer task, and the
-  cancel reaches the model call or tool the SDK is waiting on. <code>spawn()</code> then
-  writes <code>stream.end</code> with <code>{"reason": "cancelled"}</code>. This holds for all four
-  SDKs.</li>
+<li><strong>Cancel works as it is.</strong> In the producer's process, <code>cancel()</code> cancels the
+  producer task, and the cancel reaches the model call or tool the SDK is
+  waiting on. This holds for all four SDKs. From another process it ends the
+  run for readers only (see <a href="#stopping-a-run">Stopping a run</a>).</li>
 <li><strong>Errors end the stream.</strong> An exception from the SDK, such as a provider
   error, ends the stream with <code>{"reason": "error", "code": "producer_error"}</code>.</li>
 <li><strong>A pause for a person ends the turn.</strong> When the agent waits for an
   approval or an answer, end the turn with
   <code>finish("turn.interrupted", ...)</code>, and start the answer as a new turn with a
-  new stream ID. A stream left open while a person decides needs <code>extend()</code>
-  against its TTL, and holds the scope's active slot all that time. The
+  new stream ID. A stream left open while a person decides needs a producer
+  pinging the whole time, and expires after <code>stream_max_run</code>. The
   LangGraph recipe shows the pattern; the OpenAI Agents SDK
   (<code>result.interruptions</code>), PydanticAI (deferred tools) and ADK (long-running
   tools) work the same way.</li>
@@ -2175,7 +2218,7 @@ dependency answers <code>401</code> or <code>403</code> before the SDK runs.</p>
 <tbody>
 <tr>
 <td><code>204</code></td>
-<td>The cursor is at or past the final event</td>
+<td>The cursor is the final event</td>
 <td>-</td>
 </tr>
 <tr>
@@ -2185,17 +2228,17 @@ dependency answers <code>401</code> or <code>403</code> before the SDK runs.</p>
 </tr>
 <tr>
 <td><code>404</code></td>
-<td>No such stream in this scope</td>
+<td>No such stream in this scope: unknown, expired, or another scope's</td>
 <td><code>StreamNotFound</code></td>
 </tr>
 <tr>
 <td><code>409</code></td>
-<td>The scope has an active run; the cursor is past the stream's last entry</td>
-<td><code>StreamBusy</code>, <code>StreamCursorAhead</code></td>
+<td>The cursor is past the stream's last entry</td>
+<td><code>StreamCursorAhead</code></td>
 </tr>
 <tr>
 <td><code>410</code></td>
-<td>The stream expired, or entries after the cursor were removed</td>
+<td>Entries after the cursor were removed</td>
 <td><code>StreamExpired</code></td>
 </tr>
 <tr>
@@ -2225,17 +2268,16 @@ one of two ways, and the client needs no list of error codes:</p>
   <code>Last-Event-ID</code>. A shorter Redis failure never reaches the client: the reader
   retries and keeps sending pings.</li>
 <li><strong>Over</strong>: a dead producer, or a stream that vanished. The stream ends with a
-  final event, or the reconnect gets <code>204</code>, <code>410</code> or <code>404</code>, and <code>EventSource</code>
-  stops.</li>
+  final event, or the reconnect gets <code>204</code> or <code>404</code>, and <code>EventSource</code> stops.</li>
 </ul>
 <h3 id="gaps">Gaps<a class="headerlink" href="#gaps" title="Permanent link">&para;</a></h3>
-<p>A stream keeps about <code>stream_maxlen</code> entries. A reader that falls so far behind
-that trimming removes entries it has not read gets a <code>stream.gap</code> event with
-<code>{"missing": n}</code>, and the read goes on. A reconnect whose cursor already points
-into removed history gets <code>410</code>, and so does a request with no cursor once
-anything was removed. Reload the state from your own database then. A client
-whose last event was exactly the newest one trimmed also gets <code>410</code>, though it
-missed nothing.</p>
+<p>The SDK never trims a run, so a stream keeps every event until it expires.
+Each event carries its writer's sequence number. When one never landed - an
+append that failed after it was numbered - readers get a <code>stream.gap</code> event
+with <code>{"missing": n}</code>, and the read goes on.</p>
+<p>If something outside the SDK removes entries, such as an operator's <code>XTRIM</code>, a
+reconnect whose cursor points into the removed history gets <code>410</code>, and so does
+a request with no cursor. Reload the state from your own database then.</p>
 <hr />
 <h2 id="the-browser-side">The browser side<a class="headerlink" href="#the-browser-side" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kd">const</span><span class="w"> </span><span class="nx">events</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">EventSource</span><span class="p">(</span><span class="sb">`/chats/</span><span class="si">${</span><span class="nx">chatId</span><span class="si">}</span><span class="sb">/runs/</span><span class="si">${</span><span class="nx">runId</span><span class="si">}</span><span class="sb">/events`</span><span class="p">);</span>
@@ -2280,6 +2322,8 @@ missed nothing.</p>
 <li><strong>Redis failover.</strong> Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
   loss gets <code>409</code>; one behind it sees a <code>stream.gap</code>.</li>
+<li><strong>Memory.</strong> A run holds at most <code>stream_maxlen</code> events from its writer, each
+  at most <code>stream_max_event_bytes</code>, plus a few hidden entries.</li>
 <li><strong>Eviction.</strong> Every stream key has a TTL. Where Redis is shared with other
   data, <code>maxmemory-policy volatile-lrm</code> evicts finished, idle streams first.</li>
 </ul>
@@ -2292,7 +2336,12 @@ missed nothing.</p>
   change.</li>
 <li><strong>Producers do not survive a deploy.</strong> A producer started by <code>spawn()</code> dies
   with its process. Its readers get <code>producer_lost</code>, and the user starts a new
-  run.</li>
+  run. A run cannot be handed to another process.</li>
+<li><strong>Cancels stay in their process.</strong> A cancel from another process ends the
+  run for readers but does not stop its producer.</li>
+<li><strong>A start whose reply is lost.</strong> If Redis applied a creating <code>open()</code> but
+  its reply was lost, the retry reports <code>created</code> as <code>False</code> and no producer
+  starts; the run ends as <code>producer_lost</code> after the silence timeout.</li>
 <li><strong>SSE only.</strong> There is no WebSocket reader; <code>follow()</code> is the starting point
   for one.</li>
 <li><strong>Async producers only.</strong> A producer in sync code, such as CrewAI or ADK's
@@ -2302,23 +2351,17 @@ missed nothing.</p>
 <h2 id="redis-keys">Redis keys<a class="headerlink" href="#redis-keys" title="Permanent link">&para;</a></h2>
 <p>Every key uses the SDK's <code>prefix</code> setting (<code>REDIS_PREFIX</code>, default
 <code>redis:fastapi</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>&lt;prefix&gt;:stream:{&lt;scope&gt;}:&lt;id&gt;        Stream   the events
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>&lt;prefix&gt;:stream-meta:{&lt;scope&gt;}:&lt;id&gt;   Hash     status, cancel, writer, started, alive
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>&lt;prefix&gt;:stream-active:{&lt;scope&gt;}      String   the scope&#39;s active run
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>&lt;prefix&gt;:stream:&lt;scope&gt;:&lt;id&gt;   Stream   the run: its events, and the SDK&#39;s own entries
 </code></pre></div>
-<p>The <code>{&lt;scope&gt;}</code> hash tag keeps a scope's keys in one Cluster slot, so one
-transaction starts a run and takes the slot, and one transaction ends it and
-frees the slot. It also puts all of a scope's runs on one shard, so make the
-scope one resource, such as a chat, and not one value for the whole
-application. The <code>alive</code> field in the metadata hash is the producer heartbeat;
-it has its own TTL, <code>stream_alive_ttl</code>. The metadata hash outlives the
-stream by <code>stream_gone_ttl</code>,
-so a late reconnect gets <code>410</code> (expired) instead of <code>404</code> (unknown). The prefix
-must not contain braces.</p>
+<p>That is the only key: a run's state is the entries in its stream. The first is
+<code>stream.start</code>; <code>stream.ping</code> entries mark a quiet producer as alive; the last
+event a reader sees is the one final entry. Readers never show the SDK's own
+entries. On Cluster each run is one key, so a scope's runs spread across
+shards. The prefix must not contain braces.</p>
 <hr />
 <h2 id="settings">Settings<a class="headerlink" href="#settings" title="Permanent link">&para;</a></h2>
 <p>Every setting is an environment variable prefixed <code>REDIS_</code>, so
-<code>stream_active_ttl</code> is <code>REDIS_STREAM_ACTIVE_TTL</code>. Durations are whole
+<code>stream_max_run</code> is <code>REDIS_STREAM_MAX_RUN</code>. Durations are whole
 seconds, as everywhere else in the SDK. See
 <a href="../configuration/">Configuration</a> for how these are loaded.</p>
 <table>
@@ -2331,24 +2374,19 @@ seconds, as everywhere else in the SDK. See
 </thead>
 <tbody>
 <tr>
-<td><code>stream_active_ttl</code></td>
-<td><code>600</code></td>
-<td>TTL of a running stream, refreshed by every append</td>
+<td><code>stream_max_run</code></td>
+<td><code>3600</code></td>
+<td>Lifetime of a run from <code>open()</code>; at most <code>86400</code>, nothing extends it</td>
 </tr>
 <tr>
 <td><code>stream_done_ttl</code></td>
 <td><code>120</code></td>
-<td>How long a finished stream stays readable</td>
-</tr>
-<tr>
-<td><code>stream_gone_ttl</code></td>
-<td><code>3600</code></td>
-<td>How long metadata outlives the stream, for <code>410</code> instead of <code>404</code></td>
+<td>How long a finished run stays readable, at most; ending never extends a run</td>
 </tr>
 <tr>
 <td><code>stream_maxlen</code></td>
 <td><code>10000</code></td>
-<td>Approximate entries kept per stream</td>
+<td>Most events one writer may append</td>
 </tr>
 <tr>
 <td><code>stream_max_event_bytes</code></td>
@@ -2358,12 +2396,12 @@ seconds, as everywhere else in the SDK. See
 <tr>
 <td><code>stream_heartbeat_interval</code></td>
 <td><code>15</code></td>
-<td>SSE ping, blocking-read bound, producer heartbeat</td>
+<td>SSE ping, blocking-read bound, how often <code>keepalive()</code> checks</td>
 </tr>
 <tr>
-<td><code>stream_alive_ttl</code></td>
-<td><code>45</code></td>
-<td>Lifetime of the producer heartbeat field; longer than the heartbeat</td>
+<td><code>stream_silence_timeout</code></td>
+<td><code>60</code></td>
+<td>Silence after which a reader ends the run as <code>producer_lost</code>; more than twice the heartbeat</td>
 </tr>
 <tr>
 <td><code>stream_replay_page</code></td>
@@ -2420,7 +2458,7 @@ No scope, stream ID or event data becomes a label.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 29, 2026 10:14:53 UTC">October 29, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 13:07:01 UTC">October 30, 2026</span>
   </span>
 
     

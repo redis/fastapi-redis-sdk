@@ -2161,10 +2161,12 @@ or <code>session.save</code> comes after them.</p>
 creates the run and returns at once; a producer task writes events to a Redis
 Stream; and the events route, on any API process, reads that stream. The
 producer and the reader share nothing but Redis, so a dropped connection ends
-only its reader, and the run goes on.</p>
-<p>The first diagram shows the producing side. The start request takes the
-active slot, starts the producer task and returns. The producer task then
-writes each event, and last the final entry.</p>
+only its reader, and the run goes on. The stream is the run's only key: its
+first entry marks the start, hidden pings mark a quiet producer, and one final
+entry marks the end.</p>
+<p>The first diagram shows the producing side. The start request creates the
+stream with its lifetime and returns. The producer task then writes each
+event, pings while it is quiet, and last the final entry.</p>
 <pre class="mermaid"><code>sequenceDiagram
     participant B as REST client
     participant A as API process
@@ -2172,14 +2174,17 @@ writes each event, and last the final entry.</p>
     participant R as Redis
 
     B-&gt;&gt;A: POST /runs (stream_id)
-    A-&gt;&gt;R: take the active slot, create meta
+    A-&gt;&gt;R: XADD stream.start, set the lifetime
     A-&gt;&gt;P: spawn()
     A--&gt;&gt;B: 202 with stream_id
 
     loop each event
-        P-&gt;&gt;R: XADD entry, refresh TTL and heartbeat
+        P-&gt;&gt;R: XADD entry
     end
-    P-&gt;&gt;R: XADD final entry, status finished, release slot</code></pre>
+    opt quiet for long
+        P-&gt;&gt;R: XADD stream.ping (hidden)
+    end
+    P-&gt;&gt;R: XADD final entry, shorten the lifetime</code></pre>
 <p>The second diagram shows the consuming side. The reader replays the entries
 already in the stream, then follows new ones, with the same <code>XREAD</code>. When the
 connection drops, the browser reconnects with the last entry ID it got, and
@@ -2190,7 +2195,7 @@ the reader starts after it.</p>
     participant R as Redis
 
     B-&gt;&gt;A: GET /events
-    A-&gt;&gt;R: read meta and first page
+    A-&gt;&gt;R: check the stream, read the first page
     A--&gt;&gt;B: 200, replayed entries
     loop until the final entry
         A-&gt;&gt;R: XREAD BLOCK after cursor
@@ -2200,7 +2205,7 @@ the reader starts after it.</p>
 
     Note over B,A: connection drops, the run goes on
     B-&gt;&gt;A: GET /events, Last-Event-ID: entry ID
-    A-&gt;&gt;R: read meta and first page after the entry ID
+    A-&gt;&gt;R: check the stream, read the first page after the entry ID
     A--&gt;&gt;B: 200, only the entries after it
     A--&gt;&gt;B: final event, then close</code></pre>
 <p>Four rules hold this together:</p>
@@ -2208,15 +2213,17 @@ the reader starts after it.</p>
 <li><strong>One read loop.</strong> The reader replays and follows with the same <code>XREAD</code>,
    so there is no splice between a replay source and a live source, and no
    Pub/Sub beside the stream.</li>
-<li><strong>Checks before the first byte.</strong> One transaction reads the metadata,
+<li><strong>Checks before the first byte.</strong> One transaction checks the stream, reads
    <code>XINFO STREAM</code> and the first page, so the decision on <code>404</code>, <code>410</code>, <code>409</code>
    or <code>204</code> and the first page are one snapshot.</li>
-<li><strong>One final entry.</strong> Every final entry, whether the producer, <code>spawn()</code> or a
-   reader writes it, uses the same <code>IDMP</code> pair, so a stream holds at most
-   one. Readers stop at it, and a reconnect after it gets <code>204</code>.</li>
-<li><strong>Redis keeps the clocks.</strong> The stream's TTL, the producer heartbeat and
-   the active slot all expire in Redis; no process compares timestamps. The
-   metadata hash outlives the stream, so an expired stream answers <code>410</code>.</li>
+<li><strong>One final entry.</strong> Every final entry, whether the producer, <code>spawn()</code>,
+   <code>cancel()</code> or a reader writes it, uses the same <code>IDMP</code> pair, so a stream
+   holds at most one. Readers stop at it, and a reconnect after it gets <code>204</code>.</li>
+<li><strong>One key, one lifetime.</strong> The stream's TTL is set when the run opens and
+   only ever shortened, so a producer killed mid-run leaves a key that expires
+   by itself, and an append is one <code>XADD</code>. A reader that sees no entry for
+   <code>stream_silence_timeout</code> ends the run as <code>producer_lost</code>; a quiet producer
+   writes hidden pings so that never happens to a live one.</li>
 </ol>
 <p>The backend is one object per process, created by <code>.streams()</code>. Unlike the
 cache backend, which the dependency builds per request, it holds state for the
@@ -2259,7 +2266,7 @@ tier.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 28, 2026 15:53:25 UTC">October 28, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 30, 2026 13:07:01 UTC">October 30, 2026</span>
   </span>
 
     
