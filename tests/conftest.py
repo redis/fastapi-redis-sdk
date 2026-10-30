@@ -27,6 +27,8 @@ from redis_fastapi.setup import FastAPIRedis
 
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+pytest_plugins = ("tests.stream_support",)
+
 # Env-var keys that pydantic-settings would read via ``env_prefix="REDIS_"``.
 # CI runners often export REDIS_HOST, REDIS_PORT, etc. for the service
 # container, which pollutes ``model_fields_set`` and triggers spurious

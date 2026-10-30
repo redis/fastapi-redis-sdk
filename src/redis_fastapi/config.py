@@ -337,13 +337,13 @@ class RedisSettings(BaseSettings):
     )
 
     # -- Resumable streams -----------------------------------------------------
-    stream_active_ttl: int = Field(
-        default=600,
+    stream_max_run: int = Field(
+        default=3600,
         gt=0,
         description=(
-            "TTL of a running stream, in seconds.  Every append refreshes it, "
-            "so a producer killed mid-run leaves a stream that expires by "
-            "itself."
+            "Lifetime of a run, in seconds, set when it opens, so a producer "
+            "killed mid-run leaves a stream that expires by itself.  Nothing "
+            "extends it: a run longer than this expires.  At most 86400."
         ),
     )
     stream_done_ttl: int = Field(
@@ -351,23 +351,19 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "TTL after the final entry, in seconds: how long a client can "
-            "still reconnect and read a finished stream."
-        ),
-    )
-    stream_gone_ttl: int = Field(
-        default=3600,
-        ge=0,
-        description=(
-            "How long a stream's metadata outlives the stream, in seconds, so "
-            "a late reconnect gets 410 (gone) instead of 404 (unknown)."
+            "still reconnect and read a finished stream.  At most this: ending "
+            "never extends a run, so one that ends with less of its lifetime "
+            "left - or any run, when this is not shorter than stream_max_run - "
+            "keeps what it has."
         ),
     )
     stream_maxlen: int = Field(
         default=10_000,
         gt=0,
         description=(
-            "Approximate entry cap per stream (XADD MAXLEN ~).  A reader that "
-            "falls behind the trimming sees a stream.gap event."
+            "Most events one writer may append to a run.  Past it append() "
+            "raises; Redis never trims a run, so its history and its final "
+            "entry stay whole."
         ),
     )
     stream_max_event_bytes: int = Field(
@@ -380,17 +376,17 @@ class RedisSettings(BaseSettings):
         gt=0,
         description=(
             "SSE ping interval, in seconds.  Also bounds each blocking read, "
-            "and sets how often a producer refreshes its heartbeat and checks "
-            "for cancel."
+            "and sets how often an idle producer's keepalive() looks at "
+            "whether it must write a ping."
         ),
     )
-    stream_alive_ttl: int = Field(
-        default=45,
+    stream_silence_timeout: int = Field(
+        default=60,
         gt=0,
         description=(
-            "Lifetime of a producer's heartbeat field, in seconds.  When it "
-            "lapses with no final entry, a reader ends the stream as "
-            "producer_lost.  Must be longer than stream_heartbeat_interval."
+            "How long a run may go without a new entry, in seconds, before a "
+            "reader ends it as producer_lost.  keepalive() pings after half "
+            "of it.  Must be more than twice stream_heartbeat_interval."
         ),
     )
     stream_replay_page: int = Field(

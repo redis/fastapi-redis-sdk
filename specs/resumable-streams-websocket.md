@@ -451,14 +451,17 @@ Rules:
    - *In-process wait.* The producer task stays alive. If its process dies,
      readers see `producer_lost`.
    - *Suspended wait.* The producer saves its own state (for example a
-     LangGraph checkpoint), writes `writer.extend(ttl)` and exits. A later
-     process calls `attach()` and continues on the same stream. Saving agent
-     state stays the application's job.
+     LangGraph checkpoint), ends the run with an event such as
+     `turn.interrupted` and exits. A later process starts a new run for the
+     answer: since 2026-10-30 nothing continues a run in another process.
+     Saving agent state stays the application's job.
 6. **No answer.** When the timeout passes, `ask()` raises `InputTimeout`. The
    default is to end the run with `fail("input_timeout")`. The application can
    catch it and choose another path.
-7. **A new message while a question is open.** The scope is still busy, so
-   `open()` raises `StreamBusy`. The application decides whether to treat the
+7. **A new message while a question is open.** The application's own
+   current-run pointer still names the open run (since 2026-10-30 the SDK
+   keeps no active slot), so the start is refused with 409. The application
+   decides whether to treat the
    text as the answer or reject it. The SDK does not guess.
 8. **Security.** The answer endpoint uses the same owner-scoped IDs as reads.
    Limit the answer size, and make `request_id` unguessable.
@@ -467,7 +470,7 @@ Rules:
 
 `resumable-streams-design.md` already has an inbound path: a `cancel` field in
 the meta hash. `cancel()` sets it. `append()` reads it in the same transaction
-(sections 7.1 and 7.3), and `keepalive()` reads it every heartbeat.
+(sections 7.1 and 7.3). Since 2026-10-30 there is no flag: `cancel()` ends the run itself, and a producer in another process is not told.
 
 | | Design today: `cancel` flag | Proposal: control stream |
 |---|---|---|
@@ -490,8 +493,9 @@ Three points follow:
    milliseconds. The delay shows up only in silence: a long tool call, or a
    run waiting for a person. I have corrected the earlier wording above.
 2. **Blocking doubles as the heartbeat.** Inside `ask()`, the producer can loop
-   on `XREAD BLOCK <heartbeat>`. Each timeout refreshes meta's `alive` field, so no
-   separate heartbeat task is needed while waiting.
+   on `XREAD BLOCK <heartbeat>`. Since 2026-10-30 liveness is silence on the
+   run's own stream, and `keepalive()` writes a hidden ping while the
+   producer waits, so a waiting producer needs no heartbeat of its own.
 3. **The cost to watch is held connections.** A person may take minutes to
    answer, and each waiting run holds one Redis connection. Polling the control
    stream once a second avoids that, at the price of up to a second of delay,
@@ -513,7 +517,7 @@ that special case but costs more than the problem justifies.
 
 What the control stream does not do: it cannot start a worker. In the
 suspended mode, an answer lands in Redis, but something must launch the
-process that calls `attach()`. That trigger belongs to the application (a
+process that starts the next run. That trigger belongs to the application (a
 queue or a task runner), as section 5.3 of the design says about dispatch.
 
 ### Where WebSocket would still help

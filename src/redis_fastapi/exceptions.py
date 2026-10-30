@@ -93,21 +93,6 @@ class StreamExpired(StreamError):
     code = "stream_expired"
 
 
-class StreamBusy(StreamError):
-    """The scope already has an active run.  Answered with 409.
-
-    Attributes:
-        stream_id: The ID of the run that holds the scope.
-    """
-
-    status_code = 409
-    code = "stream_busy"
-
-    def __init__(self, stream_id: str) -> None:
-        super().__init__(f"the scope already has an active run: {stream_id}")
-        self.stream_id = stream_id
-
-
 class StreamCursorAhead(StreamError):
     """The cursor is past the stream's last generated ID.  Answered with 409.
 
@@ -159,18 +144,6 @@ class StreamFinished(StreamError):
 
     status_code = 409
     code = "stream_finished"
-
-
-class StreamFenced(StreamError):
-    """This writer does not own the stream.  409.
-
-    Raised by a handle from a retried start, which never writes, and by a
-    writer that ``attach()`` replaced.  That writer stops; at most the append
-    that reported the fence landed after the new writer started.
-    """
-
-    status_code = 409
-    code = "stream_fenced"
 
 
 class StreamStoreError(StreamError):

@@ -325,7 +325,7 @@ passed:
           dependencies=[Depends(rate_limit("5/minute", identifier=by_subject))])
 async def start(body: RunIn, streams: StreamBackendDep,
                 limits: RateLimitBackendDep, subject: str = Depends(subject_of)):
-    # open() first: a busy scope raises StreamBusy (409) before any budget is spent
+    # claim the engineer's current run first: a busy one answers 409 before any budget is spent
     writer = await streams.open(scope=f"triage:{subject}", stream_id=body.run_id)
     if not writer.created:
         return {"stream_id": writer.stream_id}  # a retried start; no second budget slot
@@ -359,10 +359,11 @@ How the SDK behaves here:
 - **A retried start costs nothing more.** The browser's `run_id` makes a
   repeated `POST` return the same stream: `open()` returns a writer whose
   `created` is `False`, and the handler returns before `hit()`, so a retry
-  starts no second planner and takes no second slot.
-- **A busy scope costs nothing.** The handler calls `open()` before `hit()`.
-  If another run is already active, `open()` raises `StreamBusy` (`409`)
-  before the budget is touched.
+  starts no second planner and takes no second claim.
+- **A busy scope costs nothing.** The handler claims the engineer's
+  current-run pointer before `hit()`. If another run is already active, the
+  claim answers `409` before the budget is touched. (Since 2026-10-30 the app
+  keeps that pointer itself; the SDK's `StreamBusy` is gone.)
 - **A model failure still uses its slot.** The call was made and billed, so
   the count is correct.
 
@@ -384,7 +385,7 @@ Open `index.html` in a browser; it needs no server.
 | Send | 1, 2 | Tool cards with cache badges, then streamed text | Caching, streams |
 | Drop VPN | 3 | The `EventSource` closes; the run goes on | Disconnect never cancels |
 | Reconnect | 3 | Resume from the last entry ID; the page counts the entries since then and any repeats | Resume from cursor |
-| Open on phone | 4 | A second window signs in with the same handle and follows the run | Sessions per subject, `active()`, fan-out |
+| Open on phone | 4 | A second window signs in with the same handle and follows the run | Sessions per subject, the app's current-run lookup, fan-out |
 | Be Sam | 5 | A window with another handle asks the same question; both tools HIT | Shared cache |
 | Ask again ×6 | 6 | Busy starts get `409`; the sixth start gets `429` and a countdown | Per-engineer quota |
 | Sign out everywhere | 7 | The phone's next request gets `401`. Its open stream ends within 60 seconds, and the reconnect gets `401` | `revoke_all`, connection deadline |
@@ -408,9 +409,8 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
 
 | Key | Shown |
 |---|---|
-| `redis:fastapi:stream:{triage:<subject>}:<id>` | `XLEN`, TTL, last entry ID |
-| `redis:fastapi:stream-meta:{triage:<subject>}:<id>` | Status, cancel flag, the `alive` heartbeat field's TTL in ms, TTL |
-| `redis:fastapi:stream-active:{triage:<subject>}` | The stream ID it names, TTL |
+| `redis:fastapi:stream:triage:<subject>:<id>` | `XLEN`, TTL, last entry ID |
+| `redis:fastapi:triage-current:<subject>` | The app's own pointer to the engineer's current run: the stream ID it names, TTL |
 | Session record | Idle and absolute TTLs |
 | Run quota | Count and TTL of the current window |
 | Daily model budget | Count and TTL of the current window |
@@ -471,9 +471,9 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   slot is freed at once, and the browser resumes from `Last-Event-ID` when it
   wakes. With only 8 reader slots (section 8.2), this keeps one frozen phone
   from taking a slot for the full connection cap.
-- **Dead producers.** If a planner task dies, for example in a redeploy, its
-  `alive` heartbeat field expires and the reader writes the `stream.end` entry the planner
-  never wrote, with `reason` `producer_lost`. The page shows "The agent stopped
+- **Dead producers.** If a planner task dies, for example in a redeploy, the
+  reader sees no entry for `stream_silence_timeout` and writes the
+  `stream.end` entry the planner never wrote, with `reason` `producer_lost`. The page shows "The agent stopped
   unexpectedly", and the reconnect gets `204`, so the browser stops retrying.
   The engineer asks again, which starts a new run. The demo has no worker
   process to avoid this: the streams design supports producers inside the
@@ -567,7 +567,7 @@ Risks:
 | 3 | `ip_identifier` ignores `X-Forwarded-For`, so behind FastAPI Cloud's proxy all engineers may share one budget. | Identify engineers by session subject. |
 | 4 | FastAPI Cloud's scaling is unknown to this design: replica count, scale to zero and SSE timeouts. Its autoscaling docs page returned 404. | Runs live in Redis, so readers can follow a run from any replica. A planner runs on the replica that started it, so scale to zero, or a deploy, ends the answers in progress, and their readers see `producer_lost`. Finished answers, sessions, the cache and the quotas live in Redis and survive. |
 | 5 | An in-process call through `ASGITransport` shares the event loop with the SSE readers. | Tool latency is simulated with `asyncio.sleep`, so nothing blocks the loop. |
-| 6 | A crashed producer holds the active slot until a reader notices or the slot's TTL runs out (10 minutes), so its engineer cannot start a new run. | The page follows the active run on load, and its reader ends a dead producer's stream (`producer_lost`), which releases the slot within the heartbeat key's 15 seconds. With no reader, the slot lasts until its TTL. |
+| 6 | A crashed producer holds the engineer's current-run claim until a reader ends its run or the claim goes stale, so its engineer cannot start a new run at once. | The page follows the active run on load, and its reader ends a dead producer's stream (`producer_lost`), which releases the slot within the heartbeat key's 15 seconds. With no reader, the slot lasts until its TTL. |
 | 7 | An open SSE response does not check the session again. After "sign out everywhere", the phone keeps reading until the connection ends. | Taken into the streams design (decision 2): the response ends at the session's deadline and after `stream_max_connection_duration`, 60 seconds here, and the reconnect gets `401`. The page's 4-second poll still shows the `401` sooner. |
 | 8 | `StreamEvent` has no `q`, so the browser cannot prove that no entry was lost on a resume. | The page reports the entries since the cursor and any repeats by entry ID. Feed back to the streams design if a "0 lost" check is wanted. |
 
@@ -608,7 +608,7 @@ Decisions:
 
    Kept for resilience, though no story step shows them: the global rate
    limit, the `429` retry loop, the scripted fallback, `fail_closed=True`,
-   health and degraded mode, `active()` on page load, and `410` handling.
+   health and degraded mode, the current-run lookup on page load, and `404` handling.
 
 7. **Deploy: decided 2026-10-20.** The demo deploys from a folder that
    `deploy/bundle.py` writes, with its own `pyproject.toml`, through the

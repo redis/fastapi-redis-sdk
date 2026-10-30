@@ -39,9 +39,9 @@ the application.
 | **Redis floor** | 8.6.2, because 8.6.0 and 8.6.1 have IDMP defects. Support is detected with `COMMAND INFO XCFGSET DELEX` once per pool, as the rate limiter and sessions detect theirs, so no `INFO` permission is needed; a server without support turns the feature off (503) and the app starts. The probe cannot tell 8.6.0 and 8.6.1 from 8.6.2. | 8.6. Side-effect-free command probes check capabilities, so the SDK needs no `INFO` permission. |
 | **Authorization** | Adopted from the PR on 2026-10-23: the application's FastAPI dependency decides, and the SDK has no `owner`. Like the PR, the stream's name comes from the authorized resource: the key holds the scope and the stream ID, so an ID from another scope names no stream and gets a 404. The SDK compares nothing on read. | The application's FastAPI dependency decides. The stream name is built from the authorized resource (`chat:{chat.id}`). The SDK has no owner or scope check. |
 | **Connection deadline** | Adopted from the PR: `expires_at`, filled from the SDK session's deadline by `session_expiry(request)`, and a 5-minute cap. | An `expires_at` credential deadline, and a 5-minute cap. |
-| **TTL** | Sliding: every append refreshes it (10 min active, 2 min done, `extend()`). | Absolute, set at `create()`, never extended. A renewal API is deferred. An expired identity is never reused. |
-| **Creation** | `open()` takes the active slot and writes meta in one `WATCH`/`MULTI` transaction (changed 2026-10-26), so a run is never half made. Meta marks a retried start. The first `XADD` creates the stream; later appends use `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
-| **Idempotency keys** | SDK-internal: writer ID plus sequence `q`, and one fixed pair for the final entry. Keys from the application are deferred to phase 3 (section 6.3). `attach()` fences the old writer. | Supplied by the application: a stable `producer` and an `idempotency_key` per logical event. |
+| **TTL** | Absolute since 2026-10-30: `stream_max_run` set at `open()` and never extended, `stream_done_ttl` at most after the end. (Until then sliding: every append refreshed it, with `extend()` for longer waits.) | Absolute, set at `create()`, never extended. A renewal API is deferred. An expired identity is never reused. |
+| **Creation** | `open()` writes the stream's hidden start entry, sets its IDMP window and gives it its lifetime in one `MULTI` (2026-10-30; until then it took an active slot and wrote a metadata hash under `WATCH`). The `EXPIRE … NX` reply marks a retried start. Every later write uses `NOMKSTREAM`. | An explicit, idempotent `create()`. A `WATCH`/`MULTI` transaction writes a hidden bootstrap entry and sets the deadline. A different configuration for an existing stream is a conflict. |
+| **Idempotency keys** | SDK-internal: writer ID plus sequence `q`, and one fixed pair for the final entry. Keys from the application are deferred to phase 3 (section 6.3). No second producer ever writes to a run (2026-10-30). | Supplied by the application: a stable `producer` and an `idempotency_key` per logical event. |
 | **Append checks** | One `MULTI`: `XADD` + `EXPIRE` + `HMGET` of the cancel flag and the writer. `finish()` alone checks the writer under `WATCH` first (2026-10-26), so a replaced writer cannot end the new writer's run. | `WATCH` on meta to check existence, deadline and sealed state, with bounded retries. |
 | **Trimming and gaps** | `XADD MAXLEN ~`. One check before replay gives a 410: `max-deleted-entry-id` for `XDEL`, and `entries-added` against `length` and the first entry for trimming, which does not move that field. No cursor counts as `0-0`. A gap found later, from a jump in `q`, is a `stream.gap` event, and the reader goes on. | Bans untracked `MAXLEN`. The backend trims in a guarded transaction and advances a `history_floor` in meta. |
 | **Terminal state** | Changed 2026-10-23: one end marker, `f=1`, on a final entry whose type and data the application chooses. `finish()` writes it in one append and sets `status=finished` in the same transaction; meta records no final entry ID (changed 2026-10-26). The writer refuses later appends, and readers ignore anything after the first final entry. When the SDK ends a run itself, `spawn()` writes `stream.end` with the reason in its data. | `finish()` writes the final event and seals the log in one `WATCH`/`MULTI` step. Finality is SDK metadata, so the application keeps its own event names. |
@@ -75,14 +75,14 @@ the relay settings and the separate blocking client, which section 6 covers.
 | Item | Ours | PR #89 |
 |---|---|---|
 | Stream identity | The pair (`scope`, `stream_id`). The application builds the scope from the authorized resource; the SDK generates the ID, or the caller passes one (for example an idempotency key). One stream per turn. | One application-chosen `stream` string, for example `chat:{id}`. One stream per chat. |
-| Create | `await start(fn, *, scope, stream_id=None, exclusive=True) -> StreamWriter` opens the run and spawns `fn` only for a new one (2026-10-26). `await open(...)` and `spawn()` remain for a route that does work between them. | `await create(stream, *, ttl) -> None` |
+| Create | `await start(fn, *, scope, stream_id=None) -> StreamWriter` opens the run and spawns `fn` only for a new one (2026-10-26). `await open(...)` and `spawn()` remain for a route that does work between them. `exclusive` and the active slot are gone (2026-10-30): one run at a time is the application's own pointer. | `await create(stream, *, ttl) -> None` |
 | Writer object | `StreamWriter` with `stream_id`. Every write goes through it. | None. Every write is a backend method that takes the stream name. |
 | Append | `await writer.append(type, data) -> str` (the entry ID; changed 2026-10-26, was `AppendResult`). The cancel flag is `writer.cancelled`. Data goes through the SDK's `Coder`; the default, `JsonableCoder` (2026-10-27), also takes Pydantic models, dataclasses and datetimes. | `await append(stream, *, event, data, producer, idempotency_key) -> str` (the cursor). JSON only. |
-| Finish | `await writer.finish(type, data=None) -> str` writes the application's final event with the end marker and returns its ID. Later appends raise `StreamFinished`. A writer that `attach()` replaced raises `StreamFenced` and writes nothing. | `await finish(stream, *, event, data, producer, idempotency_key)` writes the application's final event and seals. |
+| Finish | `await writer.finish(type, data=None) -> str` writes the application's final event with the end marker and returns its ID. Later appends raise `StreamFinished`. If a cancel or a reader ended the run first, it returns that final entry's ID and adds nothing (2026-10-30). | `await finish(stream, *, event, data, producer, idempotency_key)` writes the application's final event and seals. |
 | Fail | None. A failure is the data of the final event; `spawn()` writes `stream.end` with `{"reason": "error"}`. | None. |
-| Continue elsewhere | `await attach(stream_id, *, scope) -> StreamWriter` | Not needed: any process can append with the same `producer`. |
-| Extend TTL | `await writer.extend(ttl)` (renamed from `suspend()` on 2026-10-26: it pauses nothing). Only the run's own writer may call it. | None. A renewal API is deferred. |
-| Heartbeat | `writer.keepalive()` | None. |
+| Continue elsewhere | None (2026-10-30). A run belongs to the process that opened it; `attach()`, and the `suspend()`/`resume()` drafted in between, are gone. | Not needed: any process can append with the same `producer`. |
+| Extend TTL | None (2026-10-30). A run's lifetime is `stream_max_run`, set once; nothing extends it. | None. A renewal API is deferred. |
+| Heartbeat | `writer.keepalive()` writes a hidden `stream.ping` entry while the producer is quiet; `spawn()` runs it (2026-10-30; it used to refresh a heartbeat field). | None. |
 
 ### 3.3 Reading
 
@@ -96,16 +96,17 @@ the relay settings and the separate blocking client, which section 6 covers.
 
 ### 3.4 Run control (ours only)
 
-`spawn(writer, fn) -> asyncio.Task`, `cancel(stream_id, *, scope) -> bool`,
-`active(scope) -> str | None`, and `producer_lost` detection, which ends a dead
-producer's stream with `stream.end`.
+`spawn(writer, fn) -> asyncio.Task`, `cancel(stream_id, *, scope) -> None`,
+which ends the run with `stream.end` itself, and `producer_lost` detection,
+which ends a silent producer's stream with `stream.end`. `active()` went with
+the active slot on 2026-10-30.
 The PR has no equivalent for any of them.
 
 ### 3.5 Errors and HTTP contract
 
 | Item | Ours | PR #89 |
 |---|---|---|
-| Exceptions | `StreamError`, `StreamNotFound`, `StreamExpired`, `StreamBusy`, `StreamFinished`, `StreamFenced`, `StreamInvalidCursor`, `StreamInvalidName`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Since 2026-10-26 each class carries its status and a stable `code` (`stream_not_found`, `stream_expired`, `cursor_ahead`, `invalid_stream_name`, `stream_unavailable` and so on), one handler serves the family, and the body is `{"detail", "code"}`; the reader cap answers `stream_capacity_exceeded`. | A typed `StreamError` family with stable codes: `stream_not_found`, `stream_expired`, `history_unavailable`, `cursor_ahead`, `invalid_stream_request`, `stream_capacity_exceeded`, `stream_unavailable`, and a conflict on `create()`. |
+| Exceptions | `StreamError`, `StreamNotFound`, `StreamExpired`, `StreamFinished`, `StreamInvalidCursor`, `StreamInvalidName`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Since 2026-10-26 each class carries its status and a stable `code` (`stream_not_found`, `stream_expired`, `cursor_ahead`, `invalid_stream_name`, `stream_unavailable` and so on), one handler serves the family, and the body is `{"detail", "code"}`; the reader cap answers `stream_capacity_exceeded`. | A typed `StreamError` family with stable codes: `stream_not_found`, `stream_expired`, `history_unavailable`, `cursor_ahead`, `invalid_stream_request`, `stream_capacity_exceeded`, `stream_unavailable`, and a conflict on `create()`. |
 | Status codes | See section 2. A bad scope or stream ID is 422 on every route (2026-10-26); it was a 500 on write and a 404 on read. | See section 2. |
 | Error after headers | Mostly none: the connection closes, or the stream ends with `stream.end`. `event: stream.error`, no `id`, only for `credential_expired` at `expires_at` and for a read-only reader's `producer_lost`. | `event: redis.stream.control`, no `id`, data holds a code and an action. `reauthenticate` at `expires_at`. |
 | Sealed and fully read | 204 for a cursor at or past the final entry, decided from the stream: the cursor's own entry is final, or the run has finished and nothing after the cursor is final. Adopted. | 204, which stops `EventSource` retries. |
@@ -115,12 +116,12 @@ The PR has no equivalent for any of them.
 
 | Setting | Ours | PR #89 |
 |---|---|---|
-| TTL | `stream_active_ttl` 600 s, `stream_done_ttl` 120 s, sliding. Renamed from `stream_ttl_active` and `stream_ttl_done`. On 2026-10-26 every stream duration became a float named `*_seconds`; on 2026-10-28 they went back to `int` seconds with no suffix, as every other SDK duration is (`default_ttl`, `session_idle_ttl`). No real use needs sub-second TTLs. | A `ttl` per `create()` call, absolute. |
-| Expiry recognition | `stream_gone_ttl` 3,600 s, renamed from `stream_expiry_window`: meta kept that long after the stream. Adopted. | Meta kept 24 h after the payload deadline. |
-| Entry cap | `stream_maxlen` 10,000. | 10,000 application events; same. |
+| TTL | `stream_max_run` 3,600 s, set once at `open()` and never extended; `stream_done_ttl` 120 s, at most, after the end (2026-10-30; was a sliding `stream_active_ttl` 600 s). Durations are `int` seconds with no suffix, as every other SDK duration is. | A `ttl` per `create()` call, absolute. |
+| Expiry recognition | None since 2026-10-30: the stream is the only key, so an expired run is a 404 like an unknown one, and 410 means removed history. `stream_gone_ttl` and the metadata hash are gone. | Meta kept 24 h after the payload deadline. |
+| Entry cap | `stream_maxlen` 10,000 events per writer, enforced by `append()`; Redis never trims a run (2026-10-30; was `MAXLEN ~`). | 10,000 application events; same. |
 | Event size | `stream_max_event_bytes` 65,536. | 64 KiB; same. |
 | Heartbeat | `stream_heartbeat_interval` 15. | 15 s keepalive comment; same. |
-| Producer liveness | `stream_alive_ttl` 45. | None. |
+| Producer liveness | `stream_silence_timeout` 60: a reader ends a run with no entry for that long (2026-10-30; was `stream_alive_ttl` 45 on a heartbeat field). | None. |
 | Replay page | `stream_replay_page` 100. | Byte and entry budgets per read (section 6). |
 | Admission | `stream_max_readers` 256. | 1,000 subscribers and 256 active streams. |
 | Connection lifetime | `stream_max_connection_duration` 300, or less with `expires_at`. Adopted. | 5 min, or less with `expires_at`. |
@@ -154,8 +155,8 @@ again produces different tokens, so keys help only with deterministic events
 such as tool results. We therefore keep our keys, which cover a retry after a
 timeout, and defer application keys to phase 3 with the dispatch queue. Two
 cheap parts stay in phase 1: a fixed IDMP pair on the final entry, so a stream
-has at most one, and a fence, so a writer replaced by `attach()` stops at its
-next append.
+has at most one, and, until 2026-10-30, a fence for a writer replaced by
+`attach()`; both `attach()` and the fence are gone (section 5.5).
 
 **Authorization.** The PR's split is cleaner for a generic SDK: the application
 decides access, and the SDK carries events. Our old `owner` string was simpler
@@ -207,7 +208,9 @@ Ranked by how much harm the gap does in our design today.
    2026-10-23 (design sections 6.3 and 7.1). Every final entry uses the fixed
    pair `IDMP end final`, so two writers that end a stream at once leave one
    final entry. `attach()` records the new writer in meta, and the old writer
-   raises `StreamFenced` on its next append or heartbeat. Keys supplied by the
+   raises `StreamFenced` on its next append or heartbeat. (Superseded on
+   2026-10-30, section 5.5: `resume()` takes a run only at an explicit
+   boundary, and a writer whose run ended gets `StreamFinished`.) Keys supplied by the
    application, proposed here before, moved to phase 3 (section 6.3): with
    `spawn()` no producer runs again, so they have nothing to protect yet.
 3. ~~**Credential deadline, connection lifetime and access.**~~ Adopted in the
@@ -235,7 +238,7 @@ Ranked by how much harm the gap does in our design today.
    from `Last-Event-ID`, or over, so the stream ends and the reconnect gets
    204, 410 or 404. For a dead producer, the reader writes the `stream.end`
    the producer never wrote, with the fixed IDMP pair, so reconnects stop
-   instead of waiting out the `alive` timeout again and again. The PR needs
+   instead of waiting out the silence timeout again and again. The PR needs
    actions because it has no end marker for a dead producer and treats a trim
    during the read as fatal, which we handle with `stream.gap`. The one event
    left is `stream.error` `credential_expired`, a hint that saves the client
@@ -326,7 +329,9 @@ both).
 
 ### 5.2 Keep our design
 
-- **Sliding TTL and `extend()`.** An absolute TTL cannot cover a turn that
+- **Sliding TTL and `extend()`.** *(Reversed on 2026-10-30, section 5.5: the
+  lifetime is now set once, `stream_max_run`, and nothing extends it.)* An
+  absolute TTL cannot cover a turn that
   waits on a slow tool. It also makes the application manage a new stream
   identity each time a delivery window ends. The stream TTL also stays
   independent of the session TTL (section 4).
@@ -361,13 +366,14 @@ design (sections 7 and 8) and the guide.
 3. **`append()` returns the entry ID**, as `finish()` does. `AppendResult` is
    gone; `writer.cancelled` already held the flag.
 4. **`suspend()` is `extend()`**, and refuses a writer that does not own the
-   stream.
+   stream. (Both gone since 2026-10-30, section 5.5.)
 5. **One `StreamError` handler, with stable codes**, from deferred item 5. The
    old per-subclass registration replaced any handler the application had set.
 6. **`StreamInvalidName` (422)** for a bad scope or stream ID on every route,
    and a cursor pattern that accepts only ASCII digits, at most 20 per part.
 7. **Setting names**: `stream_active_ttl`, `stream_done_ttl`
-   and `stream_gone_ttl`, so every duration reads the same way.
+   and `stream_gone_ttl`, so every duration reads the same way. (On
+   2026-10-30 `stream_active_ttl` became `stream_max_run`, section 5.5.)
 8. **`StreamEvent` has only its four documented fields.** The stored payload
    no longer rides on it as a private field.
 
@@ -388,6 +394,37 @@ converts what `json.dumps` cannot encode with
 `pydantic_core.to_jsonable_python`, and readers decode plain JSON. Caching and
 sessions keep `JsonCoder`. The PR has no producer side, so this does not
 change the comparison above.
+
+### 5.5 One key per run, 2026-10-30
+
+PR #99 reduced a run to its stream and was adopted as the phase 1 design
+(design section 14, decision 4). An intermediate iteration of the PR kept a
+metadata hash and added a lease per process; it and the single-owner
+alternative built the same day are recorded (`resumable-streams-simplified-design.md`).
+The API changes:
+
+1. **One key.** The metadata hash and the scope's active slot are gone, and
+   with them `exclusive`, `active()`, `StreamBusy` and `stream_gone_ttl`. An
+   expired run is a 404; 410 means removed history. One run at a time is the
+   application's own pointer (design section 6.1).
+2. **`attach()` and `extend()` are gone**, and so are the `suspend()` and
+   `resume()` drafted in between. A run belongs to the process that opened
+   it, and nothing extends its lifetime.
+3. **`cancel()` ends the run** with `stream.end` `{"reason": "cancelled"}`
+   and returns nothing. A producer in another process is not told.
+4. **`keepalive()` writes hidden `stream.ping` entries**; liveness is
+   silence, `stream_silence_timeout`, measured by each reader.
+5. **`StreamFenced` is gone.** A write through a retried start's handle is a
+   `ValueError`; a `finish()` after someone else ended the run returns that
+   final entry.
+6. **Settings:** `stream_max_run` (at most a day) replaces `stream_active_ttl`,
+   `stream_silence_timeout` replaces `stream_alive_ttl`, `stream_gone_ttl` is
+   gone, and `stream_maxlen` caps a writer instead of trimming.
+7. **`append()` is one `XADD`**; `open()` is one transaction that also sets
+   the stream's IDMP window with `XCFGSET`.
+
+The issues known in this design, and deferred to phase 2, are listed in the
+design, section 15.
 
 ## 6. Future step: phase 2 and phase 3 differences
 
@@ -516,7 +553,7 @@ difference belongs here:
 
 | Area | Ours | PR #89 |
 |---|---|---|
-| **Keys from the application** | Phase 3, with the dispatch queue. A redelivered job calls `attach(stream_id)` with the ID from its payload, and keys stop it repeating deterministic events such as tool results. Token deltas stay unkeyed, because a model run again produces different tokens. | In its first release: `producer` and `idempotency_key` on every `append()` and `finish()`. |
+| **Keys from the application** | Phase 3, with the dispatch queue. A redelivered job would need to continue a run, which no API offers since 2026-10-30; it calls a hand-off that phase 3 would add, with the ID from its payload, and keys stop it repeating deterministic events such as tool results. Token deltas stay unkeyed, because a model run again produces different tokens. | In its first release: `producer` and `idempotency_key` on every `append()` and `finish()`. |
 
 When application keys land, a duplicate must not use up a `q` value, or the reader reports
 a false gap. Stream IDs only grow, so the writer can treat a returned ID at or

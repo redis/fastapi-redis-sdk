@@ -37,6 +37,7 @@ from redis_fastapi.exceptions import (
 )
 from redis_fastapi.stream_backend import (
     ERROR_TYPE,
+    IDMP_WINDOW,
     StreamBackend,
     _Entry,
     parse_cursor,
@@ -328,14 +329,21 @@ def check_stream_settings() -> None:
     settings = get_settings()
     if "{" in settings.prefix or "}" in settings.prefix:
         raise StreamConfigurationError(
-            "The key prefix must not contain '{' or '}': Redis hashes on the "
-            "first braces in a key, which would put every stream in one slot."
+            "The key prefix must not contain '{' or '}': Redis Cluster hashes "
+            "on the first braces in a key, which would put every stream in "
+            "one slot."
         )
     block = settings.stream_heartbeat_interval
-    if settings.stream_alive_ttl <= block:
+    if settings.stream_silence_timeout <= 2 * block:
         raise StreamConfigurationError(
-            "stream_alive_ttl must be longer than "
+            "stream_silence_timeout must be more than twice "
             "stream_heartbeat_interval, or a live producer looks dead."
+        )
+    # Redis keeps IDMP history at most a day, and it must cover a run's life.
+    if settings.stream_max_run > IDMP_WINDOW:
+        raise StreamConfigurationError(
+            f"stream_max_run must be at most {IDMP_WINDOW} s: Redis remembers a "
+            "stream's idempotency keys for at most a day."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(
