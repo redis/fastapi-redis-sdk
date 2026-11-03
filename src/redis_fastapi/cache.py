@@ -82,9 +82,12 @@ def default_key_builder(
 ) -> str:
     """Build a cache key from the request path and query string.
 
-    Slashes in the path are replaced with colons.
-    Query params are sorted by name and URL-encoded, so distinct query
-    strings never share a key.
+    Slashes in the path are replaced with colons, and ``%`` and ``=`` in
+    the path are percent-encoded.  Query params are sorted by name and
+    URL-encoded, so distinct query strings never share a key.  Every
+    encoded query param contains ``=``, so a path segment can never be
+    read as a query string: ``/items/page=2`` and ``/items?page=2`` build
+    different keys.
 
     When an *eviction_group* is provided it is wrapped in Redis hash-tag
     braces (``{eviction_group}``) so that all keys in the same group
@@ -100,7 +103,12 @@ def default_key_builder(
     Returns:
         The colon-delimited cache key string.
     """
-    path = request.url.path.strip("/").replace("/", ":")
+    path = (
+        request.url.path.strip("/")
+        .replace("%", "%25")
+        .replace("=", "%3D")
+        .replace("/", ":")
+    )
     parts: list[str] = []
     if prefix:
         parts.append(prefix)

@@ -61,3 +61,26 @@ class TestDefaultKeyBuilder:
         req = _make_request("/api/v1/items", query="q=x")
         key = default_key_builder(req, prefix="fastapi-cache")
         assert key == "fastapi-cache:api:v1:items:q=x"
+
+    def test_path_segment_does_not_collide_with_query(self) -> None:
+        """``/items/page=2`` and ``/items?page=2`` are different resources."""
+        path_key = default_key_builder(_make_request("/items/page=2"), prefix="pfx")
+        query_key = default_key_builder(
+            _make_request("/items", query="page=2"), prefix="pfx"
+        )
+        assert path_key == "pfx:items:page%3D2"
+        assert query_key == "pfx:items:page=2"
+
+    def test_nested_path_does_not_collide_with_query(self) -> None:
+        path_key = default_key_builder(_make_request("/files/a/b=1"), prefix="pfx")
+        query_key = default_key_builder(
+            _make_request("/files/a", query="b=1"), prefix="pfx"
+        )
+        assert path_key != query_key
+
+    def test_percent_in_path_is_escaped(self) -> None:
+        """A decoded ``%3D`` in the path does not collide with a literal ``=``."""
+        literal = default_key_builder(_make_request("/items/x=1"), prefix="pfx")
+        percent = default_key_builder(_make_request("/items/x%3D1"), prefix="pfx")
+        assert literal == "pfx:items:x%3D1"
+        assert percent == "pfx:items:x%253D1"

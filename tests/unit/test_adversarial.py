@@ -194,6 +194,22 @@ class TestKeyBuilderSpecialChars:
         key = default_key_builder(_make_request("/items", "key=a:b:c"), prefix="pfx")
         assert "key=a%3Ab%3Ac" in key
 
+    def test_path_segment_not_served_for_query_string(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """A cached path response must not answer a matching query string."""
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+
+        @app.get("/files/{name:path}", dependencies=[Depends(cache(ttl=300))])
+        async def read_file(name: str, b: str | None = None) -> dict:
+            return {"name": name, "b": b}
+
+        app.dependency_overrides[get_async_redis] = _make_fake_dep(fake_async_redis)
+        with TestClient(app) as c:
+            assert c.get("/files/a/b=1").json() == {"name": "a/b=1", "b": None}
+            assert c.get("/files/a?b=1").json() == {"name": "a", "b": "1"}
+
     def test_query_params_with_glob(self) -> None:
         key = default_key_builder(
             _make_request("/items", "q=*&sort=name"), prefix="pfx"

@@ -133,6 +133,9 @@ async def update_profile(body: Profile, user: User = Depends(get_current_user)):
 Keys follow the pattern
 `{prefix}:{{eviction_group}}:{path}:{sorted_query_params}`.
 Slashes become colons; query parameters are sorted alphabetically.
+`%` and `=` in the path are percent-encoded, so a path segment such as
+`/items/page=2` never builds the same key as the query string
+`/items?page=2`.
 
 When an eviction group is provided it is wrapped in Redis
 [hash-tag](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags)
