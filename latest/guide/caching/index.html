@@ -1863,7 +1863,12 @@ intermediate HTTP caches are told to stay out.  See
 <h3 id="cache-keys">Cache keys<a class="headerlink" href="#cache-keys" title="Permanent link">&para;</a></h3>
 <p>Keys follow the pattern
 <code>{prefix}:{{eviction_group}}:{path}:{sorted_query_params}</code>.
-Slashes become colons; query parameters are sorted alphabetically.</p>
+Each path segment is percent-encoded and the segments are joined with
+colons, so a colon in a key is always a separator.  Query parameters
+are sorted alphabetically and encoded the same way.  Two URLs the
+router can tell apart never share a key: <code>/items/page=2</code> builds
+<code>items:page%3D2</code> while <code>/items?page=2</code> builds <code>items:page=2</code>, and
+<code>/items/a:b</code> builds <code>items:a%3Ab</code> while <code>/items/a/b</code> builds <code>items:a:b</code>.</p>
 <p>When an eviction group is provided it is wrapped in Redis
 <a href="https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags">hash-tag</a>
 braces (<code>{eviction_group}</code>).  This guarantees that all keys in the same
@@ -2940,7 +2945,7 @@ Choose a value that matches your data's volatility:</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 16, 2026 14:53:17 UTC">October 16, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 6, 2026 09:53:16 UTC">November 6, 2026</span>
   </span>
 
     
