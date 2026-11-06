@@ -451,15 +451,19 @@ header, a fresh signature.
 !!! note "Extension responses are not marked"
 
     A response the middleware cannot buffer — `http.response.pathsend`,
-    `zerocopysend`, `trailers`, `debug` — is forwarded whole and never stored,
-    but it carries **no** `X-Redis-Cache` header at all rather than `BYPASS`,
-    since nothing about it was cached and it must not claim a `MISS`. It is
-    the one served-but-not-stored case you cannot spot from the response
-    alone.
+    `zerocopysend`, `trailers` — is forwarded whole and never stored, but it
+    carries **no** `X-Redis-Cache` header at all rather than `BYPASS`, since
+    nothing about it was cached and it must not claim a `MISS`. It is the one
+    served-but-not-stored case you cannot spot from the response alone.
 
-    This only applies to messages sent after `http.response.start`. Starlette's
-    `TemplateResponse` sends `debug` before the start, so it is forwarded as-is
-    and the template response is cached normally.
+    Two kinds of message are forwarded as they arrive and do not stop a
+    response being cached:
+
+    - `http.response.debug`, which carries test metadata, not content.
+      Starlette's `TemplateResponse` sends it before the start whenever the
+      server supports it, as `TestClient` does.
+    - Any message sent before `http.response.start`, since there is no start
+      yet to flush.
 
 !!! warning "A per-caller header leaks like a per-caller body"
 

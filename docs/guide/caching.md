@@ -405,6 +405,13 @@ with TestClient(app) as client:
     assert r2.headers["X-Redis-Cache"] == "HIT"
 ```
 
+!!! note "Template routes in tests"
+
+    `TestClient` exposes `response.template` and `response.context` for a
+    route that returns a `TemplateResponse`. A cache hit renders no template,
+    so a hit has neither. Assert on them only for a miss, or for a route that
+    is not cached.
+
 ### Error handling
 
 * If the endpoint raises an exception, no cache operations are performed.

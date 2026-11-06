@@ -2,11 +2,14 @@
 
 ASGI servers advertise response extensions the capture middleware cannot
 buffer: Granian's ``http.response.pathsend``, uvicorn's
-``http.response.zerocopysend``, Hypercorn's ``http.response.trailers``, and
-``http.response.debug``.  While a ``cache()`` dependency is active the
-middleware withholds ``http.response.start`` until the body is complete -- so
-on any of these it must flush the buffered start, fall back to passthrough and
-forward the message verbatim, rather than swallowing the whole response.
+``http.response.zerocopysend`` and Hypercorn's ``http.response.trailers``.
+While a ``cache()`` dependency is active the middleware withholds
+``http.response.start`` until the body is complete -- so on any of these it
+must flush the buffered start, fall back to passthrough and forward the
+message verbatim, rather than swallowing the whole response.
+
+``http.response.debug`` is different: it carries test metadata, not content,
+so it is forwarded as it arrives and the response is still cached.
 
 These tests drive the full ASGI stack (real Redis, real lifespan, real DI) with
 a recording ``send``: ``TestClient`` silently drops message types it does not
@@ -40,10 +43,11 @@ BODYLESS_EXTENSION_MESSAGES: dict[str, Message] = {
         "offset": 0,
         "count": 128,
     },
-    "debug": {
-        "type": "http.response.debug",
-        "info": {"template": "report.html", "context": {}},
-    },
+}
+
+DEBUG_MESSAGE: Message = {
+    "type": "http.response.debug",
+    "info": {"template": "report.html", "context": {}},
 }
 
 
@@ -101,22 +105,34 @@ class _TrailersResponse(Response):
         )
 
 
-class _DebugFirstResponse(Response):
-    """Emit ``http.response.debug`` before ``http.response.start``.
+class _DebugResponse(Response):
+    """Emit ``http.response.debug`` alongside a normal start and body.
 
-    Mirrors Starlette's ``TemplateResponse``, which sends the debug message
-    first whenever the server advertises the extension (``TestClient`` does),
-    then a normal start and body.
+    With ``first=True`` it mirrors Starlette's ``TemplateResponse``, which
+    sends the debug message before the start whenever the server advertises
+    the extension.  With ``first=False`` the debug message follows the start.
     """
 
-    debug: Message = BODYLESS_EXTENSION_MESSAGES["debug"]
+    body_bytes = b"<p>report</p>"
 
-    def __init__(self) -> None:
-        super().__init__(content="<p>report</p>", media_type="text/html")
+    def __init__(self, *, first: bool) -> None:
+        super().__init__(content=self.body_bytes, media_type="text/html")
+        self._first = first
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await send(dict(self.debug))
-        await super().__call__(scope, receive, send)
+        advertised = "http.response.debug" in scope.get("extensions", {})
+        if advertised and self._first:
+            await send(dict(DEBUG_MESSAGE))
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        if advertised and not self._first:
+            await send(dict(DEBUG_MESSAGE))
+        await send({"type": "http.response.body", "body": self.body})
 
 
 def _build_app() -> FastAPI:
@@ -135,13 +151,13 @@ def _build_app() -> FastAPI:
     async def cached_trailers() -> Response:
         return _TrailersResponse()
 
-    @app.get("/cached-debug-first", dependencies=[Depends(cache(ttl=300))])
-    async def cached_debug_first() -> Response:
-        return _DebugFirstResponse()
+    @app.get("/cached-debug/{order}", dependencies=[Depends(cache(ttl=300))])
+    async def cached_debug(order: str) -> Response:
+        return _DebugResponse(first=order == "first")
 
-    @app.get("/plain-debug-first")
-    async def plain_debug_first() -> Response:
-        return _DebugFirstResponse()
+    @app.get("/plain-debug/{order}")
+    async def plain_debug(order: str) -> Response:
+        return _DebugResponse(first=order == "first")
 
     @app.get("/items", dependencies=[Depends(cache(ttl=300))])
     async def get_items() -> dict[str, int]:
@@ -318,35 +334,47 @@ class TestTrailersAfterBufferedBody:
 
 @requires_redis
 @pytest.mark.integration
-class TestDebugBeforeStart:
-    """A message sent before ``http.response.start`` has no start to flush."""
+class TestDebugMessage:
+    """``http.response.debug`` is forwarded as it arrives and caching goes on."""
 
-    async def test_plain_route_sends_one_start(self, ext_app: FastAPI) -> None:
-        sent = await _call(ext_app, "/plain-debug-first")
+    @pytest.mark.parametrize(
+        ("order", "expected"),
+        [
+            ("first", ["debug", "start", "body"]),
+            ("after", ["start", "debug", "body"]),
+        ],
+    )
+    async def test_plain_route_forwards_in_order(
+        self, ext_app: FastAPI, order: str, expected: list[str]
+    ) -> None:
+        sent = await _call(ext_app, f"/plain-debug/{order}")
 
-        assert [m["type"] for m in sent] == [
-            "http.response.debug",
-            "http.response.start",
-            "http.response.body",
-        ]
-        assert sent[0] == _DebugFirstResponse.debug
-        assert _headers(sent[1])[b"content-type"].startswith(b"text/html")
+        assert [m["type"] for m in sent] == [f"http.response.{t}" for t in expected]
+        debug = next(m for m in sent if m["type"] == "http.response.debug")
+        assert debug == DEBUG_MESSAGE
 
-    async def test_cached_route_is_cached(self, ext_app: FastAPI) -> None:
+    @pytest.mark.parametrize("order", ["first", "after"])
+    async def test_cached_route_is_cached(self, ext_app: FastAPI, order: str) -> None:
         status_header = CACHE_STATUS_HEADER.lower().encode()
 
-        first = await _call(ext_app, "/cached-debug-first")
+        # The start is buffered, so the debug message always goes out first.
+        first = await _call(ext_app, f"/cached-debug/{order}")
         assert [m["type"] for m in first] == [
             "http.response.debug",
             "http.response.start",
             "http.response.body",
         ]
+        assert first[0] == DEBUG_MESSAGE
         assert _headers(first[1])[b"content-type"].startswith(b"text/html")
         assert _headers(first[1])[status_header] == b"MISS"
 
-        second = await _call(ext_app, "/cached-debug-first")
+        second = await _call(ext_app, f"/cached-debug/{order}")
+        assert [m["type"] for m in second] == [
+            "http.response.start",
+            "http.response.body",
+        ]
         assert _headers(second[0])[status_header] == b"HIT"
-        assert second[1]["body"] == first[2]["body"]
+        assert second[1]["body"] == _DebugResponse.body_bytes
 
 
 @requires_redis

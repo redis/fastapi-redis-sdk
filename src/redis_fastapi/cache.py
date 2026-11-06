@@ -1402,7 +1402,22 @@ class CacheResponseCaptureMiddleware:
                 response_headers = list(message.get("headers", []))
                 return
 
-            # Any other message type (pathsend, zerocopysend, trailers, debug, …):
+            # http.response.debug carries test metadata (the template and its
+            # context), not response content.  Forward it whenever it arrives
+            # and leave buffering alone.  Starlette's TemplateResponse sends it
+            # before the start, which is the order a buffered start produces
+            # anyway, and TestClient accepts it at any point.
+            if message["type"] == "http.response.debug":
+                await send(message)
+                return
+
+            # Any other message before the start has no start to flush, so
+            # forward it as-is and leave the response to be handled as usual.
+            if not started:
+                await send(message)
+                return
+
+            # Any other message type (pathsend, zerocopysend, trailers, …):
             # we can't buffer/cache it, so flush the buffered start and pass it
             # through unmarked: nothing was stored, so it must not claim a MISS,
             # and tests/integration/test_cache_extension_messages.py pins the
@@ -1410,11 +1425,8 @@ class CacheResponseCaptureMiddleware:
             # with no BYPASS marker - see "Extension responses" in the guide.
             # Trailer fields reach the client but never the entry, which is what
             # RFC 9111 section 3.1 permits a cache to do with them.
-            # A message sent before the start (Starlette's TemplateResponse
-            # sends http.response.debug first) has no start to flush, so it is
-            # forwarded as-is and the response is still cached as usual.
             if message["type"] != "http.response.body":
-                if started and not passthrough:
+                if not passthrough:
                     await send(
                         {
                             "type": "http.response.start",
