@@ -164,26 +164,25 @@ class TestKeyBuilderSpecialChars:
     """Key builder must handle adversarial paths without crashing."""
 
     def test_path_with_colons(self) -> None:
-        """Colons in path should not break key structure."""
+        """A colon inside a segment is encoded; only separators stay bare."""
         key = default_key_builder(_make_request("/items/user:123"), prefix="pfx")
-        assert "pfx:" in key
-        assert "user:123" in key
+        assert key == "pfx:items:user%3A123"
 
     def test_path_with_glob_star(self) -> None:
         key = default_key_builder(_make_request("/items/*"), prefix="pfx")
-        assert "*" in key
+        assert key == "pfx:items:%2A"
 
     def test_path_with_glob_question(self) -> None:
         key = default_key_builder(_make_request("/items/?id=1"), prefix="pfx")
-        assert key  # must not crash
+        assert key == "pfx:items:%3Fid%3D1"
 
     def test_path_with_brackets(self) -> None:
         key = default_key_builder(_make_request("/items/[test]"), prefix="pfx")
-        assert "[test]" in key
+        assert key == "pfx:items:%5Btest%5D"
 
     def test_unicode_path(self) -> None:
         key = default_key_builder(_make_request("/items/日本語"), prefix="pfx")
-        assert "日本語" in key
+        assert key == "pfx:items:%E6%97%A5%E6%9C%AC%E8%AA%9E"
 
     def test_extremely_long_path(self) -> None:
         long_segment = "a" * 2000
@@ -193,6 +192,22 @@ class TestKeyBuilderSpecialChars:
     def test_query_params_with_colons(self) -> None:
         key = default_key_builder(_make_request("/items", "key=a:b:c"), prefix="pfx")
         assert "key=a%3Ab%3Ac" in key
+
+    def test_path_segment_not_served_for_query_string(
+        self, fake_async_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """A cached path response must not answer a matching query string."""
+        app = FastAPI()
+        FastAPIRedis(app).caching()
+
+        @app.get("/files/{name:path}", dependencies=[Depends(cache(ttl=300))])
+        async def read_file(name: str, b: str | None = None) -> dict:
+            return {"name": name, "b": b}
+
+        app.dependency_overrides[get_async_redis] = _make_fake_dep(fake_async_redis)
+        with TestClient(app) as c:
+            assert c.get("/files/a/b=1").json() == {"name": "a/b=1", "b": None}
+            assert c.get("/files/a?b=1").json() == {"name": "a", "b": "1"}
 
     def test_query_params_with_glob(self) -> None:
         key = default_key_builder(

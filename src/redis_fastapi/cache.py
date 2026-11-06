@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import Depends, Request
 from redis.exceptions import RedisError
@@ -82,9 +82,15 @@ def default_key_builder(
 ) -> str:
     """Build a cache key from the request path and query string.
 
-    Slashes in the path are replaced with colons.
-    Query params are sorted by name and URL-encoded, so distinct query
-    strings never share a key.
+    Each path segment is percent-encoded and the segments are joined with
+    colons, so a colon in the key is always a separator.  Query params are
+    sorted by name and URL-encoded the same way.  Two URLs the router can
+    tell apart never share a key: ``/items/page=2`` and ``/items?page=2``
+    differ, and so do ``/items/a:b`` and ``/items/a/b``.
+
+    The path is read from ``request.scope["path"]``, the decoded path the
+    router matched on.  ``request.url.path`` re-parses that string as a
+    URL, so a decoded ``?`` or ``#`` in a segment would cut the key short.
 
     When an *eviction_group* is provided it is wrapped in Redis hash-tag
     braces (``{eviction_group}``) so that all keys in the same group
@@ -100,7 +106,10 @@ def default_key_builder(
     Returns:
         The colon-delimited cache key string.
     """
-    path = request.url.path.strip("/").replace("/", ":")
+    path = ":".join(
+        quote(segment, safe="")
+        for segment in request.scope["path"].strip("/").split("/")
+    )
     parts: list[str] = []
     if prefix:
         parts.append(prefix)
