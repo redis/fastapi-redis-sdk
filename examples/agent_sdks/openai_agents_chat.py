@@ -106,19 +106,14 @@ async def start(
 
 @app.get("/chats/{chat_id}/runs/{run_id}/events")
 async def events(
-    chat_id: str,
-    run_id: str,
-    request: Request,
-    streams: StreamBackendDep,
-    after: str | None = None,
+    chat_id: str, run_id: str, request: Request, streams: StreamBackendDep
 ) -> Response:
-    return await streams.sse(
-        run_id, request=request, scope=f"chat:{chat_id}", after=after
-    )
+    # sse() reads Last-Event-ID and ?after= itself.  Do not declare an
+    # ``after`` parameter and pass it in: it would beat a newer Last-Event-ID
+    # and replay events the client already has.
+    return await streams.sse(run_id, request=request, scope=f"chat:{chat_id}")
 
 
-@app.delete("/chats/{chat_id}/runs/{run_id}")
-async def cancel(
-    chat_id: str, run_id: str, streams: StreamBackendDep
-) -> dict[str, bool]:
-    return {"cancelled": await streams.cancel(run_id, scope=f"chat:{chat_id}")}
+@app.delete("/chats/{chat_id}/runs/{run_id}", status_code=204)
+async def cancel(chat_id: str, run_id: str, streams: StreamBackendDep) -> None:
+    await streams.cancel(run_id, scope=f"chat:{chat_id}")

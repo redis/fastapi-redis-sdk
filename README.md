@@ -33,8 +33,8 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 | Dependency   | Supported versions                  |
 |--------------|-------------------------------------|
 | Python       | 3.10 to 3.14                        |
-| FastAPI      | 0.115+                              |
-| redis-py     | 6.2+                                |
+| FastAPI      | 0.134+                              |
+| redis-py     | 7.2+                                |
 | Pydantic     | 2.0+                                |
 | Redis server | 7.4+ (8.6.2+ for resumable streams) |
 
