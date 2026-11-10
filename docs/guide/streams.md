@@ -727,7 +727,10 @@ events.addEventListener("stream.error", (e) => {
   `stream_heartbeat_interval`, which bounds each blocking read.
 - **Redis failover.** Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
-  loss gets `409`; one behind it sees a `stream.gap`.
+  loss gets `409`; one behind it sees a `stream.gap`. On Sentinel the feature
+  uses the SDK's pool, which follows the primary; the test suite can run
+  against a Sentinel deployment (`STREAMS_TEST_SENTINEL_URL`), but CI does
+  not, so that path is supported by design and not exercised automatically.
 - **Memory.** A run holds at most `stream_maxlen` events from its writer, each
   at most `stream_max_event_bytes`, plus a few hidden entries.
 - **Eviction.** Every stream key has a TTL. Where Redis is shared with other

@@ -8,6 +8,7 @@ after a run's end.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -21,9 +22,10 @@ from examples.incident_triage_app.runs import (
     check_settings,
 )
 from redis_fastapi import StreamBackend
-from tests.stream_support import collect, configure
+from tests.conftest import requires_redis
+from tests.stream_support import collect
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, requires_redis]
 
 Case = tuple[StreamBackend, Any, str]
 SUBJECT = "alex"
@@ -85,10 +87,10 @@ async def test_release_frees_only_its_own_claim(stream_case: Case) -> None:
 
 
 def test_the_app_refuses_a_done_ttl_it_cannot_tell_from_running(
-    monkeypatch: pytest.MonkeyPatch,
+    settings_env: Callable[..., None],
 ) -> None:
-    configure(monkeypatch, stream_max_run=3600, stream_done_ttl=3600)
+    settings_env(stream_max_run=3600, stream_done_ttl=3600)
     with pytest.raises(RuntimeError, match="REDIS_STREAM_DONE_TTL"):
         check_settings()
-    configure(monkeypatch, stream_done_ttl=120)
+    settings_env(stream_done_ttl=120)
     check_settings()

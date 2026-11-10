@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from collections.abc import AsyncIterator, Callable, Iterator
+import logging
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -36,6 +38,7 @@ from redis_fastapi import (
     session_expiry,
 )
 from redis_fastapi.config import get_settings
+from redis_fastapi.deps import _get_pool_state, _PoolState
 from redis_fastapi.exceptions import (
     StreamCredentialExpired,
     StreamCursorAhead,
@@ -44,6 +47,7 @@ from redis_fastapi.exceptions import (
     StreamNotFound,
     StreamStoreError,
 )
+from redis_fastapi.lifespan import _start_streams
 from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
@@ -64,20 +68,6 @@ from redis_fastapi.streams import (
     sse,
     stream_error_handler,
 )
-
-
-@pytest.fixture()
-def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """Set ``REDIS_*`` variables for one test, with a fresh settings cache."""
-
-    def apply(**values: Any) -> None:
-        for name, value in values.items():
-            monkeypatch.setenv(f"REDIS_{name.upper()}", str(value))
-        get_settings.cache_clear()
-
-    get_settings.cache_clear()
-    yield apply
-    get_settings.cache_clear()
 
 
 def _no_redis() -> Any:
@@ -606,6 +596,46 @@ class TestUnsupported:
         backend = StreamBackend(_no_redis)
         backend._start(_StreamCapabilities(supported=False))
         return backend
+
+    async def test_detection_turns_the_feature_off_with_one_warning(
+        self,
+        settings_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # What the 7.4 CI job proves against a real server, here with the
+        # probe's answer stubbed: one warning, then every call refuses.
+        settings_env()
+        monkeypatch.setattr(
+            "redis_fastapi.stream_backend.probe_streams_support",
+            AsyncMock(return_value=False),
+        )
+        backend = StreamBackend(lambda: object())  # type: ignore[arg-type,return-value]
+        with caplog.at_level(logging.WARNING, logger="redis_fastapi.stream_backend"):
+            assert await backend.detect() is False
+            assert await backend.detect() is False  # cached: asked once
+        assert caplog.text.count("Resumable streams are off") == 1
+        with pytest.raises(StreamUnsupported):
+            await backend.open(scope="chat:1")
+
+    async def test_the_lifespan_turns_the_feature_off_at_startup(
+        self,
+        settings_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        settings_env()
+        monkeypatch.setattr(
+            "redis_fastapi.stream_backend.probe_streams_support",
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(_PoolState, "get_async_client", lambda self: object())
+        app = FastAPI()
+        backend = add_redis_streams(app)
+        with caplog.at_level(logging.WARNING, logger="redis_fastapi.stream_backend"):
+            assert await _start_streams(app, _get_pool_state(app)) is backend
+        assert backend.supported is False
+        assert caplog.text.count("Resumable streams are off") == 1
 
     async def test_every_entry_point_refuses(self, backend: StreamBackend) -> None:
         with pytest.raises(StreamUnsupported):

@@ -1332,7 +1332,7 @@ committed. It must show at least these:
   first-page transactions succeed on whichever primary owns it, and runs in
   different scopes land on different primaries. Since 2026-10-30
   `test_stream_topologies.py` runs these on a Cluster when
-  `STREAMS_TEST_CLUSTER=1` is set.
+  `STREAMS_TEST_CLUSTER_URL` names one.
 - Support detection asks a random node and gives the same answer on every
   primary.
 - On Sentinel, a failover during a run: readers reconnect to the new primary
@@ -1361,7 +1361,9 @@ Since 2026-10-30 the cross-process cases run in the suite itself:
 `tests/integration/test_stream_topologies.py` drives two backends as two
 processes with the helpers in `tests/stream_support.py` (a transaction held
 at `EXEC` to force a race, command counts from `INFO commandstats`), on the
-standalone Redis of CI and, with `STREAMS_TEST_CLUSTER=1`, on a Cluster. CI
+standalone Redis of CI and, with `STREAMS_TEST_CLUSTER_URL`, on a Cluster
+(`STREAMS_TEST_ENTERPRISE_URL` and `STREAMS_TEST_SENTINEL_URL` add a Redis
+Enterprise database and a Sentinel-managed primary the same way). CI
 runs the integration suite on Redis 8.6.2, the supported floor, as well as
 8.8. Every stream test that sends a Redis command runs against a real
 server; the unit suite sends none.

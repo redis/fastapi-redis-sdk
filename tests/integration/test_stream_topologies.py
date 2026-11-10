@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from redis_fastapi import StreamBackend, StreamNotFound, StreamWriter
 from redis_fastapi.config import get_settings
 from redis_fastapi.stream_backend import _key, probe_streams_support
+from tests.conftest import requires_redis
 from tests.stream_support import (
     collect,
     command_calls,
@@ -26,7 +27,7 @@ from tests.stream_support import (
     stream_client,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, requires_redis]
 
 Case = tuple[StreamBackend, Any, str]
 
