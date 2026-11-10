@@ -147,6 +147,18 @@ class _SlowConsumer(Exception):
     """A send to the client took longer than ``stream_send_timeout``."""
 
 
+def _busy_response() -> Response:
+    """The 503 for a reader over ``stream_max_readers``."""
+    return JSONResponse(
+        {
+            "detail": "too many live readers; retry shortly",
+            "code": "stream_capacity_exceeded",
+        },
+        status_code=503,
+        headers={"Retry-After": _RETRY_AFTER},
+    )
+
+
 class _SSEResponse(StreamingResponse):
     """A streaming response that holds a reader slot and limits every send.
 
@@ -195,15 +207,7 @@ class _SSEResponse(StreamingResponse):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not self._backend._reserve_reader():
             await self._close_body()
-            busy = JSONResponse(
-                {
-                    "detail": "too many live readers; retry shortly",
-                    "code": "stream_capacity_exceeded",
-                },
-                status_code=503,
-                headers={"Retry-After": _RETRY_AFTER},
-            )
-            await busy(scope, receive, send)
+            await _busy_response()(scope, receive, send)
             return
         try:
             await super().__call__(scope, receive, send)
@@ -225,10 +229,12 @@ async def sse(
     """Prepare an SSE response for a stream.
 
     Everything that decides the status code happens here, before the first
-    byte: the cursor (``after``, then ``Last-Event-ID``, then ``?after=``), the
+    byte: the cursor (``after``, then ``Last-Event-ID``, then ``?after=``), a
+    credential that already expired (401), the reader cap (503, answered
+    before the stream is looked up, so it wins over the codes below), the
     stream's existence (404), expiry or trimmed history (410), a cursor ahead
-    of the stream (409), a cursor at or past the final entry (204, which stops
-    ``EventSource`` for good) and a credential that already expired (401).
+    of the stream (409) and a cursor at or past the final entry (204, which
+    stops ``EventSource`` for good).
 
     The response then replays the entries after the cursor and follows the
     live stream.  It ends after the final entry, at *expires_at* with a
@@ -250,6 +256,13 @@ async def sse(
         credential_left = (expires_at - datetime.now(timezone.utc)).total_seconds()
         if credential_left <= 0:
             raise StreamCredentialExpired("the credential has expired")
+
+    # Before any Redis call: a client that reconnects in a loop while the
+    # process is at its cap must not cost Redis a first page per attempt.
+    # The slot itself is taken when the response runs, which can still fail
+    # if readers arrived in between; that path answers the same 503.
+    if backend._at_capacity():
+        return _busy_response()
 
     plan = await backend._prepare(stream_id, scope=scope, after=cursor)
     if plan is None:
@@ -349,6 +362,17 @@ def check_stream_settings() -> None:
         raise StreamConfigurationError(
             "socket_timeout must be longer than stream_heartbeat_interval, which "
             "bounds each blocking stream read."
+        )
+    # Every live reader holds a connection for each blocking read.  A pool no
+    # larger than the reader cap lets readers take every connection, and
+    # producers then cannot write - not even the final entry.
+    if (
+        settings.max_connections is not None
+        and settings.max_connections <= settings.stream_max_readers
+    ):
+        raise StreamConfigurationError(
+            "max_connections must be greater than stream_max_readers: each live "
+            "reader holds a connection, and producers need the rest."
         )
 
 

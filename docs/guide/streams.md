@@ -695,15 +695,21 @@ events.addEventListener("stream.error", (e) => {
 ## Limits
 
 - **Live readers.** At most `stream_max_readers` per process; over the limit a
-  new reader gets `503` with `Retry-After`. A reader takes its slot when its
-  response starts, and every way the response ends frees it.
+  new reader gets `503` with `Retry-After`. The cap is checked before the
+  stream is looked up, so at capacity a reader gets `503` even for a stream
+  that would otherwise be `404` or `410`, and Redis does no work for it. A
+  reader takes its slot when its response starts, and every way the response
+  ends frees it.
 - **Slow clients.** A send that waits longer than `stream_send_timeout`
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.
 - **Connections.** Each live reader holds a pool connection for each blocking
   read. With `REDIS_MAX_CONNECTIONS` set, size it for `stream_max_readers` plus
-  your other traffic. The driver's `socket_timeout` must be longer than
-  `stream_heartbeat_interval`; `.streams()` refuses a setup where it is not.
+  your other traffic: a pool no larger than the reader cap lets readers take
+  every connection, and producers then cannot write, not even the final
+  entry. `.streams()` refuses a `max_connections` that is not greater than
+  `stream_max_readers`, and a `socket_timeout` that is not longer than
+  `stream_heartbeat_interval`, which bounds each blocking read.
 - **Redis failover.** Replication is asynchronous, so a failover can lose
   entries the old primary had acknowledged. A reader whose cursor is past the
   loss gets `409`; one behind it sees a `stream.gap`.

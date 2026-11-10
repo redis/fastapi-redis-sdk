@@ -896,7 +896,11 @@ class StreamBackend:
             ValueError: If *writer* is a handle from a retried start
                 (``created`` is ``False``), whose run already has a producer,
                 or if *writer* was already spawned.
+            StreamStoreError: If the application is shutting down.  A task
+                started now would miss the cancel ``aclose()`` already sent
+                and race the pool close.
         """
+        self._check_open()
         if writer._read_only:
             raise ValueError(
                 f"stream {writer.stream_id} already has a producer: spawn only a "
@@ -1255,8 +1259,12 @@ class StreamBackend:
         self._caps = capabilities
         self._closing = False
 
+    def _at_capacity(self) -> bool:
+        """Whether a new reader would be refused: shutting down, or at the cap."""
+        return self._closing or self._readers >= get_settings().stream_max_readers
+
     def _reserve_reader(self) -> bool:
-        if self._closing or self._readers >= get_settings().stream_max_readers:
+        if self._at_capacity():
             return False
         self._readers += 1
         add_stream_readers(1)

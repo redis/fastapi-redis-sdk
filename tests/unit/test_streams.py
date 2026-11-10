@@ -61,6 +61,7 @@ from redis_fastapi.streams import (
     check_stream_settings,
     encode_frame,
     select_cursor,
+    sse,
     stream_error_handler,
 )
 
@@ -350,6 +351,19 @@ class TestCheckStreamSettings:
         with pytest.raises(StreamConfigurationError, match="socket_timeout"):
             check_stream_settings()
 
+    def test_the_pool_must_be_larger_than_the_reader_cap(
+        self, settings_env: Any
+    ) -> None:
+        # Readers would take every connection, and producers could not write.
+        settings_env(max_connections=100)  # against the 256-reader default
+        with pytest.raises(StreamConfigurationError, match="max_connections"):
+            check_stream_settings()
+        settings_env(max_connections=8, stream_max_readers=4)
+        check_stream_settings()
+        settings_env(max_connections=4, stream_max_readers=4)
+        with pytest.raises(StreamConfigurationError, match="max_connections"):
+            check_stream_settings()
+
     def test_other_features_never_see_the_checks(self, settings_env: Any) -> None:
         settings_env(socket_timeout=5)
         assert get_settings().socket_timeout == 5  # RedisSettings itself accepts it
@@ -507,6 +521,19 @@ class TestReaderSlots:
         assert (b"retry-after", b"5") in sent[0]["headers"]
         assert json.loads(sent[1]["body"])["code"] == "stream_capacity_exceeded"
         assert backend.readers == 0
+
+    async def test_at_capacity_no_redis_call_is_made(self, settings_env: Any) -> None:
+        # A reconnect storm at the cap must cost Redis nothing: the 503 is
+        # answered before the stream is looked up.  _no_redis fails the test
+        # if _prepare runs.
+        settings_env(stream_max_readers=2)
+        backend = StreamBackend(_no_redis)
+        backend._start(_StreamCapabilities(supported=True))
+        backend._readers = 2
+        response = await sse(backend, "r1", request=_request(), scope="chat:1")
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "5"
+        assert json.loads(response.body)["code"] == "stream_capacity_exceeded"
 
     async def test_cancellation_releases_the_slot(self) -> None:
         backend = _Backend()
@@ -666,6 +693,16 @@ class TestSpawnGuards:
         writer._task = asyncio.get_running_loop().create_future()  # type: ignore[assignment]
         with pytest.raises(ValueError, match="already runs"):
             backend.spawn(writer, _noop)
+
+    async def test_no_producer_starts_while_closing(self, settings_env: Any) -> None:
+        # Spawned after aclose() took its snapshot, it would miss the cancel
+        # and race the pool close.
+        settings_env()
+        backend = StreamBackend(_no_redis)
+        backend._closing = True
+        with pytest.raises(StreamStoreError, match="shutting down"):
+            backend.spawn(self._writer(backend, created=True), _noop)
+        assert not backend._tasks
 
     async def test_a_retry_handle_cannot_write(self, settings_env: Any) -> None:
         settings_env()
