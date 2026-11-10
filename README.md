@@ -38,6 +38,9 @@ Idiomatic Redis integration for FastAPI - connection management and DI-based cac
 | Pydantic     | 2.0+                                |
 | Redis server | 7.4+ (8.6.2+ for resumable streams) |
 
+redis-py 7.2.0 is the oldest release that imports; CI tests the SDK with
+8.0.1 and 8.1.0.
+
 ## Installation
 
 ```bash

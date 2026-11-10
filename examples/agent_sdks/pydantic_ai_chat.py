@@ -4,8 +4,8 @@ The agent answers questions about service latency and calls one tool,
 ``latency``, to look the numbers up.  The tool returns a dataclass, which the
 default stream coder encodes as it is.  Each question is one run, streamed
 through Redis, so a client that loses its connection reconnects with
-``Last-Event-ID`` and gets the rest.  The producer is the PydanticAI recipe
-from the streams guide.
+``Last-Event-ID`` and gets the rest.  The producer is the PydanticAI recipe; the streams guide's
+"Rules for every SDK" apply.
 
 * ``POST /chats/{chat_id}/runs/{run_id}`` starts a run with ``{"text": ...}``.
 * ``GET /chats/{chat_id}/runs/{run_id}/events`` streams it as SSE: ``delta``,

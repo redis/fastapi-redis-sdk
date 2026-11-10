@@ -16,7 +16,7 @@ idle producer waits, and one final entry.  Readers stop at the final entry,
 so anything written after it is never read.
 
 The run's lifetime is set once, when it opens (``stream_max_run``), and
-shortened to ``stream_done_ttl`` when it ends.  A reader that sees nothing for
+becomes ``stream_done_ttl`` when it ends.  A reader that sees nothing for
 ``stream_silence_timeout`` ends the run as ``producer_lost``.
 
 Entry fields: ``t`` (type), ``d`` (payload), ``q`` (writer sequence number) and
@@ -254,13 +254,14 @@ def _queue_end(pipe: Any, key: str, type: str, payload: str, seq: int | None) ->
 
     Every final entry shares one IDMP pair, so a late one - a writer finishing
     after a cancel - returns the existing entry instead of adding another.
-    ``LT`` lets ending only shorten the run's lifetime: a second end never
-    keeps a finished run around longer.
+    The lifetime becomes ``stream_done_ttl`` from here: a second end, which
+    adds no entry, sets it again, so a finished run lives at most one
+    ``stream_done_ttl`` past its last end.
     """
     pipe.execute_command(
         *_xadd(key, type, payload, idmp=(_END_PRODUCER, _END_ID), seq=seq, final=True)
     )
-    pipe.expire(key, get_settings().stream_done_ttl, lt=True)
+    pipe.expire(key, get_settings().stream_done_ttl)
 
 
 # How long a stream remembers IDMP pairs, in seconds: the most Redis allows,
@@ -980,6 +981,41 @@ class StreamBackend:
             self._cancel_unless_ending([writer])
         record_stream_operation(operation="cancel", result="ok")
 
+    async def finished(self, stream_id: str, *, scope: str) -> bool | None:
+        """Whether the run has ended.
+
+        ``True`` once the stream holds its final entry, ``False`` while the
+        run goes on, and ``None`` when there is no such stream in this scope:
+        unknown, expired, or another scope's.  An application that allows one
+        run at a time asks this to tell a stale claim from a live one; the
+        guide shows the pattern.
+
+        Reads the stream from its end, ``stream_replay_page`` entries at a
+        time: one command for a run with nothing written after its end, more
+        for one whose producer kept appending after a cancel it never saw.
+
+        Raises:
+            StreamInvalidName: If *scope* or *stream_id* is invalid.
+            StreamUnsupported: If the server lacks support.
+            StreamStoreError: If Redis cannot be reached.
+        """
+        await self._require_support()
+        check_name(scope, stream_id)
+        key = _key(scope, stream_id)
+        page = get_settings().stream_replay_page
+        end = "+"
+        while True:
+            reply = await self._command(["XREVRANGE", key, end, "-", "COUNT", page])
+            if not reply:
+                return None if end == "+" else False
+            for raw_id, raw_fields in reply:
+                entry, _ = _to_entry(raw_id, raw_fields)
+                if entry.final:
+                    return True
+            if len(reply) < page:
+                return False
+            end = f"({_text(reply[-1][0])}"
+
     # -- reader side ---------------------------------------------------------
 
     async def follow(
@@ -1273,11 +1309,17 @@ class StreamBackend:
         add_stream_readers(-1)
 
     async def aclose(self) -> None:
-        """Stop the feature: close live readers and cancel spawned producers.
+        """Stop the feature: cancel spawned producers, and refuse new readers.
 
         Each cancelled producer writes a ``stream.end`` with reason
         ``cancelled``, so its readers do not hang.  Called by the lifespan
         before the connection pool closes.
+
+        Live readers are not closed here.  An ASGI server runs the lifespan
+        shutdown after open responses end, so by the time this runs they are
+        gone, or the server's graceful-shutdown timeout has cancelled them;
+        a reader that is still here closes at its next read.  The guide's
+        "Shutdown" section says what that means for a deploy.
         """
         self._closing = True
         # Let producers spawned a moment ago start first: a task cancelled

@@ -1329,6 +1329,23 @@ class TestBackend:
         finally:
             await backend.aclose()
 
+    async def test_finished_tells_a_live_run_from_an_ended_or_missing_one(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        settings_env(stream_replay_page=3)  # small pages: the tail is paged
+        backend = stream_backend(real_async_redis)
+        assert await backend.finished("nope", scope=scope) is None
+        writer = await backend.open(scope=scope, stream_id="r1")
+        assert await backend.finished("r1", scope=scope) is False
+        await writer.append("delta", {})
+        assert await backend.finished("r1", scope=scope) is False
+        await backend.cancel("r1", scope=scope)
+        assert await backend.finished("r1", scope=scope) is True
+        for _ in range(7):  # a producer elsewhere that missed the cancel
+            await writer.append("delta", {})
+        assert await backend.finished("r1", scope=scope) is True  # paged past them
+        assert await backend.finished("r1", scope=f"{scope}-b") is None
+
     async def test_start_spawns_once(self, backend: StreamBackend, scope: str) -> None:
         first = await backend.start(_deltas(2), scope=scope, stream_id="r1")
         second = await backend.start(_deltas(2), scope=scope, stream_id="r1")

@@ -28,11 +28,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 7.2.0 for redis.driver_info, which config.py imports; 6.x and 7.0-7.1
-    # cannot import the package.
     "redis>=7.2.0",
-    # 0.134.0 for Starlette 0.46, whose StreamingResponse collapses the task
-    # group around the body: the stream feature catches _SlowConsumer there.
     "fastapi>=0.134.0",
     # 2.7.0 for the NoDecode annotation, which config.py needs to accept a
     # comma-separated REDIS_SESSION_PRINCIPAL_KEYS.

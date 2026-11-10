@@ -79,7 +79,8 @@ The check confirms the command set, not the patch release. Redis 8.6.0 and
 
 ### Redis client response modes
 
-Streaming is tested with redis-py 8.0.1 and 8.1.0 using the protocol unset,
+The SDK requires redis-py 7.2.0, the oldest release that imports; CI does not
+install it. Streaming is tested with redis-py 8.0.1 and 8.1.0 using the protocol unset,
 explicit RESP2, and explicit RESP3 with both legacy and modern responses.
 Both binary and decoded responses are covered. The reader accepts the
 corresponding XREAD layouts without requiring a particular response mode.
@@ -181,11 +182,11 @@ holds one, however a producer, a cancel and a reader race to end it. A
 `finish()` that comes after a cancel returns the cancel's final event and
 adds nothing.
 
-A run lives `stream_max_run` (an hour by default) from `open()`, and nothing
-extends it. When it ends, its lifetime shortens to `stream_done_ttl`, so
-clients can still read it for that long. An append after the lifetime has run
-out raises `StreamExpired`; set `stream_max_run` for the longest run you
-expect.
+A run lives `stream_max_run` (an hour by default) from `open()`, and no
+append extends it. When it ends, it lives `stream_done_ttl` (two minutes by
+default) from its final event, so clients can still read it for that long. An
+append after the lifetime has run out raises `StreamExpired`; set
+`stream_max_run` for the longest run you expect.
 
 ---
 
@@ -262,22 +263,37 @@ The SDK keeps nothing but each run's own stream, so it does not know which run
 is a chat's current one. When your application allows one run at a time, or a
 second device must find the current run, keep a pointer of your own: claim it
 when a run starts, read it from the second device, and free it when the run
-ends.
+ends. A process that dies cannot free its claim, so `finished()` tells a
+stale one from a live one: `False` means the run goes on, `True` that it
+ended, `None` that its stream is gone.
 
 ```python
-current = f"app:current-run:{chat_id}"
-if not await redis.set(current, run_id, nx=True, ex=3600):
-    raise HTTPException(409, "A run is already active")   # or take it over
-writer = await streams.start(run_agent, scope=f"chat:{chat_id}", stream_id=run_id)
+async def claim(redis, streams, chat_id: str, run_id: str) -> None:
+    current, scope = f"app:current-run:{chat_id}", f"chat:{chat_id}"
+    while not await redis.set(current, run_id, nx=True, ex=3600):
+        holder = (await redis.get(current) or b"").decode()
+        if not holder:
+            continue                                      # freed a moment ago
+        if await streams.finished(holder, scope=scope) is False:
+            raise HTTPException(409, "A run is already active")
+        await redis.execute_command("DELEX", current, "IFEQ", holder)   # stale
+
+
+writer = await streams.open(scope=f"chat:{chat_id}", stream_id=run_id)
+if writer.created:
+    try:
+        await claim(redis, streams, chat_id, run_id)
+    except HTTPException:
+        await streams.cancel(run_id, scope=f"chat:{chat_id}")   # not its turn
+        raise
+    streams.spawn(writer, run_agent)
 # ... the second device: await redis.get(current)
 # ... when the run ends:  await redis.execute_command("DELEX", current, "IFEQ", run_id)
 ```
 
-A process that dies cannot free its claim, so decide when one is stale: a run
-whose stream is gone, or whose TTL is at most `stream_done_ttl`, has ended -
-as long as `stream_done_ttl` is shorter than `stream_max_run`, so a finished
-run's TTL is always below a running one's.
-The [incident triage example](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/incident_triage_app)
+Open the run first, then claim: a claim always names a run that exists, and a
+refused second run is cancelled, so its stream ends at once. The
+[incident triage example](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/incident_triage_app)
 does this in `runs.py`, with tests.
 
 ### Ending a connection with the credential
@@ -349,6 +365,26 @@ A reader that cannot write, because its Redis ACL is read-only, sends a
 
 ---
 
+## Shutdown
+
+At shutdown the SDK cancels every producer `spawn()` started, each writes
+`stream.end` with `{"reason": "cancelled"}`, and then the pool closes. It
+does not close open SSE responses, because it cannot: an ASGI server runs
+the lifespan shutdown only after open connections have ended. Under uvicorn a
+stop therefore waits for each reader to end on its own, up to
+`stream_max_connection_duration`, unless you pass
+`--timeout-graceful-shutdown N`; after `N` seconds uvicorn cancels what is
+left and the lifespan runs.
+
+For a deploy that means two outcomes. A graceful stop, where the lifespan
+runs, ends running answers with `cancelled`, and readers reconnect to the new
+process and get `204`. A process killed before the lifespan runs leaves its
+answers to end as `producer_lost` after `stream_silence_timeout`. Set the
+graceful timeout below your platform's kill timeout, and lower
+`stream_max_connection_duration` if deploys must be quick.
+
+---
+
 ## Agent SDK recipes
 
 Agent SDKs such as the OpenAI Agents SDK, PydanticAI, Google ADK and LangGraph
@@ -356,8 +392,12 @@ run the agent loop and give you its events as an async iterator. They have no
 server of their own, so you host them in your FastAPI application, and a
 producer is a short loop that turns their events into appends.
 
-Each recipe below maps its SDK's events to the same four event types, so the
-browser code is the same whichever SDK you use:
+The four example apps in
+[`examples/agent_sdks/`](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/agent_sdks)
+- one file each for the OpenAI Agents SDK, PydanticAI, Google ADK and
+LangGraph, with the start, events and cancel routes - map each SDK's events
+to the same four event types, so the browser code is the same whichever SDK
+you use:
 
 | Type          | Data                                    | Written with |
 |---------------|-----------------------------------------|--------------|
@@ -379,12 +419,9 @@ async def start(chat_id: str, run_id: str, body: Prompt,
     return {"stream_id": writer.stream_id}
 ```
 
-Each recipe is also a complete app in
-[`examples/agent_sdks/`](https://github.com/redis/fastapi-redis-sdk/tree/main/examples/agent_sdks),
-with the start, events and cancel routes. These SDKs often rename and reshape
-their events, so check a recipe against the version you run. Checked with
-`openai-agents` 0.24, `pydantic-ai-slim` 2.54, `google-adk` 2.7, and
-`langgraph` 1.2 with `langchain-core` 1.7.
+These SDKs often rename and reshape their events, so check an example against
+the version you run. Checked with `openai-agents` 0.24, `pydantic-ai-slim`
+2.54, `google-adk` 2.7, and `langgraph` 1.2 with `langchain-core` 1.7.
 
 ### Rules for every SDK
 
@@ -408,7 +445,7 @@ their events, so check a recipe against the version you run. Checked with
   `finish("turn.interrupted", ...)`, and start the answer as a new turn with a
   new stream ID. A stream left open while a person decides needs a producer
   pinging the whole time, and expires after `stream_max_run`. The
-  LangGraph recipe shows the pattern; the OpenAI Agents SDK
+  LangGraph example shows the pattern; the OpenAI Agents SDK
   (`result.interruptions`), PydanticAI (deferred tools) and ADK (long-running
   tools) work the same way.
 - **The conversation lives elsewhere.** One stream carries one turn. Keep the
@@ -418,200 +455,6 @@ Not covered in this release: producers in sync code (CrewAI, ADK's sync
 `Runner.run`), and durable execution, where the SDK appends from a Temporal,
 DBOS or Prefect worker. Both need a writer outside the FastAPI process (see
 [Limitations](#limitations)).
-
-### OpenAI Agents SDK
-
-```python
-import json
-
-from agents import Agent, Runner
-from openai.types.responses import ResponseTextDeltaEvent
-
-agent = Agent(name="triage", instructions="...", tools=[latency])
-
-
-def run_turn(prompt: str):
-    async def produce(writer: StreamWriter) -> None:
-        result = Runner.run_streamed(agent, prompt)
-        async for event in result.stream_events():
-            if event.type == "raw_response_event":
-                if isinstance(event.data, ResponseTextDeltaEvent):
-                    await writer.append("delta", {"text": event.data.delta})
-            elif event.type == "run_item_stream_event":
-                if event.name == "tool_called":
-                    call = event.item.raw_item
-                    await writer.append("tool_call", {
-                        "id": call.call_id,
-                        "name": call.name,
-                        "args": json.loads(call.arguments or "{}"),
-                    })
-                elif event.name == "tool_output":
-                    await writer.append("tool_result", {
-                        "id": event.item.raw_item["call_id"],
-                        "output": event.item.output,
-                    })
-        await writer.finish("message", {"text": str(result.final_output)})
-
-    return produce
-```
-
-- Text arrives as raw Responses API events, and tool calls and their results
-  as run items. Every other event can be left out.
-- `result.final_output` is set once the loop ends.
-- When the producer is cancelled, `stream_events()` cancels the run and the
-  tool it waits on. No `result.cancel()` is needed.
-
-### PydanticAI
-
-```python
-from pydantic_ai import (
-    Agent, AgentRunResultEvent, FunctionToolCallEvent, FunctionToolResultEvent,
-    PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta,
-)
-
-agent = Agent(model, tools=[latency])
-
-
-def run_turn(prompt: str):
-    async def produce(writer: StreamWriter) -> None:
-        async with agent.run_stream_events(prompt) as events:
-            async for event in events:
-                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-                    if event.part.content:
-                        await writer.append("delta", {"text": event.part.content})
-                elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                    await writer.append("delta", {"text": event.delta.content_delta})
-                elif isinstance(event, FunctionToolCallEvent):
-                    await writer.append("tool_call", {
-                        "id": event.part.tool_call_id,
-                        "name": event.part.tool_name,
-                        "args": event.part.args_as_dict(),
-                    })
-                elif isinstance(event, FunctionToolResultEvent):
-                    await writer.append("tool_result", {
-                        "id": event.part.tool_call_id,
-                        "output": event.part.content,
-                    })
-                elif isinstance(event, AgentRunResultEvent):
-                    await writer.finish("message", {"text": event.result.output})
-
-    return produce
-```
-
-- `run_stream_events()` is an async context manager; use it with `async with`.
-- The first text of a reply comes in `PartStartEvent`, and only the rest in
-  `PartDeltaEvent`. Read both, or the answer loses its first chunk.
-- `AgentRunResultEvent` holds the whole message history. Send only its
-  `output`.
-- A tool may return a Pydantic model or a dataclass; the default coder
-  encodes it.
-
-### Google ADK
-
-```python
-from google.adk.agents import LlmAgent
-from google.adk.agents.run_config import RunConfig, StreamingMode
-from google.adk.runners import Runner
-from google.genai import types
-
-runner = Runner(app_name="triage",
-                agent=LlmAgent(name="triage", model=model, tools=[latency]),
-                session_service=session_service)
-
-
-def run_turn(prompt: str, *, user_id: str, session_id: str):
-    async def produce(writer: StreamWriter) -> None:
-        message = types.Content(role="user", parts=[types.Part(text=prompt)])
-        config = RunConfig(streaming_mode=StreamingMode.SSE)
-        answer = ""
-        async for event in runner.run_async(user_id=user_id, session_id=session_id,
-                                            new_message=message, run_config=config):
-            if event.partial:
-                # A chunk of the answer.  The final, non-partial event repeats
-                # the whole text, so only chunks become deltas.
-                parts = event.content.parts if event.content else None
-                for part in parts or []:
-                    if part.text and not part.thought:
-                        await writer.append("delta", {"text": part.text})
-                continue
-            for call in event.get_function_calls():
-                await writer.append("tool_call",
-                                    {"id": call.id, "name": call.name, "args": call.args})
-            for response in event.get_function_responses():
-                await writer.append("tool_result",
-                                    {"id": response.id, "output": response.response})
-            if event.is_final_response() and event.content and event.content.parts:
-                answer = "".join(part.text or "" for part in event.content.parts
-                                 if not part.thought)
-        await writer.finish("message", {"text": answer})
-
-    return produce
-```
-
-- Without `StreamingMode.SSE`, ADK sends no partial events, and the answer
-  arrives in one piece.
-- The last, non-partial event repeats the whole answer. Sending it as a delta
-  would show the answer twice.
-- Leave out `thought` parts unless your interface shows the model's
-  reasoning.
-- The ADK session must exist before the turn starts. Create it in the start
-  route, or keep one per chat.
-
-### LangGraph
-
-```python
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
-
-graph = builder.compile(checkpointer=checkpointer)
-
-
-def run_turn(inputs, config=None):
-    async def produce(writer: StreamWriter) -> None:
-        answer = ""
-        async for mode, chunk in graph.astream(inputs, config,
-                                               stream_mode=["messages", "updates"]):
-            if mode == "messages":
-                message, _metadata = chunk
-                if isinstance(message, AIMessageChunk) and message.text:
-                    await writer.append("delta", {"text": message.text})
-                continue
-            if "__interrupt__" in chunk:
-                # The graph waits for a person.  End this turn; the answer
-                # resumes the graph as a new turn, on a new stream.
-                interrupts = [item.value for item in chunk["__interrupt__"]]
-                await writer.finish("turn.interrupted", {"interrupts": interrupts})
-                return
-            for update in chunk.values():
-                for message in (update or {}).get("messages", []):
-                    if isinstance(message, ToolMessage):
-                        await writer.append("tool_result", {
-                            "id": message.tool_call_id, "output": message.content})
-                    elif isinstance(message, AIMessage) and message.tool_calls:
-                        for call in message.tool_calls:
-                            await writer.append("tool_call", {
-                                "id": call["id"], "name": call["name"],
-                                "args": call["args"]})
-                    elif isinstance(message, AIMessage):
-                        answer = message.text
-        await writer.finish("message", {"text": answer})
-
-    return produce
-```
-
-Start a turn with `run_turn({"messages": [("user", text)]}, thread)` and
-resume after an interrupt with `run_turn(Command(resume=answer), thread)`,
-where `thread` is `{"configurable": {"thread_id": chat_id}}`. Each is its own
-run with its own stream ID; the checkpointer carries the graph between them.
-
-- Use the `messages` and `updates` stream modes. Tokens come from `messages`;
-  tool calls, tool results and interrupts from `updates`. Avoid `values`: it
-  sends the whole state after every step.
-- `message.text` joins the text blocks of a message, so it also works for
-  providers that send content as a list of blocks.
-- On Python 3.10, a node must pass its `config` on to the model
-  (`await model.ainvoke(messages, config)`); without it the `messages` mode
-  gets the whole reply at once instead of its tokens. `interrupt()` in an
-  async graph needs Python 3.11 or later.
 
 ---
 
@@ -644,8 +487,8 @@ open a new `EventSource` after a pause, as the incident triage example does.
 After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:
 
-- **Passing**: Redis down for longer than `stream_read_retry_window`, a
-  shutdown, the connection cap, a client that stops reading. The response
+- **Passing**: Redis down for longer than `stream_read_retry_window`, the
+  server's shutdown, the connection cap, a client that stops reading. The response
   closes with no event, and `EventSource` reconnects and resumes from
   `Last-Event-ID`. A shorter Redis failure never reaches the client: the reader
   retries and keeps sending pings.
@@ -790,8 +633,8 @@ seconds, as everywhere else in the SDK. See
 
 | Setting                          | Default | Notes                                                                                       |
 |----------------------------------|---------|---------------------------------------------------------------------------------------------|
-| `stream_max_run`                 | `3600`  | Lifetime of a run from `open()`; at most `86400`, nothing extends it                        |
-| `stream_done_ttl`                | `120`   | How long a finished run stays readable, at most; ending never extends a run                 |
+| `stream_max_run`                 | `3600`  | Lifetime of a run from `open()`; at most `86400`; no append extends it                      |
+| `stream_done_ttl`                | `120`   | How long a finished run stays readable, from its final event                                |
 | `stream_maxlen`                  | `10000` | Most events one writer may append                                                           |
 | `stream_max_event_bytes`         | `65536` | Largest encoded event                                                                       |
 | `stream_heartbeat_interval`      | `15`    | SSE ping, blocking-read bound, how often `keepalive()` checks                               |

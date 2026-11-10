@@ -80,7 +80,7 @@ with it.
 | `SET key value IFEQ value` | 8.4 | No longer sent by the SDK since 2026-10-30, as above. |
 | `volatile-lrm` eviction policy | 8.6 | Lets operators evict finished idle streams first (section 3.3). |
 | `XCFGSET key IDMP-DURATION seconds` | 8.6 | `open()` sets the stream's IDMP window to a day, the most Redis allows, so a retried final write finds its pair for the run's whole life (section 6.3). |
-| `EXPIRE key seconds NX` and `LT` | 7.0 | `NX` gives a new stream its lifetime and tells a creating `open()` from a retried one; `LT` lets an end only shorten a run (section 6.4). |
+| `EXPIRE key seconds NX` | 7.0 | `NX` gives a new stream its lifetime and tells a creating `open()` from a retried one (section 6.4). Until 2026-11-10 the end used `LT` as well, so ending only shortened a run; dropped with the demo heuristic that was its one consumer. |
 | `HSETEX key EX seconds FIELDS 1 field value` (hash-field expiration) | 8.0 | No longer used since 2026-10-30. The producer heartbeat was a meta field with its own TTL; a quiet producer now writes a hidden `stream.ping` entry (section 5.5). |
 
 Notes on this table:
@@ -480,7 +480,7 @@ as tool results, belong with the durable dispatch queue in phase 3 (section
 | State | Stream TTL | Set when |
 |---|---|---|
 | Running | `stream_max_run` (default 1 h, at most a day) | Once, at `open()`, with `EXPIRE … NX`. Nothing extends it: a run longer than this expires, and its next write raises `StreamExpired`. |
-| Finished | At most `stream_done_ttl` (default 2 min) | By the final entry, with `EXPIRE … LT`: ending only ever shortens a run. A run that ends with less than `stream_done_ttl` of its lifetime left keeps what it has, and a second end never keeps a finished run around longer. |
+| Finished | `stream_done_ttl` (default 2 min) | By the final entry, with `EXPIRE`: a finished run lives `stream_done_ttl` from its end. A second end - a cancel after a finish - adds no entry and sets the same lifetime again, so a finished run lives at most one `stream_done_ttl` past its last end. |
 
 Because the lifetime is set once, when the run opens, a producer killed
 mid-run leaves a key that expires by itself, and an append writes no TTL at
@@ -555,9 +555,9 @@ with the metadata hash (section 15, phase 2).
 
 `finish(type, data=None)` appends the final entry: an ordinary event of the
 application's chosen type, with `f=1` and the fixed IDMP pair, and in the
-same transaction `EXPIRE <key> <stream_done_ttl> LT`. The final event and
+same transaction `EXPIRE <key> <stream_done_ttl>`. The final event and
 the end marker are one append, so no crash can fall between the last data
-and the end; `LT` means ending only shortens the run. It waits for any append
+and the end. It waits for any append
 of this writer still in flight, so the final entry lands after them. A retry
 after a timeout is safe, because of the fixed pair. If the run was already
 ended, by a cancel or by a reader that found it silent, the `XADD` returns
@@ -738,10 +738,10 @@ fair.
 `cancel(stream_id, scope)` ends the run itself, in one transaction: the same
 `XADD` as any final entry, with type `stream.end`, data
 `{"reason": "cancelled"}`, the fixed IDMP pair and `NOMKSTREAM`, then
-`EXPIRE … <stream_done_ttl> LT`. A nil reply means there is no such stream:
+`EXPIRE … <stream_done_ttl>`. A nil reply means there is no such stream:
 `StreamNotFound`. Readers stop at once. Cancelling a run that already ended
-changes nothing: the pair returns the existing final entry, and `LT` keeps
-the shorter lifetime.
+adds nothing: the pair returns the existing final entry, and the lifetime is
+set to `stream_done_ttl` again.
 
 If the producer was started by `spawn()` in this process, the SDK cancels its
 task too, and the cancel reaches the model call or tool it waits on; that
@@ -850,7 +850,7 @@ XADD S NOMKSTREAM IDMP <wid> <q> * t <type> d <data> q <q>
 ```
 MULTI
   XADD S NOMKSTREAM IDMP end final * t <type> d <data> [q <q>] f 1
-  EXPIRE S t_d LT
+  EXPIRE S t_d
 EXEC
 ```
 
@@ -892,7 +892,7 @@ final entry:
 ```
 MULTI
   XADD S NOMKSTREAM IDMP end final * t stream.end d {"reason": "producer_lost"} f 1
-  EXPIRE S t_d LT
+  EXPIRE S t_d
 EXEC
 ```
 
@@ -925,6 +925,8 @@ class StreamBackend:
                   after: str | None = None,   # an override; the request's own cursor otherwise
                   expires_at: datetime | None = None) -> Response: ...
     async def cancel(self, stream_id: str, *, scope: str) -> None: ...
+    async def finished(self, stream_id: str, *, scope: str) -> bool | None: ...
+                  # True after the final entry, False while running, None for no stream
 
 def session_expiry(request: Request) -> datetime | None: ...
 

@@ -5,7 +5,8 @@ The agent answers questions about service latency and calls one tool,
 through Redis, so a client that loses its connection reconnects with
 ``Last-Event-ID`` and gets the rest.  Each chat is one ADK session, so the
 agent remembers earlier questions in the same chat.  The producer is the
-Google ADK recipe from the streams guide.
+Google ADK recipe; the streams guide's
+"Rules for every SDK" apply.
 
 * ``POST /chats/{chat_id}/runs/{run_id}`` starts a run with ``{"text": ...}``.
 * ``GET /chats/{chat_id}/runs/{run_id}/events`` streams it as SSE: ``delta``,

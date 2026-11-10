@@ -5,7 +5,8 @@ step between them: before any tool runs, the graph asks the engineer with
 ``interrupt()``.  The question ends the run with a ``turn.interrupted`` event,
 and the answer starts a new run on a new stream.  The checkpointer carries the
 graph between the two, keyed by the chat.  The producer is the LangGraph
-recipe from the streams guide.
+recipe; the streams guide's
+"Rules for every SDK" apply.
 
 * ``POST /chats/{chat_id}/runs/{run_id}`` starts a run, either a question,
   ``{"text": ...}``, or the answer to the last interrupt, ``{"approve": true}``.

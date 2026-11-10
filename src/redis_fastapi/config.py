@@ -345,7 +345,7 @@ class RedisSettings(BaseSettings):
         le=86_400,
         description=(
             "Lifetime of a run, in seconds, set when it opens, so a producer "
-            "killed mid-run leaves a stream that expires by itself.  Nothing "
+            "killed mid-run leaves a stream that expires by itself.  No append "
             "extends it: a run longer than this expires.  At most 86400, the "
             "longest Redis keeps a stream's idempotency keys."
         ),
@@ -354,11 +354,9 @@ class RedisSettings(BaseSettings):
         default=120,
         gt=0,
         description=(
-            "TTL after the final entry, in seconds: how long a client can "
-            "still reconnect and read a finished stream.  At most this: ending "
-            "never extends a run, so one that ends with less of its lifetime "
-            "left - or any run, when this is not shorter than stream_max_run - "
-            "keeps what it has."
+            "How long a finished run stays readable, in seconds, from its "
+            "final entry: a client can still reconnect and read it for this "
+            "long."
         ),
     )
     stream_maxlen: int = Field(

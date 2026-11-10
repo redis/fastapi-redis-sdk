@@ -3,7 +3,8 @@
 An engineer runs one triage at a time, and a second device finds it.  The SDK
 keeps only the run's own stream, so this app keeps the pointer to each
 engineer's current run itself: one key, claimed when a run starts and freed
-when it ends.
+when it ends.  ``StreamBackend.finished()`` tells a stale claim from a live
+one.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from examples.incident_triage_app.session import by_subject, subject_of
 from redis_fastapi import (
     AsyncRedisDep,
     RateLimitBackendDep,
+    StreamBackend,
     StreamBackendDep,
     StreamWriter,
     get_settings,
@@ -55,56 +57,24 @@ def _scope(subject: str) -> str:
     return f"triage:{subject}"
 
 
-# How long a claim may wait for its run to open before a missing stream
-# means the run is gone.
-_OPEN_GRACE = 10
-
-
 def _current(subject: str) -> str:
     """The key naming the engineer's current run."""
     return f"{get_settings().prefix}:triage-current:{subject}"
 
 
-def check_settings() -> None:
-    """Refuse settings under which _run_over() cannot tell an ended run.
-
-    It reads a TTL at most stream_done_ttl as "ended", which holds only while
-    a finished run's TTL is shorter than a running one's.  The SDK allows any
-    stream_done_ttl; this app needs it shorter than stream_max_run.
-    """
-    settings = get_settings()
-    if settings.stream_done_ttl >= settings.stream_max_run:
-        raise RuntimeError(
-            "This app needs REDIS_STREAM_DONE_TTL shorter than "
-            "REDIS_STREAM_MAX_RUN: it tells an ended run by its TTL."
-        )
+async def _run_over(streams: StreamBackend, subject: str, run_id: str) -> bool:
+    """Whether the run no longer holds the engineer's slot: ended, or gone."""
+    return await streams.finished(run_id, scope=_scope(subject)) is not False
 
 
-async def _run_over(redis: Any, subject: str, run_id: str) -> bool:
-    """Whether a run is gone, or has ended: its claim is stale.
-
-    Ending a run only ever shortens its lifetime to at most stream_done_ttl,
-    and a running one starts with stream_max_run, so the stream's TTL tells
-    the two apart without reading its entries - however many a producer that
-    has not noticed a cancel writes after the end.  A run in the last
-    stream_done_ttl of its lifetime also counts as over; it is about to expire.
-    """
-    settings = get_settings()
-    stream = f"{settings.prefix}:stream:{_scope(subject)}:{run_id}"
-    left = await redis.ttl(stream)
-    if left == -2:  # no stream
-        # A claim is taken a moment before its run opens: while it is fresh,
-        # a missing stream is a run about to start, not a finished one.
-        claimed_for = settings.stream_max_run - await redis.ttl(_current(subject))
-        return claimed_for > _OPEN_GRACE
-    return 0 <= left <= settings.stream_done_ttl
-
-
-async def _claim(redis: Any, subject: str, run_id: str) -> None:
+async def _claim(
+    redis: Any, streams: StreamBackend, subject: str, run_id: str
+) -> None:
     """Make *run_id* the engineer's current run, or answer 409.
 
-    A retried start finds its own claim.  A claim whose run ended without
-    freeing it - its process died - is taken over.
+    Called after the run's open(), so a claim always names a run that
+    exists.  A retried start finds its own claim.  A claim whose run ended
+    without freeing it - its process died - is taken over.
     """
     key = _current(subject)
     lifetime = get_settings().stream_max_run
@@ -118,7 +88,7 @@ async def _claim(redis: Any, subject: str, run_id: str) -> None:
     holder = text(holder)
     if holder == run_id:
         return
-    if holder is not None and await _run_over(redis, subject, holder):
+    if holder is not None and await _run_over(streams, subject, holder):
         # Only while the stale claim still holds: a concurrent start wins once.
         swapped = await redis.execute_command(
             "SET", key, run_id, "IFEQ", holder, "EX", lifetime
@@ -145,13 +115,19 @@ async def start(
     redis: AsyncRedisDep,
     subject: str = Depends(subject_of),
 ) -> dict[str, str]:
-    # The claim first: a second run gets 409 before any budget is spent.  A
-    # retried start finds its own claim, then the same run with
-    # created=False: no second producer, and no second budget slot.
-    await _claim(redis, subject, body.run_id)
+    # Open first, then claim: finished() can then tell a stale claim's run
+    # from this one.  A retried start finds the same run with created=False:
+    # no second producer, no second claim, no second budget slot.  A second
+    # run while one goes on is cancelled and gets 409, before any budget is
+    # spent.
     writer = await streams.open(scope=_scope(subject), stream_id=body.run_id)
     if not writer.created:
         return {"stream_id": writer.stream_id}
+    try:
+        await _claim(redis, streams, subject, body.run_id)
+    except HTTPException:
+        await streams.cancel(writer.stream_id, scope=_scope(subject))
+        raise
     planner = SCRIPTED
     note = None
     try:
@@ -191,10 +167,10 @@ async def start(
 
 @router.get("/triage/runs/active")
 async def active(
-    redis: AsyncRedisDep, subject: str = Depends(subject_of)
+    redis: AsyncRedisDep, streams: StreamBackendDep, subject: str = Depends(subject_of)
 ) -> dict[str, str | None]:
     current = text(await redis.get(_current(subject)))
-    if current is None or await _run_over(redis, subject, current):
+    if current is None or await _run_over(streams, subject, current):
         return {"stream_id": None}
     return {"stream_id": current}
 

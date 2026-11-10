@@ -311,8 +311,8 @@ class TestCheckStreamSettings:
     def test_a_finished_run_may_be_kept_as_long_as_a_running_one(
         self, settings_env: Any, done_ttl: int
     ) -> None:
-        # Ending only ever shortens a run, so a long stream_done_ttl just
-        # means a finished run keeps what lifetime it has left.
+        # The two settings are independent: a finished run lives
+        # stream_done_ttl from its final event, whatever its lifetime was.
         settings_env(stream_max_run=60, stream_done_ttl=done_ttl)
         check_stream_settings()
 
@@ -647,6 +647,8 @@ class TestUnsupported:
             await backend.sse("r", request=_request(), scope="chat:1")
         with pytest.raises(StreamUnsupported):
             await backend.follow("r", scope="chat:1")
+        with pytest.raises(StreamUnsupported):
+            await backend.finished("r", scope="chat:1")
         with pytest.raises(StreamUnsupported):
             await backend.start(_noop, scope="chat:1")
 
