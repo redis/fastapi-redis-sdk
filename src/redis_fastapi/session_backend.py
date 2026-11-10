@@ -31,8 +31,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
-from redis.exceptions import RedisClusterException, RedisError
 
+from redis_fastapi._errors import STORE_ERRORS
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
@@ -49,18 +49,6 @@ logger = logging.getLogger(__name__)
 
 # Every driver failure this store is willing to interpret.
 #
-# ``RedisClusterException`` is **not** a subclass of ``RedisError`` - it
-# descends straight from ``Exception`` - and its subclass
-# ``SlotNotCoveredError`` is raised on the ordinary command path during a
-# resharding or a failover.  Catching only ``RedisError`` therefore lets the
-# commonest cluster failure escape every policy in this module: the read would
-# not fail open, and a raw driver exception would reach application code that
-# was told ``SessionError`` catches the whole feature.
-STORE_ERRORS: tuple[type[BaseException], ...] = (
-    RedisError,
-    RedisClusterException,
-    OSError,
-)
 
 # What a *composite* operation can fail with: a driver error from a primitive
 # it calls directly, or this module's own wrapper around one raised deeper

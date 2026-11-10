@@ -27,7 +27,7 @@ from redis.asyncio import Redis, RedisCluster, Sentinel
 
 from redis_fastapi import StreamBackend
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import _StreamCapabilities, probe_streams_support
+from redis_fastapi.stream_backend import probe_streams_support
 from tests.conftest import REDIS_URL
 
 
@@ -88,7 +88,7 @@ async def command_calls(client: Any) -> dict[str, int]:
 def stream_backend(client: Any) -> StreamBackend:
     """A backend on *client*: another process, as Redis sees it."""
     backend = StreamBackend(lambda: client)
-    backend._start(_StreamCapabilities(supported=True))
+    backend._supported = True  # the fixture already asked the server
     return backend
 
 
@@ -155,7 +155,7 @@ async def stream_case(
             raise
         if await probe_streams_support(client) is not True:
             pytest.skip(f"{topology} Redis without stream support")
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         yield backend, client, prefix
     finally:
         try:

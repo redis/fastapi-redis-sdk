@@ -422,15 +422,15 @@ def timed_session(operation: str) -> Generator[None, None, None]:
 
 
 @contextlib.contextmanager
-def stream_span(
-    name: str,
-    attributes: dict[str, Any] | None = None,
-) -> Generator[Any, None, None]:
-    """Create a span for a stream operation.  No-op when OTel is disabled."""
+def stream_span(name: str) -> Generator[Any, None, None]:
+    """Create a span for a stream operation.  No-op when OTel is disabled.
+
+    No attributes: the rule above leaves nothing a stream span could carry.
+    """
     if not _state.enabled or _state.tracer is None:
         yield None
         return
-    with _state.tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+    with _state.tracer.start_as_current_span(name) as span:
         yield span
 
 

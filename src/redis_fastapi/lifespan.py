@@ -177,10 +177,7 @@ async def _start_streams(app: FastAPI, ps: _PoolState) -> Any:
     backend = getattr(app.state, "_redis_streams", None)
     if backend is None:
         return None
-    from redis_fastapi.stream_backend import _StreamCapabilities
-
-    ps.stream_capabilities = _StreamCapabilities()
-    backend._start(ps.stream_capabilities)
+    backend._start()
     try:
         await backend.detect()
     except Exception:

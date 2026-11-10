@@ -27,7 +27,7 @@ from opentelemetry.sdk.trace.export import (
 import redis_fastapi.stream_backend as stream_backend
 import redis_fastapi.streams as streams
 import redis_fastapi.telemetry as tel
-from redis_fastapi.stream_backend import StreamBackend, _StreamCapabilities
+from redis_fastapi.stream_backend import StreamBackend
 from redis_fastapi.streams import _SSEResponse
 
 pytestmark = pytest.mark.unit
@@ -182,7 +182,7 @@ def test_the_reader_gauge_follows_the_slots(
 ) -> None:
     _, _, readers = metrics
     backend = StreamBackend(_no_redis)
-    backend._start(_StreamCapabilities(supported=True))
+    backend._supported = True
     assert backend._reserve_reader()
     backend._release_reader()
     assert [amount for amount, _ in readers.calls] == [1, -1]
@@ -194,7 +194,7 @@ async def test_a_slow_consumer_is_counted(
 ) -> None:
     operations, _, _ = metrics
     backend = StreamBackend(_no_redis)
-    backend._start(_StreamCapabilities(supported=True))
+    backend._supported = True
 
     async def body() -> AsyncIterator[str]:
         for i in range(3):

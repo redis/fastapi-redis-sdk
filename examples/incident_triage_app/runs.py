@@ -115,7 +115,7 @@ async def _claim(redis: Any, subject: str, run_id: str) -> None:
         if await redis.set(key, run_id, nx=True, ex=lifetime):
             return
         holder = await redis.get(key)
-    holder = _text(holder) if holder is not None else None
+    holder = text(holder)
     if holder == run_id:
         return
     if holder is not None and await _run_over(redis, subject, holder):
@@ -193,13 +193,16 @@ async def start(
 async def active(
     redis: AsyncRedisDep, subject: str = Depends(subject_of)
 ) -> dict[str, str | None]:
-    current = await redis.get(_current(subject))
-    if current is None or await _run_over(redis, subject, _text(current)):
+    current = text(await redis.get(_current(subject)))
+    if current is None or await _run_over(redis, subject, current):
         return {"stream_id": None}
-    return {"stream_id": _text(current)}
+    return {"stream_id": current}
 
 
-def _text(value: Any) -> str:
+def text(value: Any) -> str | None:
+    """A reply value as text; the SDK's pool returns bytes."""
+    if value is None:
+        return None
     return value.decode() if isinstance(value, bytes) else str(value)
 
 

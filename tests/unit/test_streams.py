@@ -52,7 +52,6 @@ from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
     _key,
-    _StreamCapabilities,
     _xadd,
     _xread_entries,
     check_event_type,
@@ -518,7 +517,7 @@ class TestReaderSlots:
         # if _prepare runs.
         settings_env(stream_max_readers=2)
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         backend._readers = 2
         response = await sse(backend, "r1", request=_request(), scope="chat:1")
         assert response.status_code == 503
@@ -594,7 +593,7 @@ class TestUnsupported:
     def backend(self, settings_env: Any) -> StreamBackend:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=False))
+        backend._supported = False
         return backend
 
     async def test_detection_turns_the_feature_off_with_one_warning(
@@ -662,7 +661,7 @@ class TestWriterValidation:
     async def test_invalid_names_fail_before_redis(self, settings_env: Any) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         with pytest.raises(StreamInvalidName):
             await backend.open(scope="bad scope")
         with pytest.raises(StreamInvalidName):
@@ -673,7 +672,7 @@ class TestWriterValidation:
     ) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         with pytest.raises(StreamInvalidName):
             await backend.cancel("../x", scope="chat:1")
         with pytest.raises(StreamInvalidName):
@@ -732,7 +731,7 @@ class TestSpawnGuards:
         backend._closing = True
         with pytest.raises(StreamStoreError, match="shutting down"):
             backend.spawn(self._writer(backend, created=True), _noop)
-        assert not backend._tasks
+        assert not backend._spawned
 
     async def test_a_retry_handle_cannot_write(self, settings_env: Any) -> None:
         settings_env()
@@ -809,7 +808,7 @@ class TestLifecycle:
     ) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         backend._closing = True
         with pytest.raises(StreamStoreError, match="shutting down"):
             await backend.open(scope="chat:1")

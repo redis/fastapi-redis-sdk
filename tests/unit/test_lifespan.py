@@ -59,7 +59,7 @@ async def test_stream_shutdown_failure_still_closes_sdk_pool(
     pool = AsyncMock()
     monkeypatch.setattr(_PoolState, "build_async_pool", lambda: pool)
     streams = SimpleNamespace(
-        _start=lambda capabilities: None,
+        _start=lambda: None,
         detect=AsyncMock(return_value=True),
         aclose=AsyncMock(side_effect=failure),
     )

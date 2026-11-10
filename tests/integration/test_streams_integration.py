@@ -40,11 +40,7 @@ from redis_fastapi import (
     session_expiry,
 )
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import (
-    _key,
-    _StreamCapabilities,
-    probe_streams_support,
-)
+from redis_fastapi.stream_backend import _key, probe_streams_support
 from tests.conftest import REDIS_URL, about, aexpire_now, requires_redis
 from tests.stream_support import collect, stream_backend
 
@@ -91,7 +87,6 @@ async def backend(
 ) -> AsyncIterator[StreamBackend]:
     """A backend on a real async client, outside any app."""
     instance = StreamBackend(lambda: real_async_redis)
-    instance._start(_StreamCapabilities())
     assert await instance.detect() is True
     yield instance
     await instance.aclose()
@@ -963,7 +958,7 @@ class TestBackend:
     ) -> None:
         settings_env()
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.append("delta", {})
         await writer.finish("message", {})
@@ -1010,7 +1005,7 @@ class TestBackend:
     ) -> None:
         settings_env(stream_replay_page=2)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         for n in range(6):
             await writer.append("delta", {"n": n})
@@ -1056,7 +1051,7 @@ class TestBackend:
         # so two readers cannot overlap through it; drive ASGI directly.
         settings_env(stream_max_readers=1)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         await backend.open(scope=scope, stream_id="r1")
         request = _get()
         first = await backend.sse("r1", request=request, scope=scope)
@@ -1178,7 +1173,7 @@ class TestBackend:
     ) -> None:
         settings_env(stream_replay_page=2)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         first = await writer.append("delta", {"i": 0})
         for i in range(1, 4):
@@ -1373,7 +1368,6 @@ async def test_client_response_modes_replay_and_live(
         cluster_url or REDIS_URL, decode_responses=decode, **client_options
     ) as client:
         instance = StreamBackend(lambda: client)
-        instance._start(_StreamCapabilities())
         try:
             writer = await instance.open(scope=scope, stream_id="compatibility")
             first = await writer.append("delta", {"n": 1})

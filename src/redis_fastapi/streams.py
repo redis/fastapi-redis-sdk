@@ -39,7 +39,6 @@ from redis_fastapi.stream_backend import (
     ERROR_TYPE,
     IDMP_WINDOW,
     StreamBackend,
-    _Entry,
     parse_cursor,
 )
 from redis_fastapi.telemetry import record_stream_operation
@@ -129,13 +128,6 @@ def encode_frame(event_type: str, data: str, event_id: str | None = None) -> str
     lines = data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     body = "".join(f"data: {line}\n" for line in lines)
     return f"{head}event: {event_type}\n{body}\n"
-
-
-def _frame(entry: _Entry) -> str:
-    # The payload as stored: the SSE path never decodes it.
-    return encode_frame(
-        entry.type, entry.raw if entry.raw is not None else "null", entry.id
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +277,12 @@ async def sse(
             async for page in pages:
                 if page:
                     # One chunk per read: one send, and one send timeout, for
-                    # a whole replay page.
-                    yield "".join(_frame(entry) for entry in page)
+                    # a whole replay page.  The payload goes out as stored:
+                    # the SSE path never decodes it.
+                    yield "".join(
+                        encode_frame(e.type, "null" if e.raw is None else e.raw, e.id)
+                        for e in page
+                    )
                 now = time.monotonic()
                 if credential_end is not None and now >= credential_end:
                     yield encode_frame(

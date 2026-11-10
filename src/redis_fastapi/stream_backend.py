@@ -35,7 +35,13 @@ import re
 import secrets
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -44,9 +50,10 @@ from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import NoPermissionError, RedisClusterException, RedisError
+from redis.exceptions import NoPermissionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from redis_fastapi._errors import STORE_ERRORS
 from redis_fastapi.config import get_settings
 from redis_fastapi.exceptions import (
     StreamCursorAhead,
@@ -75,14 +82,6 @@ logger = logging.getLogger(__name__)
 
 AsyncClient: TypeAlias = AsyncRedis | AsyncRedisCluster
 
-# Every driver failure the feature interprets.  ``RedisClusterException`` is
-# not a ``RedisError``; see the same tuple in ``session_backend``.
-STORE_ERRORS: tuple[type[BaseException], ...] = (
-    RedisError,
-    RedisClusterException,
-    OSError,
-)
-
 # Failures after which Redis may or may not have applied a write.  Every write
 # here is safe to repeat (IDMP, EXPIRE), so these are retried.
 _AMBIGUOUS_ERRORS: tuple[type[BaseException], ...] = (
@@ -96,9 +95,6 @@ _WRITE_ATTEMPTS = 3
 # entries, and how often it repeats a cancel that did not arrive.
 _SHUTDOWN_GRACE_SECONDS = 5.0
 _SHUTDOWN_RETRY_SECONDS = 0.25
-
-# What ending a stream from ``spawn()`` may fail with, logged and not raised.
-_END_ERRORS: tuple[type[BaseException], ...] = (StreamError, *STORE_ERRORS)
 
 _T = TypeVar("_T")
 
@@ -294,17 +290,6 @@ def _xread_entries(reply: Any) -> list[tuple[Any, dict[Any, Any]]]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _StreamCapabilities:
-    """Process-lifetime cache of server support, shared on the pool state.
-
-    ``None`` means "not yet known" and leaves detection to a later attempt
-    rather than caching a guess, as the rate limiter and the session store do.
-    """
-
-    supported: bool | None = None
-
-
 async def probe_streams_support(client: AsyncClient) -> bool | None:
     """Ask the server whether it has ``XCFGSET`` and ``DELEX``.
 
@@ -434,9 +419,6 @@ class StreamWriter:
         # Set when spawn() starts writing the final entry, so a repeated
         # cancel at shutdown never interrupts that write.
         self._ending = False
-        # A handle for a run that already exists (a retried start) writes
-        # nothing: the run's own producer does.
-        self._read_only = not created
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -564,7 +546,9 @@ class StreamWriter:
         return task is not None and asyncio.current_task() is task
 
     def _check_writable(self) -> None:
-        if self._read_only:
+        # A handle for a run that already exists (a retried start) writes
+        # nothing: the run's own producer does.
+        if not self.created:
             raise ValueError(
                 f"this writer is a retried start's handle for stream "
                 f"{self.stream_id}; the run's own producer writes to it"
@@ -688,7 +672,6 @@ class StreamBackend:
             follows the application's pool.
         coder: Serializer for event payloads.  Defaults to
             :class:`~redis_fastapi.types.JsonableCoder`.
-        capabilities: Shared server-support cache.
     """
 
     def __init__(
@@ -696,14 +679,15 @@ class StreamBackend:
         client: Callable[[], AsyncClient],
         *,
         coder: type[Coder] | None = None,
-        capabilities: _StreamCapabilities | None = None,
     ) -> None:
         self._client = client
         self._coder: type[Coder] = coder or JsonableCoder
-        self._caps = capabilities if capabilities is not None else _StreamCapabilities()
-        self._tasks: set[asyncio.Task[None]] = set()
-        self._spawned: dict[tuple[str, str], asyncio.Task[None]] = {}
-        self._writers: dict[asyncio.Task[None], StreamWriter] = {}
+        # Server support, detected once per pool.  ``None`` means "not yet
+        # known" and leaves detection to a later attempt rather than caching
+        # a guess, as the rate limiter and the session store do.
+        self._supported: bool | None = None
+        # The writers spawn() started whose tasks still run, by run.
+        self._spawned: dict[tuple[str, str], StreamWriter] = {}
         self._readers = 0
         self._closing = False
 
@@ -712,12 +696,12 @@ class StreamBackend:
     @property
     def supported(self) -> bool | None:
         """Whether the server supports the feature; ``None`` if not yet known."""
-        return self._caps.supported
+        return self._supported
 
     async def detect(self) -> bool | None:
         """Detect server support once, and log one warning when it is missing."""
-        if self._caps.supported is not None:
-            return self._caps.supported
+        if self._supported is not None:
+            return self._supported
         try:
             result = await probe_streams_support(self._client())
         except RuntimeError:
@@ -730,13 +714,13 @@ class StreamBackend:
             )
         elif result is True:
             logger.info("Resumable streams: server support detected")
-        self._caps.supported = result
+        self._supported = result
         return result
 
     async def _require_support(self) -> None:
-        if self._caps.supported is None:
+        if self._supported is None:
             await self.detect()
-        if self._caps.supported is False:
+        if self._supported is False:
             raise StreamUnsupported("resumable streams need Redis 8.6.2 or later")
 
     # -- plumbing ------------------------------------------------------------
@@ -857,7 +841,11 @@ class StreamBackend:
             operation="open", result="created" if created else "retry"
         )
         return StreamWriter(
-            self, scope=scope, stream_id=sid, writer_id=_new_id(), created=created
+            self,
+            scope=scope,
+            stream_id=sid,
+            writer_id=secrets.token_urlsafe(9),
+            created=created,
         )
 
     async def start(
@@ -910,7 +898,7 @@ class StreamBackend:
                 and race the pool close.
         """
         self._check_open()
-        if writer._read_only:
+        if not writer.created:
             raise ValueError(
                 f"stream {writer.stream_id} already has a producer: spawn only a "
                 "writer whose created is True, or use start()"
@@ -926,7 +914,7 @@ class StreamBackend:
                 return
             try:
                 await writer._end(END_TYPE, data)
-            except _END_ERRORS:
+            except StreamError:  # _retry turns every driver error into one
                 logger.warning(
                     "Could not end stream %s; readers will see it as lost",
                     writer.stream_id,
@@ -955,14 +943,10 @@ class StreamBackend:
         task = asyncio.create_task(run())
         writer._task = task
         key = (writer.scope, writer.stream_id)
-        self._tasks.add(task)
-        self._spawned[key] = task
-        self._writers[task] = writer
+        self._spawned[key] = writer
 
         def forget(done: asyncio.Task[None]) -> None:
-            self._tasks.discard(done)
-            self._writers.pop(done, None)
-            if self._spawned.get(key) is done:
+            if self._spawned.get(key) is writer:
                 del self._spawned[key]
 
         task.add_done_callback(forget)
@@ -991,9 +975,9 @@ class StreamBackend:
         )
         if _text(replies[0]) is None:
             raise StreamNotFound(f"no stream {stream_id} in this scope")
-        task = self._spawned.get((scope, stream_id))
-        if task is not None and not task.done():
-            self._cancel_unless_ending({task})
+        writer = self._spawned.get((scope, stream_id))
+        if writer is not None:
+            self._cancel_unless_ending([writer])
         record_stream_operation(operation="cancel", result="ok")
 
     # -- reader side ---------------------------------------------------------
@@ -1077,8 +1061,9 @@ class StreamBackend:
         def build(pipe: Any) -> None:
             pipe.exists(key)
             pipe.xinfo_stream(key)
-            if cursor != _START:
-                pipe.xrange(key, _format(cursor), _format(cursor))
+            # The cursor's own entry.  Always queued, so every reply has one
+            # position; with no cursor it is XRANGE 0-0 0-0, which is empty.
+            pipe.xrange(key, _format(cursor), _format(cursor))
             # XRANGE with an exclusive start, not XREAD: redis-py cannot
             # queue XREAD, whose keys move, in an async Cluster transaction.
             pipe.xrange(key, f"({_format(cursor)}", "+", count=page)
@@ -1102,7 +1087,7 @@ class StreamBackend:
         if cursor != _START and (last_generated is None or cursor > last_generated):
             record_stream_operation(operation="read", result="ahead")
             raise StreamCursorAhead(f"cursor {_format(cursor)} is ahead of the stream")
-        own = replies[2] if cursor != _START else None
+        own = replies[2]
         own_fields: dict[str | None, str | None] = {}
         if own and not isinstance(own, Exception):
             own_fields = {_text(k): _text(v) for k, v in own[0][1].items()}
@@ -1114,7 +1099,7 @@ class StreamBackend:
             raise StreamExpired(
                 "entries after the cursor were removed; reload from the source"
             )
-        first_reply = replies[-1]
+        first_reply = replies[3]
         first = [] if isinstance(first_reply, Exception) else list(first_reply)
 
         last_seq: int | None = 0 if cursor == _START else None
@@ -1263,9 +1248,13 @@ class StreamBackend:
 
     # -- readers and lifecycle -----------------------------------------------
 
-    def _start(self, capabilities: _StreamCapabilities) -> None:
-        """Bind to a freshly built pool.  Called by the lifespan at startup."""
-        self._caps = capabilities
+    def _start(self) -> None:
+        """Bind to a freshly built pool.  Called by the lifespan at startup.
+
+        What the previous pool's server supported says nothing about this
+        one's, so detection starts over.
+        """
+        self._supported = None
         self._closing = False
 
     def _at_capacity(self) -> bool:
@@ -1294,8 +1283,9 @@ class StreamBackend:
         # Let producers spawned a moment ago start first: a task cancelled
         # before it runs never writes its final entry.
         await asyncio.sleep(0)
-        pending = set(self._tasks)
-        self._cancel_unless_ending(pending)
+        writers = list(self._spawned.values())
+        self._cancel_unless_ending(writers)
+        pending = {w._task for w in writers if w._task is not None}
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _SHUTDOWN_GRACE_SECONDS
         while pending:
@@ -1313,22 +1303,17 @@ class StreamBackend:
             # On Python 3.10 and 3.11 asyncio.wait_for, which redis-py uses
             # for socket writes, can lose a cancel that arrives as the write
             # completes.  Repeat it.
-            self._cancel_unless_ending(pending)
+            self._cancel_unless_ending([w for w in writers if w._task in pending])
 
-    def _cancel_unless_ending(self, tasks: set[asyncio.Task[None]]) -> None:
+    def _cancel_unless_ending(self, writers: Iterable[StreamWriter]) -> None:
         """Cancel spawned producers, except one already writing its final entry.
 
         A cancel there would abort that write, and readers would wait out the
         silence timeout to see ``producer_lost`` instead of the real reason.
         """
-        for task in tasks:
-            writer = self._writers.get(task)
-            if writer is None or not writer._ending:
-                task.cancel()
-
-
-def _new_id() -> str:
-    return secrets.token_urlsafe(9)
+        for writer in writers:
+            if not writer._ending and writer._task is not None:
+                writer._task.cancel()
 
 
 def _history_lost(info: Any, cursor: Cursor, *, own_present: bool) -> bool:
