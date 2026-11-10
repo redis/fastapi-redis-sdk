@@ -264,7 +264,7 @@ def _queue_end(pipe: Any, key: str, type: str, payload: str, seq: int | None) ->
 
 
 # How long a stream remembers IDMP pairs, in seconds: the most Redis allows,
-# which ``check_stream_settings`` keeps above any run's lifetime.  A constant,
+# and the upper bound of ``stream_max_run``, so it covers any run.  A constant,
 # because XCFGSET with a changed value clears the IDMP history, while the same
 # value - sent again by a retried open() - leaves it alone.
 IDMP_WINDOW = 86_400

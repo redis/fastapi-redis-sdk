@@ -35,12 +35,7 @@ from redis_fastapi.exceptions import (
     StreamInvalidCursor,
     StreamStoreError,
 )
-from redis_fastapi.stream_backend import (
-    ERROR_TYPE,
-    IDMP_WINDOW,
-    StreamBackend,
-    parse_cursor,
-)
+from redis_fastapi.stream_backend import ERROR_TYPE, StreamBackend, parse_cursor
 from redis_fastapi.telemetry import record_stream_operation
 from redis_fastapi.types import Coder
 
@@ -347,12 +342,6 @@ def check_stream_settings() -> None:
         raise StreamConfigurationError(
             "stream_silence_timeout must be more than twice "
             "stream_heartbeat_interval, or a live producer looks dead."
-        )
-    # Redis keeps IDMP history at most a day, and it must cover a run's life.
-    if settings.stream_max_run > IDMP_WINDOW:
-        raise StreamConfigurationError(
-            f"stream_max_run must be at most {IDMP_WINDOW} s: Redis remembers a "
-            "stream's idempotency keys for at most a day."
         )
     if settings.socket_timeout is not None and settings.socket_timeout <= block:
         raise StreamConfigurationError(

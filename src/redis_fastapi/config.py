@@ -340,10 +340,14 @@ class RedisSettings(BaseSettings):
     stream_max_run: int = Field(
         default=3600,
         gt=0,
+        # Redis remembers a stream's idempotency keys for at most a day, and
+        # that window must cover the run's whole life.
+        le=86_400,
         description=(
             "Lifetime of a run, in seconds, set when it opens, so a producer "
             "killed mid-run leaves a stream that expires by itself.  Nothing "
-            "extends it: a run longer than this expires.  At most 86400."
+            "extends it: a run longer than this expires.  At most 86400, the "
+            "longest Redis keeps a stream's idempotency keys."
         ),
     )
     stream_done_ttl: int = Field(

@@ -326,9 +326,11 @@ class TestCheckStreamSettings:
             assert "MAXLEN" not in args and "MINID" not in args
 
     def test_a_run_must_fit_the_idempotency_window(self, settings_env: Any) -> None:
+        # A bound on one field lives on the field: RedisSettings refuses it,
+        # whether or not the stream feature is enabled.
         settings_env(stream_max_run=86_401)
-        with pytest.raises(StreamConfigurationError, match="86400"):
-            check_stream_settings()
+        with pytest.raises(ValidationError, match="86400"):
+            get_settings()
 
     def test_silence_must_outlast_two_heartbeats(self, settings_env: Any) -> None:
         settings_env(stream_heartbeat_interval=10, stream_silence_timeout=20)
