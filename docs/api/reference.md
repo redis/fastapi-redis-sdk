@@ -622,7 +622,7 @@ the server lacks support, and `StreamStoreError` when Redis fails. Scopes match
 | `stream_id`, `scope` | The run's identity. |
 | `created` | `True` when `open()` created the run; `False` for a retried start. Start a producer only when `True`. |
 | `await append(type, data) -> str` | Store one event and return its entry ID: one `XADD`. Retried safely after a timeout. Appends from one writer go out one at a time. Raises `ValueError` for an invalid or reserved type, an event over `stream_max_event_bytes`, a writer that already appended `stream_maxlen` events, or a retried start's handle; `StreamFinished` after this writer's final event; `StreamExpired` when the run outlived `stream_max_run`. |
-| `await finish(type, data=None) -> str` | Write the final event and end the stream; its lifetime shortens to at most `stream_done_ttl`. Returns its ID; if the stream already ended, by a cancel or a reader, returns that final event's ID and adds nothing. |
+| `await finish(type, data=None) -> str` | Write the final event and end the stream; its lifetime shortens to at most `stream_done_ttl`. Returns its ID; if the stream already ended, by a cancel or a reader, returns that final event's ID and adds nothing. Raises `ValueError` for an invalid or reserved type, an event over `stream_max_event_bytes`, or a retried start's handle; `StreamFinished` after this writer's final event; `StreamExpired` when the run outlived `stream_max_run`; `StreamStoreError` when Redis cannot be reached. |
 | `keepalive()` | Async context manager that writes a hidden `stream.ping` while the producer is quiet, so readers do not end the run as `producer_lost`. `spawn()` runs it. |
 | `finished` | Whether this writer wrote the final event. |
 

@@ -1,8 +1,7 @@
 """The incident triage demo: an agent that streams its answer through Redis.
 
-One app shows the SDK's four features in one story (see
-``specs/resumable-streams-demo.md``): sessions, caching, rate limiting and
-resumable streams.
+One app shows the SDK's four features in one story: sessions, caching, rate
+limiting and resumable streams.
 
 Run locally (Redis 8.6.2 or later)::
 

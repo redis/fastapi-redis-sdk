@@ -637,6 +637,10 @@ dependency answers `401` or `403` before the SDK runs.
 `503` carries `Retry-After`. Branch on `code`, not on `detail`. A handler you
 register for `StreamError`, or for one of its subclasses, takes precedence.
 
+A browser `EventSource` fails the connection on any status other than `200`
+and does not retry, so it never sees `Retry-After`. To recover from a `503`,
+open a new `EventSource` after a pause, as the incident triage example does.
+
 After the first byte the status is sent, so the response handles a problem in
 one of two ways, and the client needs no list of error codes:
 
@@ -699,7 +703,18 @@ events.addEventListener("stream.error", (e) => {
   stream is looked up, so at capacity a reader gets `503` even for a stream
   that would otherwise be `404` or `410`, and Redis does no work for it. A
   reader takes its slot when its response starts, and every way the response
-  ends frees it.
+  ends frees it. `EventSource` does not retry a `503` by itself; the client
+  opens a new one.
+- **Connecting.** Each connect reads `XINFO STREAM`, which returns the
+  stream's first and last entries in full: up to twice
+  `stream_max_event_bytes` per connect, of which the SDK uses a few fields.
+  When many clients reconnect at once, after a deploy for example, that is
+  the main cost; a smaller `stream_max_event_bytes` bounds it.
+- **Disconnects.** A client that closes while its reader waits in a blocking
+  read costs one Redis connection: the driver drops the socket to abandon the
+  read, and the next read opens a new one. On a server that does not cancel
+  the response when the client goes (ASGI spec 2.4), a dead client keeps its
+  slot until the next send, at most one `stream_heartbeat_interval`.
 - **Slow clients.** A send that waits longer than `stream_send_timeout`
   closes the response, so a frozen tab does not hold a slot. A dead client on
   an idle stream is not caught this way; the connection cap bounds that case.
@@ -755,6 +770,11 @@ That is the only key: a run's state is the entries in its stream. The first is
 event a reader sees is the one final entry. Readers never show the SDK's own
 entries. On Cluster each run is one key, so a scope's runs spread across
 shards. The prefix must not contain braces.
+
+Payloads are stored as the coder's text, unencrypted. Anyone who can read the
+key can read the events. If that matters, encrypt in a custom `coder` passed
+to `.streams(coder=...)`; the sessions guide's
+[`Encryptor`](sessions.md#encrypting-the-payload-at-rest) shows the shape.
 
 ---
 

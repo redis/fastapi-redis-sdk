@@ -30,13 +30,16 @@ rest of the application keeps running (section 11).
 Goals:
 
 1. A client resumes from its last event with no gap and no silent duplicate.
-2. The run survives a client disconnect, a tab reload and a gateway restart.
+2. The run survives a client disconnect, a tab reload and a restart of the
+   process that serves the reader. The producer's process is not covered: a
+   producer dies with it (see the non-goals and decision 4).
 3. A second tab or device can follow the same run.
 4. An expired or truncated stream is reported explicitly, never restarted or
    skipped in silence.
 5. A stop request is separate from a disconnect.
-6. One active run per scope (for example per chat), with a safe retry of the
-   start request.
+6. A safe retry of the start request. One active run per scope (for example
+   per chat) is delivered by the application, not the SDK, since decision 4;
+   section 6.1 and the guide show how.
 7. The application decides who may read, resume or cancel a stream. A stream
    ID is never a credential, and an open connection ends no later than the
    reader's credential (for example the session) expires.
@@ -1123,7 +1126,7 @@ The settings validator should reject a combination where it does not.
 | `exceptions.py` | Add `StreamError` (base), `StreamNotFound`, `StreamExpired`, `StreamFinished`, `StreamInvalidCursor`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Update the module docstring, which says "session feature". |
 | `deps.py` | `get_stream_backend`, `StreamBackendDep`, and a `stream_capabilities` entry on `_PoolState`, beside `ratelimit_capabilities` and `session_capabilities`, so support is detected once per pool. Unlike `get_cache_backend()`, which builds a backend per request, `get_stream_backend()` returns the one `StreamBackend` that `.streams()` created at startup. That backend keeps state for the whole process: the tasks from `spawn()`, the live reader count for `stream_max_readers`, and the support detection. A backend built per request would lose its spawned tasks when the request ended. |
 | `setup.py` | `FastAPIRedis.streams()`: register the handlers and the shutdown hook. Calling it twice is a no-op, like the other builder methods. |
-| `telemetry.py` | `stream_span`, `record_stream_operation(operation, result)`, `record_stream_latency`. Counters for appends, resumes, gap errors (410), `producer_lost`, live readers, replay bytes and slow-consumer disconnects. |
+| `telemetry.py` | `stream_span`, `record_stream_operation(operation, result)`, `record_stream_latency`. Counters for appends, resumes, gap errors (410), `producer_lost`, live readers and slow-consumer disconnects. |
 | `__init__.py` | Export the public names. |
 | Docs | `docs/guide/streams.md`, a nav entry in `mkdocs.yml`, an API reference section. The docs workflow builds in strict mode, so every link must resolve. |
 | Sessions guide | Show the stream routes as an example of an access dependency, and `session_expiry()` as the way to bound an open stream. The existing "WebSockets have no session" limitation applies to a future WebSocket reader. Link to it. |

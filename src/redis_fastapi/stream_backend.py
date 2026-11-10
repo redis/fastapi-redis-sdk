@@ -503,6 +503,15 @@ class StreamWriter:
 
         Returns:
             The final entry's ID.
+
+        Raises:
+            ValueError: If *type* is invalid or reserved, the default coder
+                cannot encode *data*, the encoded event is larger than
+                ``stream_max_event_bytes``, or this is a retried start's
+                handle.
+            StreamFinished: If this writer already wrote the final entry.
+            StreamExpired: If the run outlived ``stream_max_run``.
+            StreamStoreError: If Redis cannot be reached.
         """
         check_event_type(type)
         return await self._end(type, data)
