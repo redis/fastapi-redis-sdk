@@ -7,11 +7,14 @@ the record was alive. ``Max-Age`` now follows the absolute clock,
 which never slides, and Redis alone enforces the idle clock.
 
 ``TestClient`` keeps cookies in an ``http.cookiejar`` jar, which drops a cookie
-once its ``Max-Age`` has passed on the real clock - as a browser does. So these
-tests use short TTLs and real sleeps rather than a controlled clock.
+once its ``Max-Age`` has passed on its clock - as a browser does.  These tests
+move that clock forward rather than sleep, and let Redis expire the idle field
+with :func:`~tests.conftest.expire_now` where the server's clock must move too.
 """
 
+import http.cookiejar
 import time
+import types
 
 import pytest
 import redis as sync_redis
@@ -22,7 +25,7 @@ from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
 from redis_fastapi.session_backend import FIELD_DATA
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import expire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis]
 
@@ -60,6 +63,27 @@ def app(real_redis: sync_redis.Redis, test_prefix: str, monkeypatch) -> FastAPI:
     get_settings.cache_clear()
 
 
+class _JarClock:
+    """The cookie jar's clock, which a test moves forward instead of sleeping."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def time(self) -> float:
+        return time.time() + self.offset
+
+    def sleep(self, seconds: float) -> None:
+        self.offset += seconds
+
+
+@pytest.fixture()
+def jar_clock(monkeypatch) -> _JarClock:
+    clock = _JarClock()
+    fake = types.SimpleNamespace(time=clock.time, localtime=time.localtime)
+    monkeypatch.setattr(http.cookiejar, "time", fake)
+    return clock
+
+
 def _session_key(redis: sync_redis.Redis, session_id: str) -> str:
     keys = list(redis.scan_iter(match=f"*session:{session_id}"))
     assert len(keys) == 1, keys
@@ -88,7 +112,7 @@ def _sign_in(client: TestClient) -> str:
 
 
 def test_a_reading_user_stays_signed_in(
-    app: FastAPI, real_redis: sync_redis.Redis
+    app: FastAPI, real_redis: sync_redis.Redis, jar_clock: _JarClock
 ) -> None:
     """Read-only requests, each well inside the idle window.
 
@@ -100,17 +124,21 @@ def test_a_reading_user_stays_signed_in(
         key = _session_key(real_redis, session_id)
 
         for _ in range(4):
-            time.sleep(1)
+            jar_clock.sleep(1)
+            real_redis.execute_command(
+                "HEXPIRE", key, IDLE - 1, "FIELDS", 1, FIELD_DATA
+            )
             response = client.get("/read")
             assert response.json() == {"user_id": 42}
             assert "set-cookie" not in response.headers
             # The load reset the idle clock in Redis.
             assert _httl(real_redis, key, FIELD_DATA) >= IDLE - 1
 
-        # Last request was 4 s after sign-in; wait 3 s more. The user has been
+        # Last request was 4 s after sign-in; 3 s more pass. The user has been
         # idle for 3 s, inside the 6 s window, but 7 s have passed since the
         # only Set-Cookie.
-        time.sleep(3)
+        jar_clock.sleep(3)
+        real_redis.execute_command("HEXPIRE", key, IDLE - 3, "FIELDS", 1, FIELD_DATA)
 
         # The record is alive in Redis ...
         assert _httl(real_redis, key, FIELD_DATA) > 0
@@ -131,7 +159,7 @@ def test_a_reading_user_stays_signed_in(
 
 
 def test_control_a_writing_user_stays_signed_in(
-    app: FastAPI, real_redis: sync_redis.Redis
+    app: FastAPI, real_redis: sync_redis.Redis, jar_clock: _JarClock
 ) -> None:
     """The same schedule with writes: each write resends the cookie.
 
@@ -141,11 +169,11 @@ def test_control_a_writing_user_stays_signed_in(
     with TestClient(app) as client:
         _sign_in(client)
         for _ in range(4):
-            time.sleep(1)
+            jar_clock.sleep(1)
             response = client.post("/write")
             # The absolute remainder: never refreshed, so it only shrinks.
             assert ABSOLUTE - 10 <= _max_age(response) <= ABSOLUTE
-        time.sleep(3)
+        jar_clock.sleep(3)
         response = client.get("/read")
         assert response.request.headers.get("cookie") is not None
         assert response.json() == {"user_id": 42}
@@ -164,7 +192,8 @@ def test_an_idle_user_is_signed_out_although_the_cookie_lives(
         session_id = _sign_in(client)
         key = _session_key(real_redis, session_id)
 
-        time.sleep(IDLE + 1)
+        assert 0 < _httl(real_redis, key, FIELD_DATA) <= IDLE
+        expire_now(real_redis, key, FIELD_DATA)  # IDLE seconds with no request
         assert _httl(real_redis, key, FIELD_DATA) == -2
 
         response = client.get("/read")

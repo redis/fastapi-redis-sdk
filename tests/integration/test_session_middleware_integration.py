@@ -5,8 +5,6 @@ that minted a new empty session, and a rotation to an anonymous session that
 indexed the new ID under the old user.
 """
 
-import time
-
 import pytest
 import redis as sync_redis
 from fastapi import FastAPI
@@ -14,8 +12,9 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
+from redis_fastapi.session_backend import FIELD_DATA
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import expire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis]
 
@@ -75,7 +74,8 @@ class TestSigningOutWithNoStoredSession:
         with TestClient(app) as client:
             client.post("/login")
             assert client.cookies.get("session")
-            time.sleep(IDLE + 1)
+            (key,) = _session_keys(real_redis, test_prefix)
+            expire_now(real_redis, key, FIELD_DATA)  # IDLE seconds with no request
 
             response = client.post("/logout")
             assert response.request.headers.get("cookie") is not None

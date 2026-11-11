@@ -95,10 +95,15 @@ jobs:
       matrix:
         # One entry per distinct server-side execution tier the SDK can take:
         #
-        #   8.8 - rate limiting uses the atomic INCREX command (Redis 8.8+).
+        #   8.8 - rate limiting uses the atomic INCREX command (Redis 8.8+),
+        #         and the resumable-stream tests run (Redis 8.6.2+).
+        #   8.6.2 - the oldest server resumable streams support: IDMP and
+        #         XCFGSET behave there as the stream tests expect.
         #   7.4 - latest minor of the 7.x line and the SDK's documented server
-        #         floor; rate limiting degrades to the atomic Lua EVAL script.
-        redis-version: ["8.8", "7.4"]
+        #         floor; rate limiting degrades to the atomic Lua EVAL script,
+        #         and resumable streams turn themselves off: their tests skip
+        #         and their modules are left out of coverage (noxfile.py).
+        redis-version: ["8.8", "8.6.2", "7.4"]
 
     services:
       redis:
@@ -178,9 +183,39 @@ jobs:
         name: codecov-unit
         fail_ci_if_error: true
 
+
+  streams-clients:
+    name: streams / redis-py ${{ matrix.redis-client }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        redis-client: ["8.0.1", "8.1.0"]
+    services:
+      redis:
+        image: redis:8.8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Stream client compatibility
+        env:
+          STREAMS_REDIS_PY_VERSION: ${{ matrix.redis-client }}
+        run: uv run nox -s streams_clients
+
   build:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, security, unit-tests, integration-tests]
+    needs: [lint, typecheck, security, unit-tests, integration-tests, streams-clients]
     steps:
     - name: Harden Runner
       uses: step-security/harden-runner@v2

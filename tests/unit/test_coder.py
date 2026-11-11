@@ -1,5 +1,7 @@
 """Tests for cache coders."""
 
+import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -9,7 +11,7 @@ from pydantic import BaseModel
 
 import redis_fastapi.types as types
 from redis_fastapi.cache_backend import CacheBackend
-from redis_fastapi.types import Coder, JsonCoder
+from redis_fastapi.types import Coder, JsonableCoder, JsonCoder
 
 
 @pytest.mark.unit
@@ -108,12 +110,58 @@ class TestPydanticModelCoder:
         assert issubclass(types.pydantic_model_coder(Product), Coder)
 
 
+@dataclass
+class Delta:
+    index: int
+    text: str
+
+
+@pytest.mark.unit
+class TestJsonableCoder:
+    def test_plain_json_matches_json_coder(self) -> None:
+        data = {"hello": "world", "n": [1, 2.5, None, True]}
+        assert JsonableCoder.encode(data) == JsonCoder.encode(data)
+
+    def test_encodes_pydantic_model(self) -> None:
+        product = Product(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Widget",
+            created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
+        assert JsonableCoder.decode(JsonableCoder.encode(product)) == {
+            "id": "12345678-1234-5678-1234-567812345678",
+            "name": "Widget",
+            "created_at": "2026-01-02T03:04:05Z",
+        }
+
+    def test_encodes_dataclass_nested_in_plain_data(self) -> None:
+        """Only the values json cannot encode take the fallback."""
+        data = {"type": "delta", "event": Delta(index=0, text="Hel")}
+        assert JsonableCoder.decode(JsonableCoder.encode(data)) == {
+            "type": "delta",
+            "event": {"index": 0, "text": "Hel"},
+        }
+
+    def test_encodes_datetime(self) -> None:
+        moment = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        assert JsonableCoder.encode(moment) == '"2026-01-02T03:04:05Z"'
+
+    def test_unknown_type_raises_value_error(self) -> None:
+        with pytest.raises(ValueError):
+            JsonableCoder.encode({"lock": threading.Lock()})
+
+    def test_satisfies_coder_protocol(self) -> None:
+        assert issubclass(JsonableCoder, Coder)
+
+
 @pytest.mark.unit
 class TestCoderExports:
     def test_coders_exported_from_package_root(self) -> None:
+        from redis_fastapi import JsonableCoder as exported
         from redis_fastapi import pydantic_model_coder
 
         assert pydantic_model_coder is types.pydantic_model_coder
+        assert exported is JsonableCoder
 
 
 @pytest.mark.unit

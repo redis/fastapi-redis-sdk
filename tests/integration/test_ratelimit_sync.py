@@ -15,8 +15,6 @@ flushes the DB on teardown so counters never leak between tests.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 import redis as sync_redis
 from fastapi import FastAPI, HTTPException
@@ -24,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi import FastAPIRedis
 from redis_fastapi.deps import SyncRateLimitBackendDep
-from tests.conftest import requires_redis
+from tests.conftest import about, expire_now, requires_redis
 
 
 @requires_redis
@@ -177,13 +175,15 @@ class TestSyncRateLimitBackendDep:
 
         @app.get("/limited")
         def limited(rl: SyncRateLimitBackendDep) -> dict:
-            result = rl.hit(test_prefix, limit=1, window=1)
+            result = rl.hit(test_prefix, limit=1, window=60)
             return {"allowed": result.allowed}
 
         with TestClient(app) as tc:
             assert tc.get("/limited").json()["allowed"] is True
             assert tc.get("/limited").json()["allowed"] is False
-            time.sleep(1.2)  # let the 1-second window expire
+            (key,) = real_redis.scan_iter(match=f"*:ratelimit:{test_prefix}")
+            assert about(real_redis.ttl(key), 60)  # the window is the key's TTL
+            expire_now(real_redis, key)  # the window elapses
             assert tc.get("/limited").json()["allowed"] is True
 
         real_redis.flushdb()
