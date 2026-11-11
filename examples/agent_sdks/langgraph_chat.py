@@ -5,7 +5,8 @@ step between them: before any tool runs, the graph asks the engineer with
 ``interrupt()``.  The question ends the run with a ``turn.interrupted`` event,
 and the answer starts a new run on a new stream.  The checkpointer carries the
 graph between the two, keyed by the chat.  The producer is the LangGraph
-recipe from the streams guide.
+recipe; the streams guide's
+"Rules for every SDK" apply.
 
 * ``POST /chats/{chat_id}/runs/{run_id}`` starts a run, either a question,
   ``{"text": ...}``, or the answer to the last interrupt, ``{"approve": true}``.
@@ -177,19 +178,14 @@ async def start(
 
 @app.get("/chats/{chat_id}/runs/{run_id}/events")
 async def events(
-    chat_id: str,
-    run_id: str,
-    request: Request,
-    streams: StreamBackendDep,
-    after: str | None = None,
+    chat_id: str, run_id: str, request: Request, streams: StreamBackendDep
 ) -> Response:
-    return await streams.sse(
-        run_id, request=request, scope=f"chat:{chat_id}", after=after
-    )
+    # sse() reads Last-Event-ID and ?after= itself.  Do not declare an
+    # ``after`` parameter and pass it in: it would beat a newer Last-Event-ID
+    # and replay events the client already has.
+    return await streams.sse(run_id, request=request, scope=f"chat:{chat_id}")
 
 
-@app.delete("/chats/{chat_id}/runs/{run_id}")
-async def cancel(
-    chat_id: str, run_id: str, streams: StreamBackendDep
-) -> dict[str, bool]:
-    return {"cancelled": await streams.cancel(run_id, scope=f"chat:{chat_id}")}
+@app.delete("/chats/{chat_id}/runs/{run_id}", status_code=204)
+async def cancel(chat_id: str, run_id: str, streams: StreamBackendDep) -> None:
+    await streams.cancel(run_id, scope=f"chat:{chat_id}")

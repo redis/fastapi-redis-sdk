@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from redis_fastapi import StreamBackend, StreamNotFound, StreamWriter
 from redis_fastapi.config import get_settings
 from redis_fastapi.stream_backend import _key, probe_streams_support
+from tests.conftest import requires_redis
 from tests.stream_support import (
     collect,
     command_calls,
@@ -26,7 +27,7 @@ from tests.stream_support import (
     stream_client,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, requires_redis]
 
 Case = tuple[StreamBackend, Any, str]
 
@@ -141,14 +142,18 @@ async def test_concurrent_appends_store_every_event(stream_case: Case) -> None:
     assert sorted(f["q"] for _, f in entries if "q" in f) == ["1", "2"]
 
 
-async def test_ending_twice_never_extends_the_run(stream_case: Case) -> None:
+async def test_ending_twice_adds_nothing_and_resets_the_done_ttl(
+    stream_case: Case,
+) -> None:
+    # A second end - a cancel after a finish - finds the final entry through
+    # its IDMP pair and adds none; the run lives stream_done_ttl from here.
     backend, client, _ = stream_case
     writer = await backend.open(scope="chat:1", stream_id="r1")
     final = await writer.finish("message", {})
     key = _key("chat:1", "r1")
     await client.expire(key, 30)  # most of stream_done_ttl has passed
     await backend.cancel("r1", scope="chat:1")
-    assert await client.ttl(key) <= 30
+    assert 30 < await client.ttl(key) <= get_settings().stream_done_ttl
     assert len(_finals(await client.xrange(key))) == 1
     assert (await collect(backend, "r1", "chat:1"))[-1].id == final
 
@@ -170,16 +175,16 @@ async def test_a_retried_start_keeps_a_cancels_idmp_pair(stream_case: Case) -> N
     assert int(info["idmp-duration"]) == 86_400
 
 
-async def test_a_long_done_ttl_never_extends_a_run(
+async def test_a_finished_run_lives_stream_done_ttl_from_its_end(
     stream_case: Case, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # stream_done_ttl may be longer than stream_max_run: a finished run then
-    # keeps what lifetime it had left, since ending only ever shortens it.
+    # The two settings are independent: a finished run stays readable for
+    # stream_done_ttl whatever lifetime it had left.
     backend, client, _ = stream_case
     configure(monkeypatch, stream_max_run=60, stream_done_ttl=600)
     writer = await backend.open(scope="chat:1", stream_id="r1")
     await writer.finish("message", {})
-    assert 0 < await client.ttl(_key("chat:1", "r1")) <= 60
+    assert 590 < await client.ttl(_key("chat:1", "r1")) <= 600
 
 
 async def test_a_retried_start_is_not_created_again(stream_case: Case) -> None:

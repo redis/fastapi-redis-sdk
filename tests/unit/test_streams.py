@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from collections.abc import AsyncIterator, Callable, Iterator
+import logging
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -36,6 +38,7 @@ from redis_fastapi import (
     session_expiry,
 )
 from redis_fastapi.config import get_settings
+from redis_fastapi.deps import _get_pool_state, _PoolState
 from redis_fastapi.exceptions import (
     StreamCredentialExpired,
     StreamCursorAhead,
@@ -44,11 +47,11 @@ from redis_fastapi.exceptions import (
     StreamNotFound,
     StreamStoreError,
 )
+from redis_fastapi.lifespan import _start_streams
 from redis_fastapi.session_backend import SessionState
 from redis_fastapi.stream_backend import (
     StreamWriter,
     _key,
-    _StreamCapabilities,
     _xadd,
     _xread_entries,
     check_event_type,
@@ -61,22 +64,9 @@ from redis_fastapi.streams import (
     check_stream_settings,
     encode_frame,
     select_cursor,
+    sse,
     stream_error_handler,
 )
-
-
-@pytest.fixture()
-def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """Set ``REDIS_*`` variables for one test, with a fresh settings cache."""
-
-    def apply(**values: Any) -> None:
-        for name, value in values.items():
-            monkeypatch.setenv(f"REDIS_{name.upper()}", str(value))
-        get_settings.cache_clear()
-
-    get_settings.cache_clear()
-    yield apply
-    get_settings.cache_clear()
 
 
 def _no_redis() -> Any:
@@ -321,8 +311,8 @@ class TestCheckStreamSettings:
     def test_a_finished_run_may_be_kept_as_long_as_a_running_one(
         self, settings_env: Any, done_ttl: int
     ) -> None:
-        # Ending only ever shortens a run, so a long stream_done_ttl just
-        # means a finished run keeps what lifetime it has left.
+        # The two settings are independent: a finished run lives
+        # stream_done_ttl from its final event, whatever its lifetime was.
         settings_env(stream_max_run=60, stream_done_ttl=done_ttl)
         check_stream_settings()
 
@@ -336,9 +326,11 @@ class TestCheckStreamSettings:
             assert "MAXLEN" not in args and "MINID" not in args
 
     def test_a_run_must_fit_the_idempotency_window(self, settings_env: Any) -> None:
+        # A bound on one field lives on the field: RedisSettings refuses it,
+        # whether or not the stream feature is enabled.
         settings_env(stream_max_run=86_401)
-        with pytest.raises(StreamConfigurationError, match="86400"):
-            check_stream_settings()
+        with pytest.raises(ValidationError, match="86400"):
+            get_settings()
 
     def test_silence_must_outlast_two_heartbeats(self, settings_env: Any) -> None:
         settings_env(stream_heartbeat_interval=10, stream_silence_timeout=20)
@@ -348,6 +340,19 @@ class TestCheckStreamSettings:
     def test_socket_timeout_must_exceed_the_block(self, settings_env: Any) -> None:
         settings_env(socket_timeout=5)
         with pytest.raises(StreamConfigurationError, match="socket_timeout"):
+            check_stream_settings()
+
+    def test_the_pool_must_be_larger_than_the_reader_cap(
+        self, settings_env: Any
+    ) -> None:
+        # Readers would take every connection, and producers could not write.
+        settings_env(max_connections=100)  # against the 256-reader default
+        with pytest.raises(StreamConfigurationError, match="max_connections"):
+            check_stream_settings()
+        settings_env(max_connections=8, stream_max_readers=4)
+        check_stream_settings()
+        settings_env(max_connections=4, stream_max_readers=4)
+        with pytest.raises(StreamConfigurationError, match="max_connections"):
             check_stream_settings()
 
     def test_other_features_never_see_the_checks(self, settings_env: Any) -> None:
@@ -508,6 +513,19 @@ class TestReaderSlots:
         assert json.loads(sent[1]["body"])["code"] == "stream_capacity_exceeded"
         assert backend.readers == 0
 
+    async def test_at_capacity_no_redis_call_is_made(self, settings_env: Any) -> None:
+        # A reconnect storm at the cap must cost Redis nothing: the 503 is
+        # answered before the stream is looked up.  _no_redis fails the test
+        # if _prepare runs.
+        settings_env(stream_max_readers=2)
+        backend = StreamBackend(_no_redis)
+        backend._supported = True
+        backend._readers = 2
+        response = await sse(backend, "r1", request=_request(), scope="chat:1")
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "5"
+        assert json.loads(response.body)["code"] == "stream_capacity_exceeded"
+
     async def test_cancellation_releases_the_slot(self) -> None:
         backend = _Backend()
 
@@ -577,8 +595,48 @@ class TestUnsupported:
     def backend(self, settings_env: Any) -> StreamBackend:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=False))
+        backend._supported = False
         return backend
+
+    async def test_detection_turns_the_feature_off_with_one_warning(
+        self,
+        settings_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # What the 7.4 CI job proves against a real server, here with the
+        # probe's answer stubbed: one warning, then every call refuses.
+        settings_env()
+        monkeypatch.setattr(
+            "redis_fastapi.stream_backend.probe_streams_support",
+            AsyncMock(return_value=False),
+        )
+        backend = StreamBackend(lambda: object())  # type: ignore[arg-type,return-value]
+        with caplog.at_level(logging.WARNING, logger="redis_fastapi.stream_backend"):
+            assert await backend.detect() is False
+            assert await backend.detect() is False  # cached: asked once
+        assert caplog.text.count("Resumable streams are off") == 1
+        with pytest.raises(StreamUnsupported):
+            await backend.open(scope="chat:1")
+
+    async def test_the_lifespan_turns_the_feature_off_at_startup(
+        self,
+        settings_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        settings_env()
+        monkeypatch.setattr(
+            "redis_fastapi.stream_backend.probe_streams_support",
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(_PoolState, "get_async_client", lambda self: object())
+        app = FastAPI()
+        backend = add_redis_streams(app)
+        with caplog.at_level(logging.WARNING, logger="redis_fastapi.stream_backend"):
+            assert await _start_streams(app, _get_pool_state(app)) is backend
+        assert backend.supported is False
+        assert caplog.text.count("Resumable streams are off") == 1
 
     async def test_every_entry_point_refuses(self, backend: StreamBackend) -> None:
         with pytest.raises(StreamUnsupported):
@@ -589,6 +647,8 @@ class TestUnsupported:
             await backend.sse("r", request=_request(), scope="chat:1")
         with pytest.raises(StreamUnsupported):
             await backend.follow("r", scope="chat:1")
+        with pytest.raises(StreamUnsupported):
+            await backend.finished("r", scope="chat:1")
         with pytest.raises(StreamUnsupported):
             await backend.start(_noop, scope="chat:1")
 
@@ -605,7 +665,7 @@ class TestWriterValidation:
     async def test_invalid_names_fail_before_redis(self, settings_env: Any) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         with pytest.raises(StreamInvalidName):
             await backend.open(scope="bad scope")
         with pytest.raises(StreamInvalidName):
@@ -616,7 +676,7 @@ class TestWriterValidation:
     ) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         with pytest.raises(StreamInvalidName):
             await backend.cancel("../x", scope="chat:1")
         with pytest.raises(StreamInvalidName):
@@ -666,6 +726,16 @@ class TestSpawnGuards:
         writer._task = asyncio.get_running_loop().create_future()  # type: ignore[assignment]
         with pytest.raises(ValueError, match="already runs"):
             backend.spawn(writer, _noop)
+
+    async def test_no_producer_starts_while_closing(self, settings_env: Any) -> None:
+        # Spawned after aclose() took its snapshot, it would miss the cancel
+        # and race the pool close.
+        settings_env()
+        backend = StreamBackend(_no_redis)
+        backend._closing = True
+        with pytest.raises(StreamStoreError, match="shutting down"):
+            backend.spawn(self._writer(backend, created=True), _noop)
+        assert not backend._spawned
 
     async def test_a_retry_handle_cannot_write(self, settings_env: Any) -> None:
         settings_env()
@@ -742,7 +812,7 @@ class TestLifecycle:
     ) -> None:
         settings_env()
         backend = StreamBackend(_no_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         backend._closing = True
         with pytest.raises(StreamStoreError, match="shutting down"):
             await backend.open(scope="chat:1")

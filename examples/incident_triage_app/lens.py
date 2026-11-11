@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request
 
 from examples.incident_triage_app import config
 from examples.incident_triage_app.health import features
+from examples.incident_triage_app.runs import text
 from examples.incident_triage_app.session import subject_of
 from examples.incident_triage_app.tools import SERVICES
 from redis_fastapi import (
@@ -49,10 +50,6 @@ def _key(name: str, type: str, fields: dict[str, Any] | None) -> dict[str, Any]:
     return {"name": name, "type": type, "fields": fields}
 
 
-def _text(value: Any) -> Any:
-    return value.decode() if isinstance(value, bytes) else value
-
-
 async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str, Any]]:
     """The run's Redis key, read as it is, under the SDK's key layout.
 
@@ -69,7 +66,7 @@ async def _stream_keys(redis: Any, scope: str, stream_id: str) -> list[dict[str,
             "Stream",
             {
                 "XLEN": await redis.xlen(stream),
-                "last ID": _text(last[0][0]) if last else None,
+                "last ID": text(last[0][0]) if last else None,
                 "TTL": await redis.ttl(stream),
             },
         )
@@ -93,7 +90,7 @@ async def lens(
     from examples.incident_triage_app.runs import _current, _scope
 
     current = _current(subject)
-    current_id = _text(await redis.get(current))
+    current_id = text(await redis.get(current))
     if current_id is not None:
         keys.append(
             _key(

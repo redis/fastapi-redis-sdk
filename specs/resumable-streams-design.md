@@ -30,13 +30,16 @@ rest of the application keeps running (section 11).
 Goals:
 
 1. A client resumes from its last event with no gap and no silent duplicate.
-2. The run survives a client disconnect, a tab reload and a gateway restart.
+2. The run survives a client disconnect, a tab reload and a restart of the
+   process that serves the reader. The producer's process is not covered: a
+   producer dies with it (see the non-goals and decision 4).
 3. A second tab or device can follow the same run.
 4. An expired or truncated stream is reported explicitly, never restarted or
    skipped in silence.
 5. A stop request is separate from a disconnect.
-6. One active run per scope (for example per chat), with a safe retry of the
-   start request.
+6. A safe retry of the start request. One active run per scope (for example
+   per chat) is delivered by the application, not the SDK, since decision 4;
+   section 6.1 and the guide show how.
 7. The application decides who may read, resume or cancel a stream. A stream
    ID is never a credential, and an open connection ends no later than the
    reader's credential (for example the session) expires.
@@ -77,7 +80,7 @@ with it.
 | `SET key value IFEQ value` | 8.4 | No longer sent by the SDK since 2026-10-30, as above. |
 | `volatile-lrm` eviction policy | 8.6 | Lets operators evict finished idle streams first (section 3.3). |
 | `XCFGSET key IDMP-DURATION seconds` | 8.6 | `open()` sets the stream's IDMP window to a day, the most Redis allows, so a retried final write finds its pair for the run's whole life (section 6.3). |
-| `EXPIRE key seconds NX` and `LT` | 7.0 | `NX` gives a new stream its lifetime and tells a creating `open()` from a retried one; `LT` lets an end only shorten a run (section 6.4). |
+| `EXPIRE key seconds NX` | 7.0 | `NX` gives a new stream its lifetime and tells a creating `open()` from a retried one (section 6.4). Until 2026-11-10 the end used `LT` as well, so ending only shortened a run; dropped with the demo heuristic that was its one consumer. |
 | `HSETEX key EX seconds FIELDS 1 field value` (hash-field expiration) | 8.0 | No longer used since 2026-10-30. The producer heartbeat was a meta field with its own TTL; a quiet producer now writes a hidden `stream.ping` entry (section 5.5). |
 
 Notes on this table:
@@ -477,7 +480,7 @@ as tool results, belong with the durable dispatch queue in phase 3 (section
 | State | Stream TTL | Set when |
 |---|---|---|
 | Running | `stream_max_run` (default 1 h, at most a day) | Once, at `open()`, with `EXPIRE … NX`. Nothing extends it: a run longer than this expires, and its next write raises `StreamExpired`. |
-| Finished | At most `stream_done_ttl` (default 2 min) | By the final entry, with `EXPIRE … LT`: ending only ever shortens a run. A run that ends with less than `stream_done_ttl` of its lifetime left keeps what it has, and a second end never keeps a finished run around longer. |
+| Finished | `stream_done_ttl` (default 2 min) | By the final entry, with `EXPIRE`: a finished run lives `stream_done_ttl` from its end. A second end - a cancel after a finish - adds no entry and sets the same lifetime again, so a finished run lives at most one `stream_done_ttl` past its last end. |
 
 Because the lifetime is set once, when the run opens, a producer killed
 mid-run leaves a key that expires by itself, and an append writes no TTL at
@@ -552,9 +555,9 @@ with the metadata hash (section 15, phase 2).
 
 `finish(type, data=None)` appends the final entry: an ordinary event of the
 application's chosen type, with `f=1` and the fixed IDMP pair, and in the
-same transaction `EXPIRE <key> <stream_done_ttl> LT`. The final event and
+same transaction `EXPIRE <key> <stream_done_ttl>`. The final event and
 the end marker are one append, so no crash can fall between the last data
-and the end; `LT` means ending only shortens the run. It waits for any append
+and the end. It waits for any append
 of this writer still in flight, so the final entry lands after them. A retry
 after a timeout is safe, because of the fixed pair. If the run was already
 ended, by a cancel or by a reader that found it silent, the `XADD` returns
@@ -735,10 +738,10 @@ fair.
 `cancel(stream_id, scope)` ends the run itself, in one transaction: the same
 `XADD` as any final entry, with type `stream.end`, data
 `{"reason": "cancelled"}`, the fixed IDMP pair and `NOMKSTREAM`, then
-`EXPIRE … <stream_done_ttl> LT`. A nil reply means there is no such stream:
+`EXPIRE … <stream_done_ttl>`. A nil reply means there is no such stream:
 `StreamNotFound`. Readers stop at once. Cancelling a run that already ended
-changes nothing: the pair returns the existing final entry, and `LT` keeps
-the shorter lifetime.
+adds nothing: the pair returns the existing final entry, and the lifetime is
+set to `stream_done_ttl` again.
 
 If the producer was started by `spawn()` in this process, the SDK cancels its
 task too, and the cancel reaches the model call or tool it waits on; that
@@ -847,7 +850,7 @@ XADD S NOMKSTREAM IDMP <wid> <q> * t <type> d <data> q <q>
 ```
 MULTI
   XADD S NOMKSTREAM IDMP end final * t <type> d <data> [q <q>] f 1
-  EXPIRE S t_d LT
+  EXPIRE S t_d
 EXEC
 ```
 
@@ -889,7 +892,7 @@ final entry:
 ```
 MULTI
   XADD S NOMKSTREAM IDMP end final * t stream.end d {"reason": "producer_lost"} f 1
-  EXPIRE S t_d LT
+  EXPIRE S t_d
 EXEC
 ```
 
@@ -922,6 +925,8 @@ class StreamBackend:
                   after: str | None = None,   # an override; the request's own cursor otherwise
                   expires_at: datetime | None = None) -> Response: ...
     async def cancel(self, stream_id: str, *, scope: str) -> None: ...
+    async def finished(self, stream_id: str, *, scope: str) -> bool | None: ...
+                  # True after the final entry, False while running, None for no stream
 
 def session_expiry(request: Request) -> datetime | None: ...
 
@@ -1121,9 +1126,9 @@ The settings validator should reject a combination where it does not.
 | New module | `stream_backend.py`: `StreamBackend`, `StreamWriter`, key builders, `probe_streams_support()`. |
 | New module | `streams.py`: the SSE response, the cursor parser, the exception handlers, `session_expiry()`. |
 | `exceptions.py` | Add `StreamError` (base), `StreamNotFound`, `StreamExpired`, `StreamFinished`, `StreamInvalidCursor`, `StreamCursorAhead`, `StreamCredentialExpired`, `StreamUnsupported`, `StreamStoreError`, `StreamConfigurationError`. Update the module docstring, which says "session feature". |
-| `deps.py` | `get_stream_backend`, `StreamBackendDep`, and a `stream_capabilities` entry on `_PoolState`, beside `ratelimit_capabilities` and `session_capabilities`, so support is detected once per pool. Unlike `get_cache_backend()`, which builds a backend per request, `get_stream_backend()` returns the one `StreamBackend` that `.streams()` created at startup. That backend keeps state for the whole process: the tasks from `spawn()`, the live reader count for `stream_max_readers`, and the support detection. A backend built per request would lose its spawned tasks when the request ended. |
+| `deps.py` | `get_stream_backend` and `StreamBackendDep`. Server support is cached on the backend itself, not on `_PoolState` as for rate limiting and sessions: those backends are built per request and need a shared slot, while there is one `StreamBackend` per process, and the lifespan resets its cache when it binds a new pool. Unlike `get_cache_backend()`, which builds a backend per request, `get_stream_backend()` returns the one `StreamBackend` that `.streams()` created at startup. That backend keeps state for the whole process: the tasks from `spawn()`, the live reader count for `stream_max_readers`, and the support detection. A backend built per request would lose its spawned tasks when the request ended. |
 | `setup.py` | `FastAPIRedis.streams()`: register the handlers and the shutdown hook. Calling it twice is a no-op, like the other builder methods. |
-| `telemetry.py` | `stream_span`, `record_stream_operation(operation, result)`, `record_stream_latency`. Counters for appends, resumes, gap errors (410), `producer_lost`, live readers, replay bytes and slow-consumer disconnects. |
+| `telemetry.py` | `stream_span`, `record_stream_operation(operation, result)`, `record_stream_latency`. Counters for appends, resumes, gap errors (410), `producer_lost`, live readers and slow-consumer disconnects. |
 | `__init__.py` | Export the public names. |
 | Docs | `docs/guide/streams.md`, a nav entry in `mkdocs.yml`, an API reference section. The docs workflow builds in strict mode, so every link must resolve. |
 | Sessions guide | Show the stream routes as an example of an access dependency, and `session_expiry()` as the way to bound an open stream. The existing "WebSockets have no session" limitation applies to a future WebSocket reader. Link to it. |
@@ -1329,7 +1334,7 @@ committed. It must show at least these:
   first-page transactions succeed on whichever primary owns it, and runs in
   different scopes land on different primaries. Since 2026-10-30
   `test_stream_topologies.py` runs these on a Cluster when
-  `STREAMS_TEST_CLUSTER=1` is set.
+  `STREAMS_TEST_CLUSTER_URL` names one.
 - Support detection asks a random node and gives the same answer on every
   primary.
 - On Sentinel, a failover during a run: readers reconnect to the new primary
@@ -1358,7 +1363,9 @@ Since 2026-10-30 the cross-process cases run in the suite itself:
 `tests/integration/test_stream_topologies.py` drives two backends as two
 processes with the helpers in `tests/stream_support.py` (a transaction held
 at `EXEC` to force a race, command counts from `INFO commandstats`), on the
-standalone Redis of CI and, with `STREAMS_TEST_CLUSTER=1`, on a Cluster. CI
+standalone Redis of CI and, with `STREAMS_TEST_CLUSTER_URL`, on a Cluster
+(`STREAMS_TEST_ENTERPRISE_URL` and `STREAMS_TEST_SENTINEL_URL` add a Redis
+Enterprise database and a Sentinel-managed primary the same way). CI
 runs the integration suite on Redis 8.6.2, the supported floor, as well as
 8.8. Every stream test that sends a Redis command runs against a real
 server; the unit suite sends none.

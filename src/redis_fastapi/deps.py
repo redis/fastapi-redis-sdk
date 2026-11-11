@@ -46,7 +46,7 @@ from redis_fastapi.sessions import Session, session_of, session_state_of
 # Imported at runtime for the same reason as the session names above: FastAPI
 # resolves ``StreamBackendDep`` against this module.  No cycle: stream_backend
 # never imports deps.
-from redis_fastapi.stream_backend import StreamBackend, _StreamCapabilities
+from redis_fastapi.stream_backend import StreamBackend
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,8 @@ class _PoolState:
     # The same idea for the session store: HSETEX support is a property of the
     # server, so it is discovered once per pool rather than on every request.
     session_capabilities: _StoreCapabilities | None = None
-
-    # And for resumable streams: XCFGSET / DELEX support, probed at startup.
-    stream_capabilities: _StreamCapabilities | None = None
+    # Resumable streams keep theirs on the one StreamBackend the app holds:
+    # unlike these two backends, it is not built per request.
 
     # -- pool / cluster builders (static) -----------------------------------
 
@@ -162,7 +161,6 @@ class _PoolState:
         self._async_client = None
         self.ratelimit_capabilities = None
         self.session_capabilities = None
-        self.stream_capabilities = None
 
 
 def _get_pool_state(app: FastAPI) -> _PoolState:

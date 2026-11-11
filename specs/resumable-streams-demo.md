@@ -221,7 +221,7 @@ The UI shows `X-RateLimit-Remaining`, `X-RateLimit-Reset` and the IETF
 | Endpoint | SDK call |
 |---|---|
 | `POST /api/triage/runs` | `streams.open(scope=f"triage:{subject}", stream_id=body.run_id)`, then `streams.spawn(writer, triage)` |
-| `GET /api/triage/runs/active` | `streams.active(f"triage:{subject}")` |
+| `GET /api/triage/runs/active` | The app's own current-run pointer, `<prefix>:triage-current:<subject>` (`runs.py`). The SDK keeps no active-run slot since the streams design's decision 4. |
 | `GET /api/streams/{id}/events` | `await streams.sse(id, request=request, scope=f"triage:{subject}", expires_at=session_expiry(request))` |
 | `POST /api/streams/{id}/cancel` | `streams.cancel(id, scope=f"triage:{subject}")` |
 
@@ -376,9 +376,9 @@ cost about $0.65 a day.
 One page. The chat is on the left, the Redis lens (section 7) on the right,
 and a row of controls below.
 
-Static mocks of every screen, with the HTTP and SSE traffic and the lens
-state for each, are in [`mockups/incident-triage/`](mockups/incident-triage/index.html).
-Open `index.html` in a browser; it needs no server.
+Static mocks of every screen were drafted during design and are not kept in
+the repository; the built page in `examples/incident_triage_app/web/` is the
+reference.
 
 | Control | Story step | What the visitor sees | Feature shown |
 |---|---|---|---|
@@ -477,7 +477,7 @@ not set `REDIS_PREFIX`. `GET /api/lens` reads them and returns only the caller's
   unexpectedly", and the reconnect gets `204`, so the browser stops retrying.
   The engineer asks again, which starts a new run. The demo has no worker
   process to avoid this: the streams design supports producers inside the
-  FastAPI application only in phase 1, so a redeploy ends an answer in
+  FastAPI application only in this release, so a redeploy ends an answer in
   progress. Readers survive a redeploy; producers do not.
 - **Finished streams.** The planners never call `finish()`. `spawn()` writes
   the final `stream.end` entry, with `reason` `done`, `error` or `cancelled`,

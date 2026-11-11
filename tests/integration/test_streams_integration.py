@@ -14,49 +14,52 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-import redis as sync_redis
 import redis.asyncio as async_redis
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from redis_fastapi import (
     FastAPIRedis,
+    SessionDep,
+    SessionStoreDep,
     StreamBackend,
     StreamBackendDep,
     StreamExpired,
     StreamFinished,
     StreamNotFound,
     StreamWriter,
+    session_expiry,
 )
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import _key, _StreamCapabilities
+from redis_fastapi.stream_backend import _key, probe_streams_support
 from tests.conftest import REDIS_URL, about, aexpire_now, requires_redis
 from tests.stream_support import collect, stream_backend
 
 
 def _server_supports_streams() -> bool | None:
-    """``True`` / ``False`` for a reachable server, ``None`` when unreachable."""
-    try:
-        client = sync_redis.Redis.from_url(REDIS_URL)
-        client.ping()
-    except Exception:
-        return None
-    try:
-        reply = client.execute_command("COMMAND", "INFO", "XCFGSET", "DELEX")
-    except TypeError:
-        return False
-    finally:
-        client.close()
-    entries = list(reply.values()) if isinstance(reply, dict) else list(reply)
-    return len(entries) == 2 and all(entries)
+    """The SDK's own probe: ``True`` / ``False``, or ``None`` when unreachable."""
+
+    async def ask() -> bool | None:
+        client = async_redis.Redis.from_url(REDIS_URL)
+        try:
+            await client.ping()
+        except Exception:
+            return None
+        try:
+            return await probe_streams_support(client)
+        finally:
+            await client.aclose()
+
+    return asyncio.run(ask())
 
 
 _SUPPORT = _server_supports_streams()
@@ -74,21 +77,6 @@ requires_old_redis = pytest.mark.skipif(
 
 
 @pytest.fixture()
-def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
-    """Set ``REDIS_*`` variables for one test, with a fresh settings cache."""
-
-    def apply(**values: Any) -> None:
-        for name, value in values.items():
-            monkeypatch.setenv(f"REDIS_{name.upper()}", str(value))
-        get_settings.cache_clear()
-
-    monkeypatch.setenv("REDIS_URL", REDIS_URL)
-    get_settings.cache_clear()
-    yield apply
-    get_settings.cache_clear()
-
-
-@pytest.fixture()
 def scope() -> str:
     return f"chat:{uuid.uuid4().hex[:8]}"
 
@@ -99,7 +87,6 @@ async def backend(
 ) -> AsyncIterator[StreamBackend]:
     """A backend on a real async client, outside any app."""
     instance = StreamBackend(lambda: real_async_redis)
-    instance._start(_StreamCapabilities())
     assert await instance.detect() is True
     yield instance
     await instance.aclose()
@@ -187,6 +174,10 @@ def _deltas(count: int, final: bool = True) -> Producer:
     return produce
 
 
+async def _drain(reader: Any) -> list[Any]:
+    return [event async for event in reader]
+
+
 async def _flatten(pages: Any) -> list[Any]:
     """Every entry the read loop yields, with ``None`` for each keepalive."""
     seen: list[Any] = []
@@ -204,6 +195,14 @@ async def _wait_forever() -> Any:
 
 def _get(query: bytes = b"") -> Request:
     return Request({"type": "http", "headers": [], "query_string": query})
+
+
+def _wait_for_entries(redis: Any, key: str, count: int, timeout: float = 5) -> None:
+    """Block until the stream holds at least *count* entries."""
+    deadline = time.monotonic() + timeout
+    while redis.xlen(key) < count:
+        assert time.monotonic() < deadline, f"{key} never reached {count} entries"
+        time.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +381,7 @@ class TestHttp:
 
         with TestClient(_app(forever)) as client:
             client.post(f"/{scope}/runs/r1")
-            time.sleep(0.1)
+            _wait_for_entries(real_redis, _key(scope, "r1"), 3)  # start + 2 deltas
             assert client.post(f"/{scope}/runs/r1/cancel").status_code == 204
             _, frames = _read(client, f"/{scope}/runs/r1/events")
             assert frames[-1]["event"] == "stream.end"
@@ -493,7 +492,7 @@ class TestHttp:
 
         with TestClient(_app(forever)) as client:
             client.post(f"/{scope}/runs/r1")
-            time.sleep(0.15)
+            _wait_for_entries(real_redis, _key(scope, "r1"), 2)  # the run is going
         keys = _key(scope, "r1")
         last = real_redis.xrevrange(keys, count=1)
         assert last[0][1]["t"] == "stream.end"
@@ -510,6 +509,84 @@ class TestHttp:
         assert not real_redis.exists(f"redis:fastapi:stream:{scope}:r1")
         # One key per run: nothing else under the prefix.
         assert list(real_redis.scan_iter("myapp:*")) == [f"myapp:stream:{scope}:r1"]
+
+    def test_a_number_that_never_landed_is_a_gap_frame(
+        self, settings_env: Callable[..., None], real_redis: Any, scope: str
+    ) -> None:
+        # An append that fails after it was numbered leaves a hole in the
+        # sequence (test_an_append_after_a_failed_one_is_not_dropped shows the
+        # number is kept).  The browser sees it as one stream.gap frame.
+        async def produce(writer: StreamWriter) -> None:
+            await writer.append("delta", {"i": 0})
+            writer._seq += 1  # what a failed append leaves behind
+            await writer.append("delta", {"i": 2})
+            await writer.finish("message", {})
+
+        with TestClient(_app(produce)) as client:
+            client.post(f"/{scope}/runs/r1")
+            _, frames = _read(client, f"/{scope}/runs/r1/events")
+        assert [f["event"] for f in frames] == [
+            "delta",
+            "stream.gap",
+            "delta",
+            "message",
+        ]
+        assert frames[1]["data"] == {"missing": 1}
+        assert "id" not in frames[1]  # the reader's own event is no cursor
+
+    def test_a_revoked_session_fails_on_the_reconnect(
+        self, settings_env: Callable[..., None], real_redis: Any
+    ) -> None:
+        # Access is checked when a connection opens; a session revoked while
+        # it is open is caught when the browser reconnects, which happens at
+        # least every stream_max_connection_duration.
+        settings_env(stream_max_connection_duration=1, session_cookie_https_only=False)
+        app = FastAPI()
+        FastAPIRedis(app).lifespan().sessions().streams()
+
+        def subject_of(session: SessionDep) -> str:
+            subject = session.get("user_id")
+            if not subject:
+                raise HTTPException(status_code=401)
+            return str(subject)
+
+        @app.post("/sign-in")
+        async def sign_in(session: SessionDep) -> Any:
+            session["user_id"] = "alex"
+            return {}
+
+        @app.post("/runs/{run_id}")
+        async def start(
+            run_id: str, streams: StreamBackendDep, subject: str = Depends(subject_of)
+        ) -> Any:
+            writer = await streams.open(scope=f"user:{subject}", stream_id=run_id)
+            return {"stream_id": writer.stream_id}
+
+        @app.get("/runs/{run_id}/events")
+        async def events(
+            run_id: str,
+            request: Request,
+            streams: StreamBackendDep,
+            subject: str = Depends(subject_of),
+        ) -> Any:
+            return await streams.sse(
+                run_id,
+                request=request,
+                scope=f"user:{subject}",
+                expires_at=session_expiry(request),
+            )
+
+        @app.delete("/sessions")
+        async def revoke(store: SessionStoreDep) -> Any:
+            return {"revoked": await store.revoke_all("alex")}
+
+        with TestClient(app) as client:
+            client.post("/sign-in")
+            assert client.post("/runs/r1").status_code == 200
+            status, frames = _read(client, "/runs/r1/events")
+            assert status == 200 and frames == []  # closed at the connection cap
+            assert client.delete("/sessions").json()["revoked"] >= 1
+            assert client.get("/runs/r1/events").status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +958,7 @@ class TestBackend:
     ) -> None:
         settings_env()
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.append("delta", {})
         await writer.finish("message", {})
@@ -891,13 +968,18 @@ class TestBackend:
         with pytest.raises(StreamNotFound):
             await collect(backend, "r1", scope)
 
-    async def test_a_run_with_no_events_yet_reads_as_empty(
+    async def test_a_run_with_no_events_yet_shows_nothing_before_the_first(
         self, backend: StreamBackend, scope: str
     ) -> None:
-        await backend.open(scope=scope, stream_id="r1")
-        plan = await backend._prepare("r1", scope=scope, after=None)
-        assert plan is not None
-        assert [f["t"] for _, f in plan.first] == ["stream.start"]  # never shown
+        # The start entry is in the stream and never shown: a reader on a
+        # fresh run waits, and its first event is the producer's first.
+        writer = await backend.open(scope=scope, stream_id="r1")
+        async with await backend.follow("r1", scope=scope) as reader:
+            waiting = asyncio.create_task(anext(reader))
+            await asyncio.sleep(0.1)
+            assert not waiting.done()
+            await writer.append("delta", {"i": 0})
+            assert (await asyncio.wait_for(waiting, 5)).data == {"i": 0}
 
     async def test_history_removed_outside_the_sdk_is_410(
         self, backend: StreamBackend, real_async_redis: Any, scope: str
@@ -923,7 +1005,7 @@ class TestBackend:
     ) -> None:
         settings_env(stream_replay_page=2)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         for n in range(6):
             await writer.append("delta", {"n": n})
@@ -969,7 +1051,7 @@ class TestBackend:
         # so two readers cannot overlap through it; drive ASGI directly.
         settings_env(stream_max_readers=1)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         await backend.open(scope=scope, stream_id="r1")
         request = _get()
         first = await backend.sse("r1", request=request, scope=scope)
@@ -986,12 +1068,19 @@ class TestBackend:
 
         running = asyncio.create_task(first(asgi, receive, discard))
         await asyncio.sleep(0.1)
-        assert backend._readers == 1
         await second(asgi, receive, keep)
         assert sent[0]["status"] == 503
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
-        assert backend._readers == 0
+        # The slot is free again: a third reader streams.
+        third = await backend.sse("r1", request=request, scope=scope)
+        assert third.status_code == 200
+        sent.clear()
+        serving = asyncio.create_task(third(asgi, receive, keep))
+        await asyncio.sleep(0.1)
+        assert sent[0]["status"] == 200
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)
 
     async def test_a_failed_read_is_retried(
         self, backend: StreamBackend, scope: str, real_async_redis: Any
@@ -1000,8 +1089,9 @@ class TestBackend:
 
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.append("delta", {"n": 0})
-        plan = await backend._prepare("r1", scope=scope, after=None)
-        assert plan is not None
+        # follow() reads its first page now; the final entry comes later, so
+        # the reader must XREAD for it, and that read is the one that fails.
+        reader = await backend.follow("r1", scope=scope)
         original = real_async_redis.xread
         failures = {"left": 1}
 
@@ -1014,11 +1104,14 @@ class TestBackend:
         real_async_redis.xread = flaky  # type: ignore[method-assign]
         try:
             await writer.finish("message", {})
-            seen = await _flatten(backend._pages(plan))
+            async with reader:
+                events = await asyncio.wait_for(
+                    asyncio.ensure_future(_drain(reader)), 5
+                )
         finally:
             real_async_redis.xread = original  # type: ignore[method-assign]
-        assert None in seen  # a keepalive while retrying
-        assert [e.type for e in seen if e is not None] == ["delta", "message"]
+        assert failures["left"] == 0  # the failure happened, and was retried
+        assert [e.type for e in events] == ["delta", "message"]
 
     async def test_follow_closes_when_left_early(
         self, backend: StreamBackend, scope: str
@@ -1030,9 +1123,7 @@ class TestBackend:
         async with reader:
             async for event in reader:
                 assert event.data == {"i": 0}
-                pages = reader._pages
                 break
-        assert pages is not None and pages.ag_frame is None  # type: ignore[attr-defined]
         assert [e async for e in reader] == []  # closed for good
 
     async def test_follow_checks_before_the_first_event(
@@ -1053,7 +1144,6 @@ class TestBackend:
         writer = await backend.open(scope=scope, stream_id="r1")
         await writer.append("delta", {})
         final = await writer.finish("message", {})
-        assert await backend._prepare("r1", scope=scope, after=final) is None
         response = await backend.sse("r1", request=_get(), scope=scope, after=final)
         assert response.status_code == 204
 
@@ -1083,7 +1173,7 @@ class TestBackend:
     ) -> None:
         settings_env(stream_replay_page=2)
         backend = StreamBackend(lambda: real_async_redis)
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         writer = await backend.open(scope=scope, stream_id="r1")
         first = await writer.append("delta", {"i": 0})
         for i in range(1, 4):
@@ -1162,6 +1252,100 @@ class TestBackend:
         assert 1000 <= int(bodies[0].split()[1]) <= 3000
         assert bodies[1].count(b"event: ") == 6  # every frame in one chunk
 
+    async def test_a_read_only_reader_reports_a_lost_producer_as_an_error(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        # A reader whose ACL forbids writes cannot end the run for everyone;
+        # it tells its own client with a stream.error and closes.
+        settings_env(stream_heartbeat_interval=1, stream_silence_timeout=3)
+        await real_async_redis.execute_command(
+            "ACL",
+            "SETUSER",
+            "stream-reader",
+            "on",
+            "nopass",
+            "~*",
+            "+@read",
+            "+@connection",
+            "+@transaction",
+        )
+        reader_client = async_redis.Redis.from_url(
+            REDIS_URL, username="stream-reader", decode_responses=True
+        )
+        producer, reader = (
+            stream_backend(real_async_redis),
+            stream_backend(reader_client),
+        )
+        try:
+            writer = await producer.open(scope=scope, stream_id="r1")
+            await writer.append("delta", {})  # then silence
+            events = await asyncio.wait_for(collect(reader, "r1", scope), 10)
+            assert [e.type for e in events] == ["delta", "stream.error"]
+            assert events[-1].data == {"code": "producer_lost"}
+            assert events[-1].id is None
+            # Nothing ended the run: the producer can still finish it.
+            assert await writer.finish("message", {})
+        finally:
+            await reader.aclose()
+            await producer.aclose()
+            await reader_client.aclose()
+            await real_async_redis.execute_command("ACL", "DELUSER", "stream-reader")
+
+    async def test_a_slow_consumer_resumes_from_its_own_last_entry(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        # Closed by the send timeout, a client reconnects with the last ID it
+        # received and gets exactly what came after it.
+        settings_env(stream_send_timeout=1)
+        backend = stream_backend(real_async_redis)
+        try:
+            writer = await backend.open(scope=scope, stream_id="r1")
+            for i in range(3):
+                await writer.append("delta", {"i": i})
+            received: list[bytes] = []
+            got_page = asyncio.Event()
+
+            async def stalled(message: Any) -> None:
+                if message["type"] == "http.response.body" and message.get("body"):
+                    received.append(message["body"])
+                    if len(received) == 2:  # the retry line, then the replay page
+                        got_page.set()
+                    if len(received) == 3:
+                        await asyncio.sleep(3600)  # the client stopped reading
+
+            response = await backend.sse("r1", request=_get(), scope=scope)
+            serving = asyncio.create_task(response(_ASGI, _wait_forever, stalled))
+            await asyncio.wait_for(got_page.wait(), 5)
+            await writer.append("delta", {"i": 3})  # the send that stalls
+            await asyncio.wait_for(serving, 5)  # closed by the send timeout
+
+            page = received[1].decode()
+            last_seen = [line for line in page.splitlines() if line.startswith("id: ")][
+                -1
+            ][4:]
+            await writer.finish("message", {})
+            events = await collect(backend, "r1", scope, after=last_seen)
+            assert [e.data for e in events] == [{"i": 3}, {}]
+        finally:
+            await backend.aclose()
+
+    async def test_finished_tells_a_live_run_from_an_ended_or_missing_one(
+        self, settings_env: Callable[..., None], real_async_redis: Any, scope: str
+    ) -> None:
+        settings_env(stream_replay_page=3)  # small pages: the tail is paged
+        backend = stream_backend(real_async_redis)
+        assert await backend.finished("nope", scope=scope) is None
+        writer = await backend.open(scope=scope, stream_id="r1")
+        assert await backend.finished("r1", scope=scope) is False
+        await writer.append("delta", {})
+        assert await backend.finished("r1", scope=scope) is False
+        await backend.cancel("r1", scope=scope)
+        assert await backend.finished("r1", scope=scope) is True
+        for _ in range(7):  # a producer elsewhere that missed the cancel
+            await writer.append("delta", {})
+        assert await backend.finished("r1", scope=scope) is True  # paged past them
+        assert await backend.finished("r1", scope=f"{scope}-b") is None
+
     async def test_start_spawns_once(self, backend: StreamBackend, scope: str) -> None:
         first = await backend.start(_deltas(2), scope=scope, stream_id="r1")
         second = await backend.start(_deltas(2), scope=scope, stream_id="r1")
@@ -1189,29 +1373,21 @@ async def test_client_response_modes_replay_and_live(
     client_options: dict[str, Any],
     decode: bool,
 ) -> None:
-    import os
-
     if (
         "legacy_responses" in client_options
         and "legacy_responses" not in inspect.signature(async_redis.Redis).parameters
     ):
         pytest.skip("This redis-py version has no modern-response option")
     settings_env()
-    factory = (
-        async_redis.RedisCluster
-        if os.getenv("STREAMS_TEST_CLUSTER") == "1"
-        else async_redis.Redis
-    )
+    cluster_url = os.getenv("STREAMS_TEST_CLUSTER_URL")
+    factory = async_redis.RedisCluster if cluster_url else async_redis.Redis
     async with factory.from_url(
-        REDIS_URL, decode_responses=decode, **client_options
+        cluster_url or REDIS_URL, decode_responses=decode, **client_options
     ) as client:
         instance = StreamBackend(lambda: client)
-        instance._start(_StreamCapabilities())
         try:
             writer = await instance.open(scope=scope, stream_id="compatibility")
             first = await writer.append("delta", {"n": 1})
-            plan = await instance._prepare(writer.stream_id, scope=scope, after=None)
-            assert plan is not None
             async with await instance.follow(writer.stream_id, scope=scope) as events:
                 replay = await asyncio.wait_for(anext(events), 5)
                 assert replay is not None and replay.id == first

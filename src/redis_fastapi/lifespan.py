@@ -177,10 +177,7 @@ async def _start_streams(app: FastAPI, ps: _PoolState) -> Any:
     backend = getattr(app.state, "_redis_streams", None)
     if backend is None:
         return None
-    from redis_fastapi.stream_backend import _StreamCapabilities
-
-    ps.stream_capabilities = _StreamCapabilities()
-    backend._start(ps.stream_capabilities)
+    backend._start()
     try:
         await backend.detect()
     except Exception:
@@ -242,19 +239,23 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         streams = await _start_streams(app, ps)
         yield
     finally:
-        if streams is not None:
-            # Before the pool closes: cancelled producers write their final
-            # entries, and live readers close.
-            await streams.aclose()
-        ps.clear()
-        if settings.cluster:
-            await ps.async_cluster.aclose()  # type: ignore[union-attr]
-            ps.async_cluster = None
-        else:
-            await ps.async_pool.aclose()  # type: ignore[union-attr]
-            ps.async_pool = None
-        if ps.async_sentinel is not None:
-            for node in ps.async_sentinel.sentinels:
-                await node.aclose()
-            ps.async_sentinel = None
-        _shutdown_redis_otel(otel_instance)
+        try:
+            if streams is not None:
+                # Before the pool closes: cancelled producers write their
+                # final entries.  It can wait several seconds, so the pool
+                # close below runs even if the server cancels the shutdown
+                # here.
+                await streams.aclose()
+        finally:
+            ps.clear()
+            if settings.cluster:
+                await ps.async_cluster.aclose()  # type: ignore[union-attr]
+                ps.async_cluster = None
+            else:
+                await ps.async_pool.aclose()  # type: ignore[union-attr]
+                ps.async_pool = None
+            if ps.async_sentinel is not None:
+                for node in ps.async_sentinel.sentinels:
+                    await node.aclose()
+                ps.async_sentinel = None
+            _shutdown_redis_otel(otel_instance)

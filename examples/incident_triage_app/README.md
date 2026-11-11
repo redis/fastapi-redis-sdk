@@ -8,9 +8,7 @@ through Redis. One story uses all four features of `fastapi-redis-sdk`:
 | Sessions | Alex signs in on a laptop, follows the run on a phone, and signs out everywhere after leaving the phone behind. |
 | Caching | The agent's tools query slow observability APIs. Sam asks about the same service, and every tool call is a cache hit. |
 | Rate limiting | Five runs a minute per engineer, 500 model runs a day for everyone, and one global limit for the free database. |
-| Resumable streams | The VPN drops and the answer resumes from the last entry. A reload, a second device or a redeploy never loses the answer. |
-
-The design is in [`specs/resumable-streams-demo.md`](../../specs/resumable-streams-demo.md).
+| Resumable streams | The VPN drops and the answer resumes from the last entry. A reload or a second device never loses the answer, and a redeploy never loses a finished one; an answer still running ends as `producer_lost`, and the engineer asks again. |
 
 Resumable streams use the SDK's feature (`FastAPIRedis(app).streams()`); see
 the [Resumable Streams Guide](../../docs/guide/streams.md). Runs live in Redis,

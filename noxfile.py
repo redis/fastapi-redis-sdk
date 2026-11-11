@@ -114,27 +114,35 @@ def tests_unit(session: nox.Session) -> None:
 # entry) the stream tests skip by design and only the "feature turns itself
 # off" test runs, so the stream modules are left out of coverage there rather
 # than lowering the floor for every server.  The probe is the SDK's own
-# support check, run inside the session's environment.
+# support check, imported from the package the session just installed, so
+# the session and the SDK can never disagree about what "supported" means.
 _STREAMS_PROBE = """
+import asyncio
 import os
-import redis
+
+import redis.asyncio as redis
+
+from redis_fastapi.stream_backend import probe_streams_support
 
 url = os.environ.get("REDIS_URL") or "redis://{}:{}/0".format(
     os.environ.get("REDIS_HOST", "localhost"), os.environ.get("REDIS_PORT", "6379")
 )
-try:
+
+
+async def ask():
     client = redis.Redis.from_url(url)
-    client.ping()
-except Exception:
-    print("unreachable")
-    raise SystemExit(0)
-try:
-    reply = client.execute_command("COMMAND", "INFO", "XCFGSET", "DELEX")
-except TypeError:
-    print("unsupported")
-    raise SystemExit(0)
-entries = list(reply.values()) if isinstance(reply, dict) else list(reply)
-print("supported" if len(entries) == 2 and all(entries) else "unsupported")
+    try:
+        await client.ping()
+    except Exception:
+        return None
+    try:
+        return await probe_streams_support(client)
+    finally:
+        await client.aclose()
+
+
+result = asyncio.run(ask())
+print({True: "supported", False: "unsupported"}.get(result, "unreachable"))
 """
 _STREAM_MODULES = "*/redis_fastapi/stream*.py"
 

@@ -1,10 +1,13 @@
 """Real-Redis fixtures and bounded transaction synchronization for stream tests.
 
 ``stream_case`` runs a test once per topology: standalone at ``REDIS_URL``,
-and an OSS Cluster or a Redis Enterprise database when
-``STREAMS_TEST_CLUSTER_URL`` or ``STREAMS_TEST_ENTERPRISE_URL`` names one.  A
-topology with no endpoint is skipped, never faked.  Every test gets its own
-key prefix, removed afterwards.
+and an OSS Cluster, a Redis Enterprise database or a Sentinel-managed primary
+when ``STREAMS_TEST_CLUSTER_URL``, ``STREAMS_TEST_ENTERPRISE_URL`` or
+``STREAMS_TEST_SENTINEL_URL`` names one.  A topology with no endpoint is
+skipped, never faked.  Every test gets its own key prefix, removed afterwards.
+
+The Sentinel URL has the form ``redis+sentinel://[:password@]host:port[,host:port]/master``:
+the Sentinel nodes, then the primary's name.
 
 Adapted from redis/fastapi-redis-sdk#98.
 """
@@ -14,17 +17,36 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
+from functools import partial
 from typing import Any
 
 import pytest
-from redis.asyncio import Redis, RedisCluster
+from redis.asyncio import Redis, RedisCluster, Sentinel
 
 from redis_fastapi import StreamBackend
 from redis_fastapi.config import get_settings
-from redis_fastapi.stream_backend import _StreamCapabilities, probe_streams_support
+from redis_fastapi.stream_backend import probe_streams_support
 from tests.conftest import REDIS_URL
+
+
+def _sentinel_primary(url: str, **options: Any) -> Any:
+    """A client for the primary a Sentinel URL names (see the module docstring)."""
+    rest = url.split("://", 1)[1]
+    password: str | None = None
+    if "@" in rest:
+        auth, rest = rest.rsplit("@", 1)
+        password = auth.split(":", 1)[1] if ":" in auth else auth
+    nodes_text, master = rest.rsplit("/", 1)
+    nodes = [
+        (host, int(port))
+        for host, port in (node.rsplit(":", 1) for node in nodes_text.split(","))
+    ]
+    sentinel = Sentinel(
+        nodes, sentinel_kwargs={"password": password}, password=password, **options
+    )
+    return sentinel.master_for(master)
 
 
 def stream_client(protocol: int = 3) -> Any:
@@ -33,13 +55,16 @@ def stream_client(protocol: int = 3) -> Any:
     For a test that needs a second process's own connections, or a client
     speaking another protocol.
     """
-    factory = RedisCluster if os.environ.get("REDIS_CLUSTER") == "True" else Redis
-    return factory.from_url(
-        os.environ["REDIS_URL"],
-        decode_responses=True,
-        socket_timeout=5,
-        protocol=protocol,
-    )
+    options: dict[str, Any] = {
+        "decode_responses": True,
+        "socket_timeout": 5,
+        "protocol": protocol,
+    }
+    topology = os.environ.get("STREAMS_TEST_TOPOLOGY", "standalone")
+    if topology == "sentinel":
+        return _sentinel_primary(os.environ["REDIS_URL"], **options)
+    factory = RedisCluster if topology == "cluster" else Redis
+    return factory.from_url(os.environ["REDIS_URL"], **options)
 
 
 async def command_calls(client: Any) -> dict[str, int]:
@@ -63,14 +88,31 @@ async def command_calls(client: Any) -> dict[str, int]:
 def stream_backend(client: Any) -> StreamBackend:
     """A backend on *client*: another process, as Redis sees it."""
     backend = StreamBackend(lambda: client)
-    backend._start(_StreamCapabilities(supported=True))
+    backend._supported = True  # the fixture already asked the server
     return backend
 
 
 def configure(monkeypatch: pytest.MonkeyPatch, **values: Any) -> None:
-    """Set ``REDIS_*`` settings for one test, with a fresh settings cache."""
+    """Set ``REDIS_*`` settings for one test, with a fresh settings cache.
+
+    Clears the cache on entry only.  ``stream_case`` and ``settings_env``
+    clear it again on exit; use one of them with this.
+    """
     for name, value in values.items():
         monkeypatch.setenv(f"REDIS_{name.upper()}", str(value))
+    get_settings.cache_clear()
+
+
+@pytest.fixture()
+def settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., None]]:
+    """``configure()`` as a fixture: ``settings_env(stream_maxlen=3)``.
+
+    Clears the settings cache before the test and after it, so no value set
+    here reaches the next test.  Points ``REDIS_URL`` at the test server.
+    """
+    monkeypatch.setenv("REDIS_URL", REDIS_URL)
+    get_settings.cache_clear()
+    yield partial(configure, monkeypatch)
     get_settings.cache_clear()
 
 
@@ -82,7 +124,7 @@ async def collect(
         return [event async for event in reader]
 
 
-@pytest.fixture(params=["standalone", "cluster", "enterprise"])
+@pytest.fixture(params=["standalone", "cluster", "enterprise", "sentinel"])
 async def stream_case(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[tuple[StreamBackend, Any, str]]:
@@ -98,6 +140,7 @@ async def stream_case(
     monkeypatch.setenv("REDIS_PREFIX", prefix)
     monkeypatch.setenv("REDIS_URL", url)
     monkeypatch.setenv("REDIS_CLUSTER", str(topology == "cluster"))
+    monkeypatch.setenv("STREAMS_TEST_TOPOLOGY", topology)
     get_settings.cache_clear()
     client = stream_client()
     backend = StreamBackend(lambda: client)
@@ -112,7 +155,7 @@ async def stream_case(
             raise
         if await probe_streams_support(client) is not True:
             pytest.skip(f"{topology} Redis without stream support")
-        backend._start(_StreamCapabilities(supported=True))
+        backend._supported = True
         yield backend, client, prefix
     finally:
         try:
