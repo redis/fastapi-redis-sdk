@@ -1076,6 +1076,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#production-with-resumable-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production with resumable streams
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#production-with-redis-cluster" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1727,6 +1738,17 @@
     <span class="md-ellipsis">
       
         Production
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production-with-resumable-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production with resumable streams
       
     </span>
   </a>
@@ -2422,26 +2444,39 @@ Putting a build identifier here gives every deploy a cold cache — see <a href=
 <a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="nv">REDIS_SOCKET_TIMEOUT</span><span class="o">=</span><span class="m">5</span>.0
 <a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="nv">REDIS_SOCKET_CONNECT_TIMEOUT</span><span class="o">=</span><span class="m">2</span>.0
 </code></pre></div>
+<h3 id="production-with-resumable-streams">Production with resumable streams<a class="headerlink" href="#production-with-resumable-streams" title="Permanent link">&para;</a></h3>
+<p>Two of the values above do not work with <code>.streams()</code>, which refuses them at
+startup. Each live SSE reader holds a pool connection for a blocking read of
+up to <code>REDIS_STREAM_HEARTBEAT_INTERVAL</code> seconds (15 by default), so the
+socket timeout must be longer than the heartbeat, and the pool must have
+more connections than <code>REDIS_STREAM_MAX_READERS</code> (256 by default) so
+producers can still write:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># .env, in addition to the production values</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="nv">REDIS_SOCKET_TIMEOUT</span><span class="o">=</span><span class="m">30</span>.0
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="nv">REDIS_MAX_CONNECTIONS</span><span class="o">=</span><span class="m">100</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="nv">REDIS_STREAM_MAX_READERS</span><span class="o">=</span><span class="m">64</span>
+</code></pre></div>
+<p>See the <a href="../streams/#limits">streams guide</a> for the sizing rule.</p>
 <h3 id="production-with-redis-cluster">Production with Redis Cluster<a class="headerlink" href="#production-with-redis-cluster" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># .env</span>
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="nv">REDIS_CLUSTER</span><span class="o">=</span><span class="nb">true</span>
-<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="nv">REDIS_URL</span><span class="o">=</span>redis://node1:6379,node2:6379,node3:6379
-<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="nv">REDIS_PASSWORD</span><span class="o">=</span>cluster_password
-<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="nv">REDIS_PREFIX</span><span class="o">=</span>myapp
-<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="nv">REDIS_DEFAULT_TTL</span><span class="o">=</span><span class="m">600</span>
-<a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="nv">REDIS_MAX_CONNECTIONS</span><span class="o">=</span><span class="m">100</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># .env</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="nv">REDIS_CLUSTER</span><span class="o">=</span><span class="nb">true</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="nv">REDIS_URL</span><span class="o">=</span>redis://node1:6379,node2:6379,node3:6379
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="nv">REDIS_PASSWORD</span><span class="o">=</span>cluster_password
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="nv">REDIS_PREFIX</span><span class="o">=</span>myapp
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="nv">REDIS_DEFAULT_TTL</span><span class="o">=</span><span class="m">600</span>
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="nv">REDIS_MAX_CONNECTIONS</span><span class="o">=</span><span class="m">100</span>
 </code></pre></div>
 <h3 id="production-with-redis-sentinel">Production with Redis Sentinel<a class="headerlink" href="#production-with-redis-sentinel" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># .env</span>
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="nv">REDIS_SENTINEL</span><span class="o">=</span><span class="nb">true</span>
-<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="nv">REDIS_SENTINEL_NODES</span><span class="o">=</span>sentinel1:26379,sentinel2:26379,sentinel3:26379
-<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="nv">REDIS_SENTINEL_MASTER_NAME</span><span class="o">=</span>mymaster
-<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="nv">REDIS_SENTINEL_PASSWORD</span><span class="o">=</span>sentinel_password
-<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="nv">REDIS_PASSWORD</span><span class="o">=</span>primary_password
-<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="nv">REDIS_PREFIX</span><span class="o">=</span>myapp
-<a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a><span class="nv">REDIS_DEFAULT_TTL</span><span class="o">=</span><span class="m">600</span>
-<a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a><span class="nv">REDIS_MAX_CONNECTIONS</span><span class="o">=</span><span class="m">100</span>
-<a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a><span class="nv">REDIS_SOCKET_TIMEOUT</span><span class="o">=</span><span class="m">5</span>.0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="c1"># .env</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="nv">REDIS_SENTINEL</span><span class="o">=</span><span class="nb">true</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="nv">REDIS_SENTINEL_NODES</span><span class="o">=</span>sentinel1:26379,sentinel2:26379,sentinel3:26379
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="nv">REDIS_SENTINEL_MASTER_NAME</span><span class="o">=</span>mymaster
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="nv">REDIS_SENTINEL_PASSWORD</span><span class="o">=</span>sentinel_password
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="nv">REDIS_PASSWORD</span><span class="o">=</span>primary_password
+<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="nv">REDIS_PREFIX</span><span class="o">=</span>myapp
+<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a><span class="nv">REDIS_DEFAULT_TTL</span><span class="o">=</span><span class="m">600</span>
+<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a><span class="nv">REDIS_MAX_CONNECTIONS</span><span class="o">=</span><span class="m">100</span>
+<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="nv">REDIS_SOCKET_TIMEOUT</span><span class="o">=</span><span class="m">5</span>.0
 </code></pre></div>
 <h3 id="fastapi-cloud">FastAPI Cloud<a class="headerlink" href="#fastapi-cloud" title="Permanent link">&para;</a></h3>
 <p><a href="https://fastapicloud.com/">FastAPI Cloud</a> has a built-in
@@ -2457,12 +2492,12 @@ exactly what <code>fastapi-redis-sdk</code> reads by default. No extra configura
 <p>Your app will pick up <code>REDIS_URL</code> on the next deploy. If you need additional
 tuning (TTL, prefix, pool size, etc.), set those as separate environment
 variables in the dashboard or via the CLI:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_PREFIX<span class="w"> </span>myapp
-<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_DEFAULT_TTL<span class="w"> </span><span class="m">600</span>
-<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_MAX_CONNECTIONS<span class="w"> </span><span class="m">100</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_PREFIX<span class="w"> </span>myapp
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_DEFAULT_TTL<span class="w"> </span><span class="m">600</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>REDIS_MAX_CONNECTIONS<span class="w"> </span><span class="m">100</span>
 </code></pre></div>
 <p>For sensitive values use the <code>--secret</code> flag:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>--secret<span class="w"> </span>REDIS_PASSWORD<span class="w"> </span>your_password
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>fastapi<span class="w"> </span>cloud<span class="w"> </span>env<span class="w"> </span><span class="nb">set</span><span class="w"> </span>--secret<span class="w"> </span>REDIS_PASSWORD<span class="w"> </span>your_password
 </code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Demo App</p>
@@ -2474,36 +2509,36 @@ rate-limited public API. The entrypoint is already configured in <code>pyproject
 <p>See the <a href="https://fastapicloud.com/docs/builds-and-deployments/environment-variables/">FastAPI Cloud environment variables docs</a>
 for details on managing secrets and bulk-importing <code>.env</code> files.</p>
 <h2 id="accessing-settings-in-code">Accessing Settings in Code<a class="headerlink" href="#accessing-settings-in-code" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_settings</span>
-<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>
-<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="c1"># Get settings instance</span>
-<a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="n">settings</span> <span class="o">=</span> <span class="n">get_settings</span><span class="p">()</span>
-<a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>
-<a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="c1"># Read configuration</span>
-<a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Connected to: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Default TTL: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">default_ttl</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Prefix: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">prefix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>
-<a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a><span class="c1"># Build pattern prefix</span>
-<a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a><span class="n">cache_prefix</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">pattern_prefix</span><span class="p">(</span><span class="s2">&quot;cache&quot;</span><span class="p">)</span>
-<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a><span class="c1"># → &quot;redis:fastapi:cache&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_settings</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="c1"># Get settings instance</span>
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="n">settings</span> <span class="o">=</span> <span class="n">get_settings</span><span class="p">()</span>
+<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>
+<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="c1"># Read configuration</span>
+<a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Connected to: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Default TTL: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">default_ttl</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Prefix: </span><span class="si">{</span><span class="n">settings</span><span class="o">.</span><span class="n">prefix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a>
+<a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a><span class="c1"># Build pattern prefix</span>
+<a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a><span class="n">cache_prefix</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">pattern_prefix</span><span class="p">(</span><span class="s2">&quot;cache&quot;</span><span class="p">)</span>
+<a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a><span class="c1"># → &quot;redis:fastapi:cache&quot;</span>
 </code></pre></div>
 <h2 id="opentelemetry">OpenTelemetry<a class="headerlink" href="#opentelemetry" title="Permanent link">&para;</a></h2>
 <p>fastapi-redis-sdk can emit spans and metrics for every cache operation via
 <a href="https://opentelemetry.io/">OpenTelemetry</a>.  Telemetry is <strong>opt-in</strong> - when
 disabled (the default) all instrumentation is a zero-cost no-op.</p>
 <h3 id="install-the-optional-dependency">Install the optional dependency<a class="headerlink" href="#install-the-optional-dependency" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fastapi-redis-sdk<span class="o">[</span>otel<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>pip<span class="w"> </span>install<span class="w"> </span>fastapi-redis-sdk<span class="o">[</span>otel<span class="o">]</span>
 </code></pre></div>
 <h3 id="enable-via-the-builder-recommended">Enable via the builder (recommended)<a class="headerlink" href="#enable-via-the-builder-recommended" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPI</span>
-<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span>
-<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
-<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
-<a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span><span class="o">.</span><span class="n">otel</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPI</span>
+<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">redis_fastapi</span><span class="w"> </span><span class="kn">import</span> <span class="n">FastAPIRedis</span>
+<a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>
+<a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">FastAPI</span><span class="p">()</span>
+<a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="n">FastAPIRedis</span><span class="p">(</span><span class="n">app</span><span class="p">)</span><span class="o">.</span><span class="n">lifespan</span><span class="p">()</span><span class="o">.</span><span class="n">caching</span><span class="p">()</span><span class="o">.</span><span class="n">otel</span><span class="p">()</span>
 </code></pre></div>
 <h3 id="enable-via-environment-variable">Enable via environment variable<a class="headerlink" href="#enable-via-environment-variable" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_ENABLED</span><span class="o">=</span><span class="nb">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_ENABLED</span><span class="o">=</span><span class="nb">true</span>
 </code></pre></div>
 <p>When <code>REDIS_OTEL_ENABLED=true</code>, calling <code>.otel()</code> is not required - the
 telemetry module is activated automatically at startup.</p>
@@ -2511,11 +2546,11 @@ telemetry module is activated automatically at startup.</p>
 <p>fastapi-redis-sdk instruments the <strong>cache layer</strong> (hit/miss, write, eviction).  If
 you also want low-level <strong>Redis command</strong> spans and connection-pool metrics, enable
 the redis-py native integration:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_REDIS_ENABLED</span><span class="o">=</span><span class="nb">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_REDIS_ENABLED</span><span class="o">=</span><span class="nb">true</span>
 </code></pre></div>
 <p>Or both together:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_ENABLED</span><span class="o">=</span><span class="nb">true</span>
-<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_REDIS_ENABLED</span><span class="o">=</span><span class="nb">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_ENABLED</span><span class="o">=</span><span class="nb">true</span>
+<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_OTEL_REDIS_ENABLED</span><span class="o">=</span><span class="nb">true</span>
 </code></pre></div>
 <p>If you already use <code>opentelemetry-instrumentation-redis</code> externally, leave
 <code>REDIS_OTEL_REDIS_ENABLED=false</code> to avoid duplicate instrumentation.</p>
@@ -2567,33 +2602,33 @@ span and metric reference for caching and rate limiting - see the
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <h3 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h3>
 <p>If you see <code>ValidationError</code>, check your environment variables:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># Check current values</span>
-<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>env<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>REDIS
-<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>
-<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="c1"># Common issues:</span>
-<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="c1"># - REDIS_PORT must be 1-65535</span>
-<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="c1"># - REDIS_DB must be 0-15</span>
-<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="c1"># - REDIS_SOCKET_TIMEOUT must be &gt;= 0</span>
-<a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="c1"># - Boolean values: use &quot;true&quot;/&quot;false&quot;, &quot;1&quot;/&quot;0&quot;, or &quot;yes&quot;/&quot;no&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Check current values</span>
+<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>env<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>REDIS
+<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
+<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Common issues:</span>
+<a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="c1"># - REDIS_PORT must be 1-65535</span>
+<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="c1"># - REDIS_DB must be 0-15</span>
+<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="c1"># - REDIS_SOCKET_TIMEOUT must be &gt;= 0</span>
+<a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a><span class="c1"># - Boolean values: use &quot;true&quot;/&quot;false&quot;, &quot;1&quot;/&quot;0&quot;, or &quot;yes&quot;/&quot;no&quot;</span>
 </code></pre></div>
 <h3 id="connection-refused">Connection Refused<a class="headerlink" href="#connection-refused" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Check if Redis is running</span>
-<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>redis-cli<span class="w"> </span>ping
-<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
-<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Verify connection settings</span>
-<a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="nb">echo</span><span class="w"> </span><span class="nv">$REDIS_URL</span>
-<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="c1"># or</span>
-<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="nb">echo</span><span class="w"> </span><span class="nv">$REDIS_HOST</span><span class="w"> </span><span class="nv">$REDIS_PORT</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Check if Redis is running</span>
+<a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>redis-cli<span class="w"> </span>ping
+<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
+<a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Verify connection settings</span>
+<a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="nb">echo</span><span class="w"> </span><span class="nv">$REDIS_URL</span>
+<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="c1"># or</span>
+<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="nb">echo</span><span class="w"> </span><span class="nv">$REDIS_HOST</span><span class="w"> </span><span class="nv">$REDIS_PORT</span>
 </code></pre></div>
 <h3 id="tlsssl-errors">TLS/SSL Errors<a class="headerlink" href="#tlsssl-errors" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Enable SSL</span>
-<a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_SSL</span><span class="o">=</span><span class="nb">true</span>
-<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
-<a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Use rediss:// URL scheme</span>
-<a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_URL</span><span class="o">=</span>rediss://localhost:6380/0
-<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>
-<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="c1"># Disable hostname checking if needed (not recommended for production)</span>
-<a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_SSL_CHECK_HOSTNAME</span><span class="o">=</span><span class="nb">false</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="c1"># Enable SSL</span>
+<a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_SSL</span><span class="o">=</span><span class="nb">true</span>
+<a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a>
+<a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="c1"># Use rediss:// URL scheme</span>
+<a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_URL</span><span class="o">=</span>rediss://localhost:6380/0
+<a id="__codelineno-31-6" name="__codelineno-31-6" href="#__codelineno-31-6"></a>
+<a id="__codelineno-31-7" name="__codelineno-31-7" href="#__codelineno-31-7"></a><span class="c1"># Disable hostname checking if needed (not recommended for production)</span>
+<a id="__codelineno-31-8" name="__codelineno-31-8" href="#__codelineno-31-8"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_SSL_CHECK_HOSTNAME</span><span class="o">=</span><span class="nb">false</span>
 </code></pre></div>
 
 
@@ -2617,7 +2652,7 @@ span and metric reference for caching and rate limiting - see the
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 14, 2026 15:25:06 UTC">October 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 11, 2026 06:47:35 UTC">November 11, 2026</span>
   </span>
 
     
