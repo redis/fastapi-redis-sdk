@@ -498,38 +498,37 @@ What replaces what from the run design:
 
 ## B3. Keys and entries
 
-A context's keys share one Cluster hash tag, so the send script can create a
-task and record its `messageId` atomically. The tag is the first 8 hex
-characters of `sha1(contextId)`, and the SDK puts it at the front of every
-task ID it generates:
+A context's keys share one Cluster hash tag, the context ID itself, so the
+send script can create a task and record its `messageId` atomically. The SDK
+puts the context ID at the front of every task ID it generates:
 
 ```
-tag    = sha1(contextId).hexdigest()[:8]       # e.g. "3f9a0c1e"
-taskId = f"{tag}-{uuid4().hex}"                # e.g. "3f9a0c1e-5b2d…"
+taskId = f"{contextId}-{uuid4().hex}"          # e.g. "chat-42-5b2d…" (32 hex at the end)
 ```
 
-So the keys of a task can be rebuilt from its `taskId` alone, as A2A's
+The last 33 characters are always `-` and 32 hex digits, so the context ID
+is everything before them, whatever `-` or `.` it contains. The keys of a
+task can therefore be rebuilt from its `taskId` alone, as A2A's
 `GetTask(taskId)` expects:
 
 | Key | Type | Content |
 |---|---|---|
-| `<prefix>:a2a:{<tag>}:task:<taskId>` | Stream | The task's events. |
-| `<prefix>:a2a:{<tag>}:task:<taskId>:status` | Hash | `state`, `status` (the current TaskStatus JSON), `owner` (B4) and `context` (the `contextId`). |
-| `<prefix>:a2a:{<tag>}:msg:<contextId>:<messageId>` | String | `<taskId> <attempt token>`: the send that took this `messageId` in this context. |
+| `<prefix>:a2a:{<contextId>}:task:<taskId>` | Stream | The task's events. |
+| `<prefix>:a2a:{<contextId>}:task:<taskId>:status` | Hash | `state`, `status` (the current TaskStatus JSON) and `owner` (B4). |
+| `<prefix>:a2a:{<contextId>}:msg:<messageId>` | String | `<taskId> <attempt token>`: the send that took this `messageId` in this context. |
 
-The hash keeps task IDs short and the same length, makes the tag readable
-without separator rules, and doesn't put the context ID (a chat ID, perhaps
-derived from a user) into every task ID that reaches clients and logs. Two
-contexts whose tags collide just share a slot; their keys still differ. A2A
-treats task IDs as opaque, so the prefix is allowed.
+A2A treats task IDs as opaque, so the prefix is allowed. The costs: a task ID
+is up to 161 characters, and the context ID travels with it into URLs,
+clients and logs, so a context ID must not be a secret. A hot conversation
+puts its tasks on one node; that is the price of the atomic send.
 
 The stream and the status hash expire together. A `msg` key lives up to the
-task's maximum lifetime, so it can outlive a task that ended early (B4). A hot conversation puts its
-tasks on one node; that is the price of the atomic send.
+task's maximum lifetime, so it can outlive a task that ended early (B4).
 
 Names: a `contextId` is 1-128 of `A-Z a-z 0-9 _ . -` (a UUID fits), a
-`messageId` 1-128 of the same. A `taskId` must match `[0-9a-f]{8}-[0-9a-f]{32}`;
-anything else is `TaskInvalidId` (422) before any Redis call. No `:` and no
+`messageId` 1-128 of the same. A `taskId` must be a valid context ID followed
+by `-` and 32 lowercase hex digits; anything else is `TaskInvalidId` (422)
+before any Redis call. No `:` and no
 braces, so keys can't collide and no ID can set a hash tag.
 
 Entries use Part A's layout, plus one field the reader can test without
@@ -578,15 +577,14 @@ slot):
 -- KEYS[1] = msg key, KEYS[2] = stream, KEYS[3] = status
 -- ARGV[1] = "<taskId> <token>", ARGV[2] = token,
 -- ARGV[3] = the task event JSON (SUBMITTED), ARGV[4] = WORKING status JSON,
--- ARGV[5] = max lifetime (ms), ARGV[6] = the WORKING status-update event JSON,
--- ARGV[7] = contextId
+-- ARGV[5] = max lifetime (ms), ARGV[6] = the WORKING status-update event JSON
 local taken = redis.call('GET', KEYS[1])
 if taken then return {'taken', taken} end
 redis.call('XADD', KEYS[2], '*', 'event', 'task', 'data', ARGV[3])
 redis.call('XADD', KEYS[2], '*', 'event', 'status-update',
            'state', 'TASK_STATE_WORKING', 'data', ARGV[6])
 redis.call('HSET', KEYS[3], 'state', 'TASK_STATE_WORKING', 'status', ARGV[4],
-           'owner', ARGV[2], 'context', ARGV[7])
+           'owner', ARGV[2])
 redis.call('PEXPIRE', KEYS[2], ARGV[5])
 redis.call('PEXPIRE', KEYS[3], ARGV[5])
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[5])
@@ -598,15 +596,13 @@ return {'created', ARGV[1]}
 ```lua
 -- KEYS as above; ARGV[1] = "<taskId> <token>", ARGV[2] = token,
 -- ARGV[3] = the user's message event JSON, ARGV[4] = WORKING status JSON,
--- ARGV[5] = the WORKING status-update event JSON, ARGV[6] = taskId,
--- ARGV[7] = contextId
+-- ARGV[5] = the WORKING status-update event JSON, ARGV[6] = taskId
 local taken = redis.call('GET', KEYS[1])
 if taken then
   if string.sub(taken, 1, #ARGV[6] + 1) ~= ARGV[6] .. ' ' then return {'conflict'} end
   return {'taken', taken}
 end
 if redis.call('EXISTS', KEYS[2]) == 0 then return {'missing'} end
-if redis.call('HGET', KEYS[3], 'context') ~= ARGV[7] then return {'missing'} end
 local state = redis.call('HGET', KEYS[3], 'state')
 if state ~= 'TASK_STATE_INPUT_REQUIRED' and state ~= 'TASK_STATE_AUTH_REQUIRED' then
   return {'busy', state}
@@ -827,17 +823,13 @@ class SendResult:
     created: bool          # False: a retried send; nothing was spawned
 ```
 
-Only `send()` needs a context: a new task's `context_id` (or one the SDK
-generates), and a continuation's from `context_id` or the message's own
-`contextId`, because the `msg` key is per context. A continuation in the
-wrong context gets `TaskNotFound`. Every other call finds the task from its `task_id`,
-as in A2A. The optional `context_id` is a check for applications that
-authorize by conversation: the SDK compares it with the task's stored
-`context` and answers `TaskNotFound` on a mismatch, so a task in another
-conversation looks the same as no task. Without it, the returned `Task`
-carries its `contextId` for the application to check. A `task_id` whose tag
-doesn't match the given `context_id` fails the same way without touching
-Redis.
+Only a new `send()` needs a `context_id` (or generates one). Every other
+call, a continuation included, takes the context from the `task_id`, as in
+A2A. The optional `context_id` is a check for applications that authorize by
+conversation: when it differs from the task ID's context, the SDK answers
+`TaskNotFound` without touching Redis, so a task in another conversation
+looks the same as no task. A continuation's message whose `contextId`
+disagrees with the task ID gets 422, like any other mismatched ID.
 
 Errors: `TaskNotFound` (404), `TaskNotCancelable` (409),
 `TaskNotInterrupted` (409), `TaskMessageConflict` (409), `TaskInvalidId` and a
@@ -889,8 +881,9 @@ sub = await streams.read(key, after=streams.cursor(request), ticks=True,
 if sub.ended_by == "until":
     await sub.aclose()
     return Response(status_code=204)
-state, context_id = await status_of(key)         # HMGET status state context
-# a context_id passed to sse() that differs: TaskNotFound (404)
+state = await status_state(key)                   # HGET status state
+# context_id comes from task_id; a different one passed to sse() was
+# already TaskNotFound (404), before read()
 return streams.respond(frames(sub, state), request=request)
 ```
 
@@ -1030,13 +1023,11 @@ bound tied to `IDMP`.
   newest messages.
 - Shutdown: running producers end `CANCELED`; a send that overlaps shutdown
   creates nothing or ends `CANCELED`.
-- Task IDs: `get_task()`, `cancel()`, `sse()` and `events()` work from the
-  task ID alone; a wrong `context_id` answers `TaskNotFound` (with a matching
-  tag, after reading the stored context; with another tag, before any Redis
-  call); a malformed task ID answers 422 before any Redis call; a
-  continuation in the wrong context answers `TaskNotFound`.
-- Redis 7.4 and 8.8; Cluster (a context's keys in one slot, colliding tags
-  sharing a slot without interference) and Sentinel.
+- Task IDs: `get_task()`, `cancel()`, `sse()`, `events()` and a continuation
+  work from the task ID alone, including context IDs that contain `-` and
+  `.`; a wrong `context_id` answers `TaskNotFound` and a malformed task ID
+  422, both before any Redis call.
+- Redis 7.4 and 8.8; Cluster (a context's keys in one slot) and Sentinel.
 
 ---
 
