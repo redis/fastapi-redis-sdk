@@ -592,7 +592,8 @@ def _cached_app(store: RedisSessionStore, fake_async_redis: Any) -> FastAPI:
 
 
 async def _cache_keys(redis: Any) -> list[bytes]:
-    return [key async for key in redis.scan_iter(match="*cache*")]
+    pattern = f"{get_settings().pattern_prefix('cache')}:*"
+    return [key async for key in redis.scan_iter(match=pattern)]
 
 
 class TestTheGateAndCache:

@@ -361,7 +361,7 @@ class TestTheStoreIsInjectable:
 
         store = captured[0]
         assert store.idle_seconds == 300, "timedelta was not honoured"
-        assert store.session_key("x").startswith("custom:session:")
+        assert store.session_key("x").startswith("custom:s:")
         assert store.new_id() == "z" * 40
         get_settings.cache_clear()
 

@@ -164,7 +164,7 @@ share a counter*, the other *which clients share a counter*:
 
 | Part         | Answers            | Knob                                                               | Default                           |
 |--------------|--------------------|--------------------------------------------------------------------|-----------------------------------|
-| `prefix`     | which app          | `REDIS_PREFIX` (app-wide)                                          | `redis:fastapi:ratelimit`         |
+| `prefix`     | which app          | `REDIS_PREFIX` (app-wide)                                          | `rf:r`                            |
 | `scope`      | which **routes**   | `scope=` on `rate_limit()`                                         | the matched route template        |
 | `identifier` | which **clients**  | `identifier=`                                                      | client IP via `ip_identifier`     |
 
@@ -173,18 +173,27 @@ client `1.2.3.4` on route `/items/{id}` (the resulting counter key is shown as a
 comment above each call):
 
 ```python
-# redis:fastapi:ratelimit:/items/{id}:1.2.3.4
+# rf:r:/items/{id}:1.2.3.4
 rate_limit("100/min")
 
-# redis:fastapi:ratelimit:search:1.2.3.4
+# rf:r:search:1.2.3.4
 rate_limit("100/min", scope="search")
 
-# redis:fastapi:ratelimit:/items/{id}:user:42
+# rf:r:/items/{id}:user:42
 rate_limit("100/min", identifier=user_identifier)
 
-# redis:fastapi:ratelimit:search:key-abc
+# rf:r:search:key-abc
 rate_limit("100/min", scope="search", identifier=api_key_identifier)
 ```
+
+The same four calls as a table:
+
+| Call (client `1.2.3.4`, route `/items/{id}`)         | Key                         |
+|------------------------------------------------------|-----------------------------|
+| `rate_limit("100/min")`                              | `rf:r:/items/{id}:1.2.3.4`  |
+| `scope="search"`                                     | `rf:r:search:1.2.3.4`       |
+| `identifier=user_identifier`                         | `rf:r:/items/{id}:user:42`  |
+| `scope="search"`, `identifier=api_key_identifier`    | `rf:r:search:key-abc`       |
 
 So: change `scope` to regroup **routes**, change `identifier` to repartition
 **clients** - independently.
@@ -579,10 +588,10 @@ dependency is preserved.
 Keys follow a **flat** scheme - `{prefix}:{scope}:{identifier}` - where `scope`
 defaults to the matched route **template**:
 
-- `redis:fastapi:ratelimit:/items/{id}:1.2.3.4` - default (per-route) scope.
+- `rf:r:/items/{id}:1.2.3.4` - default (per-route) scope.
   All values of the path parameter share this bucket, so `/items/1` and
   `/items/2` cannot each get a fresh budget.
-- `redis:fastapi:ratelimit:search-api:1.2.3.4` - an explicit `scope="search-api"`
+- `rf:r:search-api:1.2.3.4` - an explicit `scope="search-api"`
   shared across every route that uses it.
 
 The `scope` is both the namespace and the unit of sharing: two routes share a

@@ -147,7 +147,7 @@ class TestDefaultNoExpiry:
         no_ttl_client.get("/no-ttl")
 
         # Find the cache key
-        keys = real_redis.keys("redis:fastapi:cache:*")
+        keys = real_redis.keys("rf:c:*")
         assert len(keys) >= 1
         ttl = real_redis.ttl(keys[0])
         # -1 means no expiry set
