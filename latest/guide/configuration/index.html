@@ -2149,10 +2149,38 @@ next write.  The pool then closes it, and the command fails.</p>
 not supported.</p>
 </div>
 <h2 id="key-prefix">Key Prefix<a class="headerlink" href="#key-prefix" title="Permanent link">&para;</a></h2>
-<p>All pattern data is prefixed with <code>redis:fastapi</code> by default, producing keys like <code>redis:fastapi:cache:...</code>.
+<p>All pattern data is prefixed with <code>rf</code> by default, producing keys like <code>rf:c:...</code>.
+A short segment after the prefix names the kind of key:</p>
+<table>
+<thead>
+<tr>
+<th>Segment</th>
+<th>Kind of key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>c</code></td>
+<td>Cache entry</td>
+</tr>
+<tr>
+<td><code>r</code></td>
+<td>Rate-limit counter</td>
+</tr>
+<tr>
+<td><code>s</code></td>
+<td>Session</td>
+</tr>
+<tr>
+<td><code>si</code></td>
+<td>Index of the sessions a subject owns</td>
+</tr>
+</tbody>
+</table>
+<p>Every key carries the prefix and the segment, so both are short by design.
 Putting a build identifier here gives every deploy a cold cache — see <a href="../caching/#upgrading-across-a-stored-shape-change">Upgrading across a stored-shape change</a>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REDIS_PREFIX</span><span class="o">=</span>myapp:redis
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># keys become: myapp:redis:cache:...</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># keys become: myapp:redis:c:...</span>
 </code></pre></div>
 <p>Individual DI factories can override their prefix:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nd">@app</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/items&quot;</span><span class="p">,</span> <span class="n">dependencies</span><span class="o">=</span><span class="p">[</span><span class="n">Depends</span><span class="p">(</span><span class="n">cache</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;custom:prefix&quot;</span><span class="p">))])</span>
@@ -2334,7 +2362,7 @@ Putting a build identifier here gives every deploy a cold cache — see <a href=
 <tr>
 <td><code>REDIS_PREFIX</code></td>
 <td><code>str</code></td>
-<td><code>redis:fastapi</code></td>
+<td><code>rf</code></td>
 <td>-</td>
 <td>Integration-wide key prefix</td>
 </tr>
@@ -2458,7 +2486,7 @@ for details on managing secrets and bulk-importing <code>.env</code> files.</p>
 <a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>
 <a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a><span class="c1"># Build pattern prefix</span>
 <a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a><span class="n">cache_prefix</span> <span class="o">=</span> <span class="n">settings</span><span class="o">.</span><span class="n">pattern_prefix</span><span class="p">(</span><span class="s2">&quot;cache&quot;</span><span class="p">)</span>
-<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a><span class="c1"># → &quot;redis:fastapi:cache&quot;</span>
+<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a><span class="c1"># → &quot;rf:c&quot;</span>
 </code></pre></div>
 <h2 id="opentelemetry">OpenTelemetry<a class="headerlink" href="#opentelemetry" title="Permanent link">&para;</a></h2>
 <p>fastapi-redis-sdk can emit spans and metrics for every cache operation via
@@ -2589,7 +2617,7 @@ span and metric reference for caching and rate limiting - see the
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 14, 2026 15:25:06 UTC">October 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 17, 2026 15:15:17 UTC">November 17, 2026</span>
   </span>
 
     

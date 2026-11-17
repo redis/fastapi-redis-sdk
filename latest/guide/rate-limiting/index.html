@@ -1902,7 +1902,7 @@ share a counter</em>, the other <em>which clients share a counter</em>:</p>
 <td><code>prefix</code></td>
 <td>which app</td>
 <td><code>REDIS_PREFIX</code> (app-wide)</td>
-<td><code>redis:fastapi:ratelimit</code></td>
+<td><code>rf:r</code></td>
 </tr>
 <tr>
 <td><code>scope</code></td>
@@ -1921,18 +1921,45 @@ share a counter</em>, the other <em>which clients share a counter</em>:</p>
 <p>Two requests hit the <strong>same</strong> counter only when all three match.  Examples for
 client <code>1.2.3.4</code> on route <code>/items/{id}</code> (the resulting counter key is shown as a
 comment above each call):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># redis:fastapi:ratelimit:/items/{id}:1.2.3.4</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># rf:r:/items/{id}:1.2.3.4</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">rate_limit</span><span class="p">(</span><span class="s2">&quot;100/min&quot;</span><span class="p">)</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># redis:fastapi:ratelimit:search:1.2.3.4</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># rf:r:search:1.2.3.4</span>
 <a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">rate_limit</span><span class="p">(</span><span class="s2">&quot;100/min&quot;</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s2">&quot;search&quot;</span><span class="p">)</span>
 <a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># redis:fastapi:ratelimit:/items/{id}:user:42</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># rf:r:/items/{id}:user:42</span>
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="n">rate_limit</span><span class="p">(</span><span class="s2">&quot;100/min&quot;</span><span class="p">,</span> <span class="n">identifier</span><span class="o">=</span><span class="n">user_identifier</span><span class="p">)</span>
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># redis:fastapi:ratelimit:search:key-abc</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># rf:r:search:key-abc</span>
 <a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="n">rate_limit</span><span class="p">(</span><span class="s2">&quot;100/min&quot;</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s2">&quot;search&quot;</span><span class="p">,</span> <span class="n">identifier</span><span class="o">=</span><span class="n">api_key_identifier</span><span class="p">)</span>
 </code></pre></div>
+<p>The same four calls as a table:</p>
+<table>
+<thead>
+<tr>
+<th>Call (client <code>1.2.3.4</code>, route <code>/items/{id}</code>)</th>
+<th>Key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rate_limit("100/min")</code></td>
+<td><code>rf:r:/items/{id}:1.2.3.4</code></td>
+</tr>
+<tr>
+<td><code>scope="search"</code></td>
+<td><code>rf:r:search:1.2.3.4</code></td>
+</tr>
+<tr>
+<td><code>identifier=user_identifier</code></td>
+<td><code>rf:r:/items/{id}:user:42</code></td>
+</tr>
+<tr>
+<td><code>scope="search"</code>, <code>identifier=api_key_identifier</code></td>
+<td><code>rf:r:search:key-abc</code></td>
+</tr>
+</tbody>
+</table>
 <p>So: change <code>scope</code> to regroup <strong>routes</strong>, change <code>identifier</code> to repartition
 <strong>clients</strong> - independently.</p>
 <p>One identifier ships built in: <strong><code>ip_identifier</code></strong> (the default), which returns
@@ -2285,10 +2312,10 @@ dependency is preserved.</p>
 <p>Keys follow a <strong>flat</strong> scheme - <code>{prefix}:{scope}:{identifier}</code> - where <code>scope</code>
 defaults to the matched route <strong>template</strong>:</p>
 <ul>
-<li><code>redis:fastapi:ratelimit:/items/{id}:1.2.3.4</code> - default (per-route) scope.
+<li><code>rf:r:/items/{id}:1.2.3.4</code> - default (per-route) scope.
   All values of the path parameter share this bucket, so <code>/items/1</code> and
   <code>/items/2</code> cannot each get a fresh budget.</li>
-<li><code>redis:fastapi:ratelimit:search-api:1.2.3.4</code> - an explicit <code>scope="search-api"</code>
+<li><code>rf:r:search-api:1.2.3.4</code> - an explicit <code>scope="search-api"</code>
   shared across every route that uses it.</li>
 </ul>
 <p>The <code>scope</code> is both the namespace and the unit of sharing: two routes share a
@@ -2556,7 +2583,7 @@ exactly the limit (proving atomicity).</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 19, 2026 15:50:06 UTC">August 19, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 17, 2026 15:15:17 UTC">November 17, 2026</span>
   </span>
 
     
