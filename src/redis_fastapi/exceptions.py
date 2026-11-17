@@ -1,10 +1,12 @@
-"""Exceptions for the session feature.
+"""Exceptions for the session and resumable-stream features.
 
 A module of their own so that ``session_backend`` can raise them without
 importing ``sessions``.  That import used to run the wrong way - the storage
 half depended on the request-facing half purely so it could mutate a
 ``Session`` - and removing it is what turns the two-file split into a real
-layering boundary rather than a mutual-friend arrangement.
+layering boundary rather than a mutual-friend arrangement.  The stream errors
+live here for the same reason: ``stream_backend`` raises them, and ``streams``
+maps them to HTTP status codes.
 """
 
 from __future__ import annotations
@@ -54,3 +56,104 @@ class SessionRejected(Exception):
         super().__init__()
         self.response = response
         self.__suppress_context__ = True
+
+
+class StreamError(Exception):
+    """Base for every error the resumable-stream feature raises.
+
+    Catching this catches the whole feature.  Each class carries the HTTP
+    status and the stable ``code`` that the handler ``FastAPIRedis.streams()``
+    registers answers with, as ``{"detail": ..., "code": ...}``.  Branch on
+    ``code``, not on ``detail``, whose wording may change.
+
+    Attributes:
+        status_code: The HTTP status for this error.
+        code: A stable, machine-readable name for this error.
+    """
+
+    status_code: int = 500
+    code: str = "stream_error"
+
+
+class StreamNotFound(StreamError):
+    """No stream under this scope and ID.  Answered with 404.
+
+    An ID from another scope names a key that does not exist, so it lands here
+    too, and a stream ID reveals nothing about streams in other scopes.
+    """
+
+    status_code = 404
+    code = "stream_not_found"
+
+
+class StreamExpired(StreamError):
+    """The stream is gone, or entries after the cursor were trimmed.  410."""
+
+    status_code = 410
+    code = "stream_expired"
+
+
+class StreamCursorAhead(StreamError):
+    """The cursor is past the stream's last generated ID.  Answered with 409.
+
+    The cursor came from another stream, from a client bug, or from a failover
+    that lost writes the client had already read.
+    """
+
+    status_code = 409
+    code = "cursor_ahead"
+
+
+class StreamInvalidCursor(StreamError, ValueError):
+    """A malformed, out-of-range or repeated cursor.  Answered with 422."""
+
+    status_code = 422
+    code = "invalid_cursor"
+
+
+class StreamInvalidName(StreamError, ValueError):
+    """A scope or stream ID with characters outside the allowed set.  422.
+
+    Scopes may use 1-200 of ``A-Z a-z 0-9 _ . : -``; stream IDs 1-64 of
+    ``A-Z a-z 0-9 _ -``.
+    """
+
+    status_code = 422
+    code = "invalid_stream_name"
+
+
+class StreamCredentialExpired(StreamError):
+    """``expires_at`` had already passed when the stream was requested.  401."""
+
+    status_code = 401
+    code = "credential_expired"
+
+
+class StreamUnsupported(StreamError):
+    """The Redis server lacks the commands this feature needs.  503.
+
+    Detected once per pool; see :func:`~redis_fastapi.stream_backend.probe_streams_support`.
+    """
+
+    status_code = 503
+    code = "stream_unsupported"
+
+
+class StreamFinished(StreamError):
+    """A write to a stream that already has its final entry.  409."""
+
+    status_code = 409
+    code = "stream_finished"
+
+
+class StreamStoreError(StreamError):
+    """Redis could not complete a stream operation.  Answered with 503."""
+
+    status_code = 503
+    code = "stream_unavailable"
+
+
+class StreamConfigurationError(StreamError):
+    """A stream setting is invalid, or the feature was not set up."""
+
+    code = "stream_configuration_error"

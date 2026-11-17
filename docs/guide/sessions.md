@@ -598,6 +598,42 @@ kept in Redis, and every miss and hit says `no-store`.
 
 ---
 
+## Ending a stream with the session
+
+A [resumable stream](streams.md) is a long response, and the session is
+checked once, when it opens. Guard the stream routes with the same dependency
+as any other route, and pass the session's absolute deadline to `sse()`, so an
+open stream ends when the session does:
+
+```python
+from redis_fastapi import SessionDep, StreamBackendDep, session_expiry
+
+
+async def require_chat_access(chat_id: str, session: SessionDep) -> None:
+    if not session.get("user_id"):
+        raise HTTPException(status_code=401)
+    if not await chats.is_member(chat_id, session["user_id"]):
+        raise HTTPException(status_code=404)
+
+
+@app.get("/chats/{chat_id}/runs/{stream_id}/events",
+         dependencies=[Depends(require_chat_access)])
+async def events(chat_id: str, stream_id: str, request: Request,
+                 streams: StreamBackendDep):
+    return await streams.sse(stream_id, request=request, scope=f"chat:{chat_id}",
+                             expires_at=session_expiry(request))
+```
+
+`session_expiry()` returns the absolute deadline, or `None` when the session
+has none. At the deadline the stream sends a `stream.error` event with code
+`credential_expired` and closes. A session that ends earlier, by sign-out or
+revocation, is caught when the browser reconnects, which happens at least
+every `stream_max_connection_duration`: the dependency then answers `401`.
+See [Ending a connection with the credential](streams.md#ending-a-connection-with-the-credential)
+in the streams guide.
+
+---
+
 ## Limitation: WebSockets have no session in this release
 
 The middleware handles `http` scopes only. In a WebSocket handler,
@@ -640,6 +676,11 @@ Load once at accept time and hold the identity for the connection. Nothing
 closes the socket when the session ends - by sign-out, revocation or expiry -
 so a socket that must not outlive its session has to check it again itself,
 for example with `store.load(raw, refresh=False)` on a timer.
+
+The same boundary applies to a WebSocket reader of
+[resumable streams](streams.md#reading-without-http), which the SDK does not
+ship in this release; `follow()` is the starting point, and the handshake
+above is where the session would be checked.
 
 ---
 

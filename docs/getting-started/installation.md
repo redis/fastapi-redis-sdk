@@ -23,8 +23,8 @@
 | Dependency          | Supported versions | Notes                   |
 |---------------------|--------------------|-------------------------|
 | Python              | >= 3.10            |                         |
-| `redis` (redis-py)  | >= 6.0             | Installed automatically |
-| `fastapi`           | >= 0.115           | Installed automatically |
+| `redis` (redis-py)  | >= 7.2             | Installed automatically |
+| `fastapi`           | >= 0.134           | Installed automatically |
 | `pydantic`          | >= 2.0             | Installed automatically |
 | Redis server        | >= 7.4             | Required at runtime     |
 

@@ -388,6 +388,24 @@ REDIS_SOCKET_TIMEOUT=5.0
 REDIS_SOCKET_CONNECT_TIMEOUT=2.0
 ```
 
+### Production with resumable streams
+
+Two of the values above do not work with `.streams()`, which refuses them at
+startup. Each live SSE reader holds a pool connection for a blocking read of
+up to `REDIS_STREAM_HEARTBEAT_INTERVAL` seconds (15 by default), so the
+socket timeout must be longer than the heartbeat, and the pool must have
+more connections than `REDIS_STREAM_MAX_READERS` (256 by default) so
+producers can still write:
+
+```bash
+# .env, in addition to the production values
+REDIS_SOCKET_TIMEOUT=30.0
+REDIS_MAX_CONNECTIONS=100
+REDIS_STREAM_MAX_READERS=64
+```
+
+See the [streams guide](streams.md#limits) for the sizing rule.
+
 ### Production with Redis Cluster
 
 ```bash

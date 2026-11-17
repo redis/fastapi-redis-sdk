@@ -43,6 +43,11 @@ from redis_fastapi.session_backend import (
 )
 from redis_fastapi.sessions import Session, session_of, session_state_of
 
+# Imported at runtime for the same reason as the session names above: FastAPI
+# resolves ``StreamBackendDep`` against this module.  No cycle: stream_backend
+# never imports deps.
+from redis_fastapi.stream_backend import StreamBackend
+
 logger = logging.getLogger(__name__)
 
 # Type alias for async clients (standalone or cluster)
@@ -74,6 +79,8 @@ class _PoolState:
     # The same idea for the session store: HSETEX support is a property of the
     # server, so it is discovered once per pool rather than on every request.
     session_capabilities: _StoreCapabilities | None = None
+    # Resumable streams keep theirs on the one StreamBackend the app holds:
+    # unlike these two backends, it is not built per request.
 
     # -- pool / cluster builders (static) -----------------------------------
 
@@ -314,6 +321,27 @@ async def get_session_state(request: Request) -> SessionState:
     return session_state_of(request)
 
 
+async def get_stream_backend(request: Request) -> StreamBackend:
+    """Return the application's one :class:`StreamBackend`.
+
+    Unlike :func:`get_cache_backend`, which builds a backend per request, this
+    returns the instance ``FastAPIRedis(app).streams()`` created: it holds the
+    tasks from ``spawn()`` and the live reader count for the whole process.
+
+    Raises:
+        StreamConfigurationError: If streams were not set up on the app.
+    """
+    backend: StreamBackend | None = getattr(request.app.state, "_redis_streams", None)
+    if backend is None:
+        from redis_fastapi.exceptions import StreamConfigurationError
+
+        raise StreamConfigurationError(
+            "Resumable streams are not set up.  Call "
+            "FastAPIRedis(app).lifespan().streams(), or add_redis_streams(app)."
+        )
+    return backend
+
+
 async def get_session(request: Request) -> Session:
     """Return the session the middleware already loaded for this request.
 
@@ -334,3 +362,4 @@ SessionStoreDep = Annotated[SessionStore, Depends(get_session_store)]
 SyncSessionStoreDep = Annotated[SyncSessionStore, Depends(get_sync_session_store)]
 SessionDep = Annotated[Session, Depends(get_session)]
 SessionStateDep = Annotated[SessionState, Depends(get_session_state)]
+StreamBackendDep = Annotated[StreamBackend, Depends(get_stream_backend)]

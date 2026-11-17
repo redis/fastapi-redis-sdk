@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Triage: an on-call agent on fastapi-redis-sdk</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◆</span>
+      <span>Triage</span>
+    </div>
+    <div class="alert-chip hidden" id="alert-chip"></div>
+    <span class="planner-chip" id="planner-chip">planner: …</span>
+    <div class="who" id="who"></div>
+  </header>
+
+  <div class="layout">
+    <main class="stage">
+      <div class="screen-head">
+        <p class="hint">Alex is on call for checkout. Play the story with the controls below, in order or in any order. Click a device to point the Redis lens at it.</p>
+      </div>
+      <div class="panes" id="panes"></div>
+      <div class="controls" id="controls" role="toolbar" aria-label="Demo controls"></div>
+      <section class="wire obs" aria-label="HTTP and SSE traffic">
+        <div class="obs-head">
+          <span class="obs-kicker">Behind the scenes</span>
+          <h2>On the wire</h2>
+          <span class="obs-meta">HTTP and SSE · newest first</span>
+        </div>
+        <div id="wire"><p class="obs-empty">No data. Requests and SSE frames appear here.</p></div>
+      </section>
+    </main>
+
+    <aside class="lens obs" aria-label="Redis lens">
+      <div class="dash-bar">
+        <span class="obs-kicker">Behind the scenes</span>
+        <span class="dash-crumb">Dashboards / <b>Redis lens</b></span>
+        <span class="dash-refresh" id="lens-refresh" title="GET /api/lens every 2 s"><span class="dash-dot"></span>2s</span>
+      </div>
+      <div class="dash-vars">
+        <span class="dash-var"><span class="dash-var-k">device</span><span class="dash-var-v" id="lens-device">laptop</span></span>
+        <span class="dash-var"><span class="dash-var-k">subject</span><span class="dash-var-v" id="lens-subject">—</span></span>
+      </div>
+      <div id="lens"><p class="obs-empty">No data. Sign in to see your keys.</p></div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

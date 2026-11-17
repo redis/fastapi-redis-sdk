@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi.cache import cache
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import expire_now, requires_redis
 
 _call_count: int = 0
 
@@ -51,7 +51,9 @@ def short_ttl_client(
 class TestTTLExpiry:
     """Scenario #2: TTL expires -> next GET is MISS."""
 
-    def test_cache_expires_after_ttl(self, short_ttl_client: TestClient) -> None:
+    def test_cache_expires_after_ttl(
+        self, short_ttl_client: TestClient, real_redis: sync_redis.Redis
+    ) -> None:
         r1 = short_ttl_client.get("/short-ttl")
         assert r1.headers["X-Redis-Cache"] == "MISS"
         val1 = r1.json()["value"]
@@ -61,8 +63,10 @@ class TestTTLExpiry:
         assert r2.headers["X-Redis-Cache"] == "HIT"
         assert r2.json()["value"] == val1
 
-        # Wait for TTL to expire
-        time.sleep(1.5)
+        # The entry carries the route's TTL; let it run out
+        (key,) = real_redis.scan_iter(match="*:cache:short-ttl")
+        assert real_redis.ttl(key) in (0, 1)
+        expire_now(real_redis, key)
 
         # Should be a MISS again
         r3 = short_ttl_client.get("/short-ttl")
@@ -116,7 +120,9 @@ def no_ttl_client(
 class TestDefaultNoExpiry:
     """Default TTL (0) means cache entries persist indefinitely."""
 
-    def test_no_ttl_entry_persists(self, no_ttl_client: TestClient) -> None:
+    def test_no_ttl_entry_persists(
+        self, no_ttl_client: TestClient, real_redis: sync_redis.Redis
+    ) -> None:
         """Entry cached with default TTL=0 does not expire."""
         r1 = no_ttl_client.get("/no-ttl")
         assert r1.headers["X-Redis-Cache"] == "MISS"
@@ -127,8 +133,9 @@ class TestDefaultNoExpiry:
         assert r2.headers["X-Redis-Cache"] == "HIT"
         assert r2.json()["value"] == val1
 
-        # Still a HIT after a delay (would have expired with a short TTL)
-        time.sleep(2)
+        # No TTL at all, so nothing can expire it
+        (key,) = real_redis.scan_iter(match="*:cache:no-ttl")
+        assert real_redis.ttl(key) == -1
         r3 = no_ttl_client.get("/no-ttl")
         assert r3.headers["X-Redis-Cache"] == "HIT"
         assert r3.json()["value"] == val1

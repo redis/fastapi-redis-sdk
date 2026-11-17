@@ -151,7 +151,10 @@ See `docs/guide/architecture.md` § Telemetry for span names and metrics.
 
 ## Testing conventions
 
-- **Unit tests** (`tests/unit/`): use `fakeredis.aioredis`, no real Redis.
+- **Unit tests** (`tests/unit/`): no real Redis. They use `fakeredis.aioredis`
+  where it supports the commands; the stream unit tests use stubs instead,
+  because fakeredis lacks `XADD ... IDMP`, `XCFGSET` and `DELEX`, and every
+  Redis behaviour of streams is proven in the integration suite.
 - **Integration tests** (`tests/integration/`): real Redis, decorated with
   `@requires_redis` (auto-skip if server unreachable).
 - `filterwarnings = ["error"]` in pytest config — all warnings are errors.

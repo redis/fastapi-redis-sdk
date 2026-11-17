@@ -7,7 +7,6 @@ that ``issued_within`` measures the server's countdown.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator
 
 import pytest
@@ -19,9 +18,14 @@ from redis_fastapi import valid_session
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep, SessionStateDep, SessionStoreDep
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import about, expire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis]
+
+
+def _session_key(redis, client: TestClient) -> str:
+    (key,) = redis.scan_iter(match=f"*session:{client.cookies.get('session')}")
+    return key
 
 
 def _reason_of(request: Request, reason: str) -> Response:
@@ -78,10 +82,12 @@ def test_a_live_session_passes(client: TestClient) -> None:
     assert response.headers["cache-control"] == "private"
 
 
-def test_the_server_s_idle_expiry_reads_as_expired(client: TestClient) -> None:
+def test_the_server_s_idle_expiry_reads_as_expired(
+    client: TestClient, real_redis
+) -> None:
     """Redis removed the payload on its own; the cookie still names it."""
     client.post("/login")
-    time.sleep(3)
+    expire_now(real_redis, _session_key(real_redis, client), "d")
     assert client.get("/gated").json() == {"reason": "expired"}
 
 
@@ -90,14 +96,16 @@ def test_the_server_s_countdown_makes_a_session_stale(
 ) -> None:
     """``issued_within`` reads the key's real TTL, not the application clock.
 
-    A long idle clock, so the wait below ages the ID without ending the
-    session.
+    A long idle clock, so aging the ID does not end the session.  The key's
+    TTL is moved 3 s on, which is all the server's countdown is.
     """
     app = _build(monkeypatch, test_prefix, idle=60, absolute=600)
     with TestClient(app) as client:
         client.post("/login")
         assert client.get("/recent").status_code == 200
-        time.sleep(2.2)
+        key = _session_key(real_redis, client)
+        assert about(real_redis.ttl(key), 600)
+        real_redis.expire(key, 600 - 3)
         stale = client.get("/recent")
         assert stale.json() == {"reason": "stale"}
         assert stale.headers["cache-control"] == "no-store"
