@@ -25,6 +25,22 @@ async def me(session: SessionDep) -> dict:
 [`SessionMiddleware`](https://starlette.dev/middleware/#sessionmiddleware) runs
 unchanged.
 
+### Keys in Redis
+
+A session is one Redis hash, and each signed-in user also has one index hash
+that lists their sessions:
+
+| Stored for (user `42`)      | Key                                                 |
+|-----------------------------|-----------------------------------------------------|
+| One session                 | `rf:s:Qm3xLk9vT2pB7wRzYhN1dAe8Uc5JfG0sXoKi4VnMb6Z`  |
+| The sessions that user owns | `rf:si:42`                                          |
+
+The session key ends in the session ID, the same opaque value the cookie
+carries. A default ID is 43 characters: 32 random bytes, URL-safe base64.
+The index key ends in the subject, which defaults to the session's
+`user_id`; an anonymous session has no index entry. Pass `key_prefix=` to
+replace `rf` for sessions alone - see [Replacing the pieces](#replacing-the-pieces).
+
 ---
 
 ## Session change

@@ -278,12 +278,22 @@ If no Sentinel knows the primary name, the first command raises
 
 ## Key Prefix
 
-All pattern data is prefixed with `redis:fastapi` by default, producing keys like `redis:fastapi:cache:...`.
+All pattern data is prefixed with `rf` by default, producing keys like `rf:c:...`.
+A short segment after the prefix names the kind of key:
+
+| Segment | Kind of key                          |
+|---------|--------------------------------------|
+| `c`     | Cache entry                          |
+| `r`     | Rate-limit counter                   |
+| `s`     | Session                              |
+| `si`    | Index of the sessions a subject owns |
+
+Every key carries the prefix and the segment, so both are short by design.
 Putting a build identifier here gives every deploy a cold cache — see [Upgrading across a stored-shape change](caching.md#upgrading-across-a-stored-shape-change).
 
 ```bash
 export REDIS_PREFIX=myapp:redis
-# keys become: myapp:redis:cache:...
+# keys become: myapp:redis:c:...
 ```
 
 Individual DI factories can override their prefix:
@@ -346,7 +356,7 @@ password = settings.password.get_secret_value()  # → "actual_password"
 | `REDIS_SENTINEL_MASTER_NAME`   | `str`       | `mymaster`      | not empty                      | Name of the primary that the Sentinels monitor                       |
 | `REDIS_SENTINEL_USERNAME`      | `str`       | -               | -                              | Sentinel username                                                    |
 | `REDIS_SENTINEL_PASSWORD`      | `SecretStr` | -               | -                              | Sentinel password (secure)                                           |
-| `REDIS_PREFIX`                 | `str`       | `redis:fastapi` | -                              | Integration-wide key prefix                                          |
+| `REDIS_PREFIX`                 | `str`       | `rf`            | -                              | Integration-wide key prefix                                          |
 | `REDIS_DEFAULT_TTL`            | `int`       | `0`             | >= 0                           | Default cache TTL in seconds (0 = no expiry)                         |
 | `REDIS_WARN_UNBOUNDED_CACHE`   | `bool`      | `true`          | -                              | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `REDIS_OTEL_ENABLED`           | `bool`      | `false`         | -                              | Enable OTel cache spans/metrics                                      |
@@ -466,7 +476,7 @@ print(f"Prefix: {settings.prefix}")
 
 # Build pattern prefix
 cache_prefix = settings.pattern_prefix("cache")
-# → "redis:fastapi:cache"
+# → "rf:c"
 ```
 
 ## OpenTelemetry

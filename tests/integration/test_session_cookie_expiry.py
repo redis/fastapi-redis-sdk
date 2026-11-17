@@ -61,7 +61,7 @@ def app(real_redis: sync_redis.Redis, test_prefix: str, monkeypatch) -> FastAPI:
 
 
 def _session_key(redis: sync_redis.Redis, session_id: str) -> str:
-    keys = list(redis.scan_iter(match=f"*session:{session_id}"))
+    keys = list(redis.scan_iter(match=f"*:s:{session_id}"))
     assert len(keys) == 1, keys
     return keys[0]
 

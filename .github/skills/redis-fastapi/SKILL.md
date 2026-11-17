@@ -215,6 +215,25 @@ slot alignment. Query params are sorted alphabetically for determinism.
 Headers are NOT part of the key — use a custom `key_builder` for
 header-dependent responses (e.g. `Accept`).
 
+### Key size
+
+Every key the SDK writes must be as short as it can be without a collision.
+Each key carries its fixed parts, so each byte in them is paid once per key.
+
+- The default prefix is `rf`. Do NOT make it longer.
+- One segment follows the prefix and names the kind of key. All segments
+  live in `KEY_SEGMENTS` in `config.py`: `c` cache, `r` rate limit,
+  `s` session, `si` session index. Build keys from that table, through
+  `settings.pattern_prefix(name)`; NEVER write a segment as a literal.
+- A new kind of key gets a new entry of one or two characters. It must
+  differ from every other entry as a whole segment.
+- A fixed marker inside a key is one character, like the `u` in
+  `...:u:{subject}` for a per-user cache entry.
+- Do NOT shorten a part the caller supplies (path, scope, identifier,
+  eviction group, session ID): two different inputs must never share a key.
+- A change to the prefix or a segment orphans every stored key. Treat it as
+  a breaking change.
+
 ### TTL behavior
 
 Fixed-window expiry. Accessing a cached entry does NOT extend its TTL.

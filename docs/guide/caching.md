@@ -148,14 +148,14 @@ mode.
 
 | Request (eviction_group=`products`) | Key |
 |---------|-----|
-| `GET /api/v1/items` | `redis:fastapi:cache:{products}:api:v1:items` |
-| `GET /items?z=2&a=1` | `redis:fastapi:cache:{products}:items:a=1&z=2` |
+| `GET /api/v1/items` | `rf:c:{products}:api:v1:items` |
+| `GET /items?z=2&a=1` | `rf:c:{products}:items:a=1&z=2` |
 
 Without an eviction group, no hash tag is added:
 
 | Request (no eviction group) | Key |
 |---------|-----|
-| `GET /api/v1/items` | `redis:fastapi:cache:api:v1:items` |
+| `GET /api/v1/items` | `rf:c:api:v1:items` |
 
 All three factories use the same `key_builder` function (defaulting to
 `default_key_builder`), which builds the key from the incoming `Request`.
@@ -220,7 +220,7 @@ releases where this applies.
     what they return, say — put a build identifier in the prefix:
 
     ```bash
-    REDIS_PREFIX=redis:fastapi:build-a3f91c
+    REDIS_PREFIX=rf:build-a3f91c
     ```
 
     Keys then move wholesale each release, old ones expire on their TTL, and

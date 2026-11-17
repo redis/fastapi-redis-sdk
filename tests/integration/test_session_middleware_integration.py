@@ -55,7 +55,7 @@ def app(real_redis: sync_redis.Redis, test_prefix: str, monkeypatch) -> FastAPI:
 
 
 def _session_keys(redis: sync_redis.Redis, prefix: str) -> list[str]:
-    return list(redis.scan_iter(match=f"{prefix}*:session:*"))
+    return list(redis.scan_iter(match=f"{prefix}*:s:*"))
 
 
 class TestSigningOutWithNoStoredSession:
@@ -97,7 +97,7 @@ class TestRotatingToAnAnonymousSession:
         assert anonymous and anonymous != signed_in, "the ID did not rotate"
         keys = _session_keys(real_redis, test_prefix)
         assert len(keys) == 1 and keys[0].endswith(anonymous), keys
-        index = real_redis.scan_iter(match=f"{test_prefix}*:sessions-of:u1")
+        index = real_redis.scan_iter(match=f"{test_prefix}*:si:u1")
         entries = [field for key in index for field in real_redis.hkeys(key)]
         assert anonymous not in entries, (
             "the anonymous session was indexed under the user who left it"

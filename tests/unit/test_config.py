@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 from redis.asyncio import SSLConnection
 
-from redis_fastapi.config import DRIVER_INFO, RedisSettings
+from redis_fastapi.config import DRIVER_INFO, KEY_SEGMENTS, RedisSettings
 
 
 @pytest.mark.unit
@@ -28,7 +28,7 @@ class TestRedisSettingsDefaults:
         assert s.socket_timeout is None
         assert s.socket_connect_timeout is None
         assert s.cluster is False
-        assert s.prefix == "redis:fastapi"
+        assert s.prefix == "rf"
         assert s.default_ttl == 0
 
 
@@ -36,12 +36,21 @@ class TestRedisSettingsDefaults:
 class TestPatternPrefix:
     def test_default_prefix(self) -> None:
         s = RedisSettings()
-        assert s.pattern_prefix("cache") == "redis:fastapi:cache"
+        assert s.pattern_prefix("cache") == "rf:c"
 
     def test_custom_prefix(self) -> None:
         s = RedisSettings(prefix="myapp")
-        assert s.pattern_prefix("cache") == "myapp:cache"
-        assert s.pattern_prefix("session") == "myapp:session"
+        assert s.pattern_prefix("cache") == "myapp:c"
+        assert s.pattern_prefix("ratelimit") == "myapp:r"
+        assert s.pattern_prefix("session") == "myapp:s"
+        assert s.pattern_prefix("session-index") == "myapp:si"
+
+    def test_unknown_pattern_is_used_as_given(self) -> None:
+        assert RedisSettings().pattern_prefix("jobs") == "rf:jobs"
+
+    def test_segments_are_distinct(self) -> None:
+        # Two kinds of key that share a segment can collide.
+        assert len(set(KEY_SEGMENTS.values())) == len(KEY_SEGMENTS)
 
 
 @pytest.mark.unit
@@ -289,7 +298,7 @@ class TestFromEnv:
             assert s.port == 6379
             assert s.cluster is False
             assert s.ssl is False
-            assert s.prefix == "redis:fastapi"
+            assert s.prefix == "rf"
             assert s.default_ttl == 0
 
     def test_url_from_env(self) -> None:

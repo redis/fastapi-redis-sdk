@@ -18,7 +18,7 @@ Run it (plain HTTP, so the cookie must not be ``Secure``)::
     curl -c jar -b jar -X POST localhost:8000/login
     curl -b jar localhost:8000/me                 # {"user_id":"alice","tax_id":"..."}
     SID=$(awk '$6 == "session" {print $7}' jar)
-    redis-cli HGET redis:fastapi:session:$SID d   # ciphertext, no "tax_id"
+    redis-cli HGET rf:s:$SID d   # ciphertext, no "tax_id"
 """
 
 from __future__ import annotations

@@ -50,6 +50,17 @@ _COOKIE_DOMAIN_RE = re.compile(r"[A-Za-z0-9.-]+")
 _CTL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+# The segment that follows the prefix in every key, one per kind of key.
+# Every key carries it, so each is as short as it can be.  A new segment must
+# differ from all of these as a whole segment, or two kinds of key can collide.
+KEY_SEGMENTS: dict[str, str] = {
+    "cache": "c",
+    "ratelimit": "r",
+    "session": "s",
+    "session-index": "si",
+}
+
+
 class RedisSettings(BaseSettings):
     """Central configuration for the FastAPI Redis integration.
 
@@ -176,7 +187,7 @@ class RedisSettings(BaseSettings):
 
     # -- Prefix ----------------------------------------------------------------
     prefix: str = Field(
-        default="redis:fastapi",
+        default="rf",
         description="Global prefix for all Redis keys",
     )
 
@@ -614,9 +625,12 @@ class RedisSettings(BaseSettings):
     def pattern_prefix(self, pattern: str) -> str:
         """Return the full prefix for a given pattern name.
 
-        Example: ``settings.pattern_prefix("cache")`` → ``"redis:fastapi:cache"``
+        A name in :data:`KEY_SEGMENTS` becomes its short segment.  Any other
+        name is used as given.
+
+        Example: ``settings.pattern_prefix("cache")`` → ``"rf:c"``
         """
-        return f"{self.prefix}:{pattern}"
+        return f"{self.prefix}:{KEY_SEGMENTS.get(pattern, pattern)}"
 
 
 @lru_cache

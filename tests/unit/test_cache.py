@@ -290,7 +290,7 @@ class TestCachePrefixOverride:
         app.dependency_overrides[get_async_redis] = _fake
         with TestClient(app) as c:
             c.get("/items")
-        assert captured[0].startswith("redis:fastapi:cache:")
+        assert captured[0].startswith("rf:c:")
 
     def test_custom_ttl_from_settings(
         self, fake_async_redis: fakeredis.aioredis.FakeRedis

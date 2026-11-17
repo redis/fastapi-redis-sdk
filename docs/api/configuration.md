@@ -37,7 +37,7 @@ Automatically reads from:
 | `sentinel_nodes`         | `list[str]`         | `[]`              | `host[:port]`; at least one in Sentinel mode | Sentinel addresses (port defaults to `26379`)                        |
 | `sentinel_username`      | `str \| None`       | `None`            | -                                            | Sentinel username                                                    |
 | `sentinel_password`      | `SecretStr \| None` | `None`            | -                                            | Sentinel password                                                    |
-| `prefix`                 | `str`               | `"redis:fastapi"` | -                                            | Key prefix                                                           |
+| `prefix`                 | `str`               | `"rf"`            | -                                            | Key prefix                                                           |
 | `default_ttl`            | `int`               | `0`               | >= 0                                         | Default cache TTL (0 = no expiry)                                    |
 | `warn_unbounded_cache`   | `bool`              | `True`            | -                                            | Warn at startup when no-TTL caching meets a server that cannot evict |
 | `otel_enabled`           | `bool`              | `False`           | -                                            | Enable OTel cache spans/metrics                                      |
@@ -78,7 +78,7 @@ Returns the full prefix for a given pattern name.
 
 ```python
 settings = get_settings()
-settings.pattern_prefix("cache")       # "redis:fastapi:cache"
+settings.pattern_prefix("cache")       # "rf:c"
 ```
 
 ## `get_settings()`

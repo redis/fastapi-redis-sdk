@@ -2,10 +2,9 @@
 
 Two keys, both hashes::
 
-    redis:fastapi:session:<sid>          key TTL = absolute
-                                         field "d" = <envelope> TTL = idle
-    redis:fastapi:sessions-of:<subject>  field <sid> = <descriptor>
-                                                                TTL = absolute
+    rf:s:<sid>       key TTL = absolute
+                     field "d" = <envelope> TTL = idle
+    rf:si:<subject>  field <sid> = <descriptor> TTL = absolute
 
 Each clock has its own TTL.  This module sets both TTLs and Redis enforces
 them: no code here reads a timestamp to decide whether a session has
@@ -33,7 +32,7 @@ from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
 from redis.exceptions import RedisClusterException, RedisError
 
-from redis_fastapi.config import get_settings
+from redis_fastapi.config import KEY_SEGMENTS, get_settings
 from redis_fastapi.exceptions import (
     SessionConfigurationError,
     SessionStoreError,
@@ -1284,20 +1283,20 @@ class RedisSessionStore(SessionStore):
         self._caps = capabilities if capabilities is not None else _StoreCapabilities()
         settings = get_settings()
         base = key_prefix if key_prefix is not None else settings.prefix
-        self._session_prefix = f"{base}:session:"
-        self._index_prefix = f"{base}:sessions-of:"
+        self._session_prefix = f"{base}:{KEY_SEGMENTS['session']}:"
+        self._index_prefix = f"{base}:{KEY_SEGMENTS['session-index']}:"
 
     # -- keys ----------------------------------------------------------------
 
     def session_key(self, session_id: str) -> str:
-        """``<prefix>:session:<sid>``."""
+        """``<prefix>:s:<sid>``."""
         return f"{self._session_prefix}{session_id}"
 
     def index_key(self, subject: str) -> str:
-        """``<prefix>:sessions-of:<subject>``.
+        """``<prefix>:si:<subject>``.
 
         A different prefix from :meth:`session_key`, not a nested one.  The two
-        strings first differ at the character after ``session``, before either
+        strings first differ at the character after ``s``, before either
         key's variable part begins, so no session ID - however exotic - can
         produce the index key.  An earlier layout nested them and rested on
         ``token_urlsafe`` never emitting a ``:``, which stopped being true the
