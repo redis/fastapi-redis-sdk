@@ -19,9 +19,14 @@ from redis_fastapi.deps import (
     get_sync_session_store,
 )
 from redis_fastapi.exceptions import SessionConfigurationError
-from redis_fastapi.session_backend import RedisSessionStore, SyncSessionStore
+from redis_fastapi.session_backend import (
+    RedisSessionStore,
+    SyncSessionStore,
+    _StoreCapabilities,
+)
 from redis_fastapi.sessions import SessionMiddleware, add_redis_sessions
 from redis_fastapi.setup import FastAPIRedis
+from tests.unit.session_stubs import install_query_engine
 
 
 @pytest.fixture(autouse=True)
@@ -151,8 +156,17 @@ class TestSyncEndpoint:
 
         Driving it through a real ``def`` endpoint is the only way to test it
         honestly - calling it directly from the main thread raises.
+
+        ``fakeredis`` has no Query Engine, so the searches run on a stub.
         """
-        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        install_query_engine(fake_async_redis)
+        store = RedisSessionStore(
+            fake_async_redis,
+            capabilities=_StoreCapabilities(supports_search=True, supports_hsetex=True),
+            idle_ttl=60,
+            absolute_ttl=600,
+            searchable={"device": "tag"},
+        )
         app = FastAPI()
         add_redis_sessions(app, store=store)
 
@@ -164,11 +178,28 @@ class TestSyncEndpoint:
         @app.post("/login")
         def login(session: SessionDep) -> dict:
             session["user_id"] = 42
+            session["device"] = "d-91"
             return {"ok": True}
 
         @app.get("/count")
         def count(store: SyncSessionStoreDep) -> dict:
             return {"n": store.count_for_subject("42")}
+
+        @app.get("/active")
+        def active(store: SyncSessionStoreDep) -> dict:
+            return {"n": len(store.list_active(60, limit=5, offset=0))}
+
+        @app.get("/find")
+        def find(store: SyncSessionStoreDep) -> dict:
+            return {
+                "found": len(store.find("device", equals="d-91", limit=5)),
+                "count": store.count("device", equals="d-91"),
+                "other": store.count("device", equals="d-92"),
+            }
+
+        @app.post("/revoke-idle")
+        def revoke_idle(older_than: int, store: SyncSessionStoreDep) -> dict:
+            return {"n": store.revoke_idle(older_than)}
 
         @app.get("/devices")
         def devices(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
@@ -203,6 +234,11 @@ class TestSyncEndpoint:
             assert client.post("/login").json() == {"ok": True}
             assert client.get("/count").json() == {"n": 1}
             assert client.get("/devices").json() == {"n": 1, "current": True}
+            assert client.get("/active").json() == {"n": 1}
+            assert client.get("/find").json() == {"found": 1, "count": 1, "other": 0}
+            assert client.post("/revoke-idle", params={"older_than": 60}).json() == {
+                "n": 0
+            }
 
             # An explicit rotate must not be followed by a second rotation
             # from the middleware, or the ID returned here is already stale.
@@ -216,7 +252,14 @@ class TestSyncEndpoint:
             assert client.post("/logout").json() == {"ok": True}
 
             client.post("/login")
-            assert client.post("/revoke-all").json()["n"] >= 1
+            assert client.post("/revoke-all").json() == {"n": 1}
+            assert client.get("/count").json() == {"n": 0}
+
+            client.post("/login")
+            assert client.post("/revoke-idle", params={"older_than": -60}).json() == {
+                "n": 1
+            }, "each session is older than a time in the future"
+            assert client.get("/active").json() == {"n": 0}
 
 
 class TestTheStoreIsInjectable:
@@ -371,18 +414,22 @@ class TestTheStoreIsInjectable:
 
 
 class TestSessionCarriesNoTransportState:
-    """``Session`` is a dict with two flags, and nothing else.
+    """``Session`` is a dict with two flags and the pending attribute TTLs.
 
     The store used to write ``sid``/``subject``/``revoked``/``rotated`` onto
     the object the application holds, which made those four a public mutable
     contract and forced ``session_backend`` to import ``sessions`` purely so it
     could mutate it.
+
+    The third slot, ``_ttls``, is what the application asked for in this
+    request with ``set(..., ttl=)`` and ``persist()``.  The store reads it
+    through ``pending_ttls()`` and never writes to the session.
     """
 
-    def test_only_the_two_flags_remain(self) -> None:
+    def test_only_the_two_flags_and_the_pending_ttls_remain(self) -> None:
         from redis_fastapi.sessions import Session
 
-        assert set(Session.__slots__) == {"accessed", "modified"}
+        assert set(Session.__slots__) == {"accessed", "modified", "_ttls"}
 
     def test_the_backend_does_not_import_the_request_half(self) -> None:
         """The layering boundary, asserted rather than assumed."""

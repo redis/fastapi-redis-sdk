@@ -352,8 +352,10 @@ def record_session_operation(*, operation: str, result: str) -> None:
             ``revoke``, ``revoke_id``, ``revoke_all``, ``list`` or ``count``.
             ``create`` and ``save`` are separate because a create is a new
             session - the sign-in rate - while a save updates an existing one.
-            ``delete`` and ``index`` are deliberately absent: both are always
-            part of one of the above and counting them would double-count it.
+            ``delete`` is deliberately absent: it is always part of one of
+            the above and counting it would double-count it.  A search by
+            attribute counts as ``list`` or ``count``, and a bulk revoke by
+            last activity as ``revoke_all``.
         result: ``hit``, ``miss``, ``expired``, ``malformed`` or ``error``.
             ``miss`` means there was nothing to do - no such session, an empty
             index, an identifier that is not this subject's.  ``expired`` and

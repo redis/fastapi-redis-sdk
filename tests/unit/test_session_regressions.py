@@ -22,12 +22,15 @@ from redis_fastapi.deps import (
     SessionStoreDep,
     get_session_store,
 )
-from redis_fastapi.exceptions import SessionStoreError
+from redis_fastapi.exceptions import SessionSearchError, SessionStoreError
 from redis_fastapi.session_backend import (
     RedisSessionStore,
     SessionStoreProtocol,
+    _StoreCapabilities,
 )
 from redis_fastapi.sessions import add_redis_sessions
+from tests.conftest import about
+from tests.unit.session_stubs import StubQueryEngine, install_query_engine
 
 
 def _cookie(response) -> SimpleCookie:
@@ -37,9 +40,20 @@ def _cookie(response) -> SimpleCookie:
 
 
 @pytest.fixture()
-def store(fake_async_redis) -> RedisSessionStore:
+def engine(fake_async_redis) -> StubQueryEngine:
+    """``fakeredis`` has no Query Engine, so the searches run on a stub."""
+    return install_query_engine(fake_async_redis)
+
+
+@pytest.fixture()
+def store(fake_async_redis, engine: StubQueryEngine) -> RedisSessionStore:
     get_settings.cache_clear()
-    return RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+    return RedisSessionStore(
+        fake_async_redis,
+        capabilities=_StoreCapabilities(supports_search=True, supports_hsetex=True),
+        idle_ttl=60,
+        absolute_ttl=600,
+    )
 
 
 def _app(store: RedisSessionStore, **kwargs) -> FastAPI:
@@ -98,6 +112,9 @@ class TestTheAbsoluteDeadlineCannotBeResurrected:
     lifetime; the window is one request long and recurs every cycle, so an
     actively used session would never die.  An expired key is an absent key,
     so the case is reproduced with ``DEL``.
+
+    The deadline is the TTL of ``s:created``.  A save never writes that
+    field, so the hash it recreates is not a session.
     """
 
     async def test_a_save_after_the_deadline_lapsed_does_not_restore_it(
@@ -105,13 +122,17 @@ class TestTheAbsoluteDeadlineCannotBeResurrected:
     ) -> None:
         sid = store.new_id()
         key = store.session_key(sid)
-        await store.create(sid, store.new_record({"user_id": 42}))
+        fields = await store.create(sid, store.new_record({"user_id": 42}))
 
         await fake_async_redis.delete(key)
-        await store.save(sid, store.new_record({"user_id": 42}))
+        await store.save(sid, store.new_record({"user_id": 43}), baseline=fields)
+        await store.save(sid, store.new_record({"user_id": 44}))
 
-        assert await fake_async_redis.ttl(key) == -1, (
+        assert await fake_async_redis.hexists(key, "s:created") == 0, (
             "the absolute deadline was recreated"
+        )
+        assert about(await fake_async_redis.ttl(key), 60), (
+            "the recreated hash must still expire: the idle timeout ends it"
         )
 
     async def test_such_a_session_is_dead_on_the_next_load(
@@ -130,46 +151,63 @@ class TestTheAbsoluteDeadlineCannotBeResurrected:
         import inspect
 
         params = set(inspect.signature(RedisSessionStore.save).parameters)
-        assert params == {"self", "session_id", "record"}
+        assert params == {
+            "self",
+            "session_id",
+            "record",
+            "baseline",
+            "subject",
+            "descriptor",
+            "ttls",
+        }
+        # The primitive under it takes the idle timeout and no other clock.
+        primitive = set(inspect.signature(RedisSessionStore._apply).parameters)
+        assert "absolute" not in primitive
+        assert "idle" in primitive
 
 
-class TestAFailedVerifyDoesNotDestroyTheIndex:
-    """N-8. One transient pipeline error used to prune every entry."""
+class TestAFailedSearchDestroysNothing:
+    """N-8. One transient error used to remove every index entry of a subject.
 
-    @pytest.fixture()
-    def flaky(self, fake_async_redis) -> RedisSessionStore:
-        class _Flaky(RedisSessionStore):
-            async def _alive(self, session_ids: list[str]) -> set[str]:
-                raise RedisConnectionError("verify pipeline failed")
-
-        return _Flaky(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+    The store kept the index by hand then, and a failed check pruned it.  The
+    Query Engine keeps the index now.  A failed search raises, and the store
+    removes nothing on the way.
+    """
 
     async def _seed(self, store: RedisSessionStore, n: int) -> list[str]:
         ids = []
         for _ in range(n):
             sid = store.new_id()
             record = store.new_record({"user_id": "42"})
-            await store.create(sid, record)
-            await store.index("42", sid, record, absolute_remaining=600)
+            await store.create(sid, record, subject="42")
             ids.append(sid)
         return ids
 
-    async def test_unknown_liveness_reports_everything_and_prunes_nothing(
-        self, flaky: RedisSessionStore, fake_async_redis
+    async def test_a_failed_listing_raises_and_removes_nothing(
+        self, store: RedisSessionStore, engine: StubQueryEngine, fake_async_redis
     ) -> None:
-        await self._seed(flaky, 3)
-        listed = await flaky.list_for_subject("42")
-        assert len(listed) == 3
-        assert len(await fake_async_redis.hgetall(flaky.index_key("42"))) == 3
+        await self._seed(store, 3)
+        engine.errors["FT.SEARCH"] = [RedisConnectionError("search failed")]
+        with pytest.raises(SessionSearchError):
+            await store.list_for_subject("42")
+        assert len(await fake_async_redis.keys("*")) == 3
+        assert len(await store.list_for_subject("42")) == 3
 
     async def test_the_sessions_stay_revocable(
-        self, flaky: RedisSessionStore, fake_async_redis
+        self, store: RedisSessionStore, engine: StubQueryEngine, fake_async_redis
     ) -> None:
         """The consequence that made this blocking, asserted end to end."""
-        await self._seed(flaky, 3)
-        await flaky.list_for_subject("42")
+        await self._seed(store, 3)
+        engine.errors["FT.SEARCH"] = [RedisConnectionError("search failed")]
+        with pytest.raises(SessionSearchError):
+            await store.list_for_subject("42")
 
-        healthy = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        healthy = RedisSessionStore(
+            fake_async_redis,
+            capabilities=_StoreCapabilities(supports_search=True),
+            idle_ttl=60,
+            absolute_ttl=600,
+        )
         assert await healthy.revoke_all("42") == 3
 
 
@@ -189,24 +227,28 @@ class TestLogout:
             assert morsel["max-age"] == "0"
             assert client.get("/me").json() == {"user_id": None}
 
-    async def test_clearing_removes_the_key_and_the_index_entry(
+    async def test_clearing_removes_the_key_and_leaves_no_other(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
+        """The subject is a field of the session hash.  No second key holds
+        an entry that could outlive the session."""
         with TestClient(_app(store)) as client:
             client.post("/login")
+            assert await store.count_for_subject("42") == 1
             client.post("/logout-clear")
-        assert await fake_async_redis.keys(f"{store._session_prefix}*") == []
-        assert await fake_async_redis.hgetall(store.index_key("42")) == {}
+        assert await fake_async_redis.keys("*") == []
+        assert await store.count_for_subject("42") == 0
 
-    async def test_revoke_removes_the_index_entry(
+    async def test_revoke_removes_the_session_from_the_count(
         self, store: RedisSessionStore, fake_async_redis
     ) -> None:
         """Otherwise ``count_for_subject`` over-counts until the deadline and a
         concurrent-session cap refuses a legitimate login."""
         with TestClient(_app(store)) as client:
             client.post("/login")
+            assert await store.count_for_subject("42") == 1
             client.post("/logout-revoke")
-        assert await fake_async_redis.hgetall(store.index_key("42")) == {}
+        assert await fake_async_redis.keys("*") == []
         assert await store.count_for_subject("42") == 0
 
     def test_the_clearing_cookie_goes_through_the_builder(
@@ -302,17 +344,49 @@ class TestDescriptor:
         assert loaded is not None
         assert loaded.record.data == {"user_id": 42}
 
+    async def test_it_is_stored_in_its_own_field(
+        self, store: RedisSessionStore, fake_async_redis
+    ) -> None:
+        app = _app(store, descriptor_of=lambda request, session: {"ua": "pytest"})
+        with TestClient(app) as client:
+            client.post("/login")
+            key = store.session_key(client.cookies["session"])
+        assert await fake_async_redis.hget(key, "s:desc") == b'{"ua": "pytest"}'
 
-class TestRevokeAllCostAndCount:
-    async def test_it_counts_keys_removed_not_index_entries(
+    async def test_a_changed_descriptor_reaches_the_listing(
         self, store: RedisSessionStore
     ) -> None:
+        """The store calls the seam on each save, and writes a new value."""
+        agent = {"ua": "first"}
+        app = _app(store, descriptor_of=lambda request, session: dict(agent))
+
+        @app.post("/write")
+        async def write(session: SessionDep) -> dict:
+            session["n"] = session.get("n", 0) + 1
+            return {}
+
+        with TestClient(app) as client:
+            client.post("/login")
+            agent["ua"] = "second"
+            client.post("/write")
+        info = (await store.list_for_subject("42"))[0]
+        assert info.descriptor == {"ua": "second"}
+
+
+class TestRevokeAllCostAndCount:
+    async def test_it_counts_keys_removed_not_keys_matched(
+        self, store: RedisSessionStore, engine: StubQueryEngine
+    ) -> None:
+        from redis.commands.search.result import Result
+
         live = store.new_id()
         record = store.new_record({"user_id": "7"})
-        await store.create(live, record)
-        await store.index("7", live, record, absolute_remaining=600)
-        # An entry whose session has already died.
-        await store.index("7", store.new_id(), record, absolute_remaining=600)
+        await store.create(live, record, subject="7")
+        # The index can name a session that has already died.
+        dead = store.new_id()
+        engine.replies.append(
+            Result([2, store.session_key(live), store.session_key(dead)], False)
+        )
 
         assert await store.revoke_all("7") == 1
 
@@ -323,39 +397,35 @@ class TestRevokeAllCostAndCount:
         for _ in range(5):
             sid = store.new_id()
             record = store.new_record({"user_id": "9"})
-            await store.create(sid, record)
-            await store.index("9", sid, record, absolute_remaining=600)
+            await store.create(sid, record, subject="9")
+        await store.ensure_indexes()
 
-        trips = 0
-        original_members = store._index_members
+        trips: list[str] = []
+        original_query = store._query
         original_many = store._delete_many
-        original_clear = store._index_clear
 
-        async def c1(subject):
-            nonlocal trips
-            trips += 1
-            return await original_members(subject)
+        async def c1(flt, query):
+            trips.append("search")
+            return await original_query(flt, query)
 
         async def c2(ids):
-            nonlocal trips
-            trips += 1
+            trips.append("delete")
             return await original_many(ids)
 
-        async def c3(subject):
-            nonlocal trips
-            trips += 1
-            return await original_clear(subject)
-
-        store._index_members = c1  # type: ignore[method-assign]
+        store._query = c1  # type: ignore[method-assign]
         store._delete_many = c2  # type: ignore[method-assign]
-        store._index_clear = c3  # type: ignore[method-assign]
 
         assert await store.revoke_all("9") == 5
-        assert trips == 3, "read the index, delete the keys, drop the index"
+        assert trips == ["search", "delete", "search"], (
+            "find the keys, delete them, and find that none is left"
+        )
 
 
 class TestCountDoesNotFailOpen:
-    async def test_an_uncountable_index_raises(self, fake_async_redis) -> None:
+    @pytest.mark.parametrize("limit", [None, 2])
+    async def test_an_uncountable_index_raises(
+        self, store: RedisSessionStore, engine: StubQueryEngine, limit
+    ) -> None:
         """The one read that must **not** fail open.
 
         Section 7's argument for an empty session is that the application's
@@ -363,44 +433,34 @@ class TestCountDoesNotFailOpen:
         and ``0`` is the permissive one - a concurrent-session cap would wave
         every login through exactly when Redis is unhealthy.
         """
+        for _ in range(2):
+            await store.create(
+                store.new_id(), store.new_record({"user_id": "42"}), subject="42"
+            )
+        engine.errors["FT.SEARCH"] = [RedisConnectionError("down")]
+        with pytest.raises(SessionStoreError, match="Could not search sessions"):
+            await store.count_for_subject("42", limit=limit)
 
-        class _Broken(RedisSessionStore):
-            async def _index_size(self, subject: str) -> int:
-                raise RedisConnectionError("down")
+    async def test_a_count_that_timed_out_raises(
+        self, store: RedisSessionStore, engine: StubQueryEngine
+    ) -> None:
+        from redis.exceptions import ResponseError
 
-        store = _Broken(fake_async_redis)
-        with pytest.raises(SessionStoreError, match="Could not count sessions"):
+        engine.errors["FT.SEARCH"] = [ResponseError("Timeout limit was reached")]
+        with pytest.raises(SessionStoreError, match="timed out"):
             await store.count_for_subject("42")
 
-    async def test_an_unreadable_index_at_the_limit_raises(
-        self, fake_async_redis
-    ) -> None:
-        """The members read only happens at the limit, and it must raise too."""
-
-        class _Broken(RedisSessionStore):
-            async def _index_members(self, subject: str) -> dict[str, bytes | str]:
-                raise RedisConnectionError("down")
-
-        store = _Broken(fake_async_redis, idle_ttl=60, absolute_ttl=600)
-        record = store.new_record({"user_id": "42"})
-        for _ in range(2):
-            await store.index("42", store.new_id(), record, absolute_remaining=600)
-        with pytest.raises(SessionStoreError, match="Could not count sessions"):
-            await store.count_for_subject("42", limit=2)
-
-    async def test_an_unverifiable_count_at_the_limit_raises(
-        self, fake_async_redis
-    ) -> None:
-        class _Flaky(RedisSessionStore):
-            async def _alive(self, session_ids: list[str]) -> set[str]:
-                raise RedisConnectionError("verify failed")
-
-        store = _Flaky(fake_async_redis, idle_ttl=60, absolute_ttl=600)
-        record = store.new_record({"user_id": "42"})
-        for _ in range(2):
-            await store.index("42", store.new_id(), record, absolute_remaining=600)
-        with pytest.raises(SessionStoreError, match="refusing to answer"):
-            await store.count_for_subject("42", limit=2)
+    async def test_a_count_with_no_query_engine_raises(self, fake_async_redis) -> None:
+        """Not ``0``: a cap on concurrent sessions must not read "no index"
+        as "no session"."""
+        store = RedisSessionStore(
+            fake_async_redis, capabilities=_StoreCapabilities(supports_search=False)
+        )
+        await store.create(
+            store.new_id(), store.new_record({"user_id": "42"}), subject="42"
+        )
+        with pytest.raises(SessionStoreError, match="no Query Engine"):
+            await store.count_for_subject("42")
 
 
 class TestClusterErrorsAreHandled:
@@ -423,7 +483,7 @@ class TestClusterErrorsAreHandled:
         from redis.exceptions import SlotNotCoveredError
 
         class _Resharding(RedisSessionStore):
-            async def _read(self, session_id: str, *, refresh_idle: int | None):
+            async def _read(self, session_id, *, refresh_idle, seen):
                 raise SlotNotCoveredError('Slot "42" is not covered')
 
         store = _Resharding(fake_async_redis)
@@ -435,12 +495,26 @@ class TestClusterErrorsAreHandled:
         from redis.exceptions import SlotNotCoveredError
 
         class _Resharding(RedisSessionStore):
-            async def _write(self, session_id, payload, *, idle, absolute):
+            async def _create(self, session_id, fields, **kwargs):
+                raise SlotNotCoveredError('Slot "42" is not covered')
+
+            async def _apply(self, session_id, to_set, to_delete, **kwargs):
                 raise SlotNotCoveredError('Slot "42" is not covered')
 
         store = _Resharding(fake_async_redis)
         with pytest.raises(SessionStoreError):
             await store.create("a" * 30, store.new_record({}))
+        with pytest.raises(SessionStoreError):
+            await store.save("a" * 30, store.new_record({}))
+
+    async def test_a_slot_error_on_a_search_raises_session_store_error(
+        self, store: RedisSessionStore, engine: StubQueryEngine
+    ) -> None:
+        from redis.exceptions import SlotNotCoveredError
+
+        engine.errors["FT.SEARCH"] = [SlotNotCoveredError('Slot "42" is not covered')]
+        with pytest.raises(SessionStoreError):
+            await store.list_for_subject("42")
 
 
 class TestTheProtocolExists:
@@ -493,10 +567,10 @@ class TestCookieAttributesAreValidated:
 
 
 class TestEncryptionSeam:
-    async def test_a_supplied_encryptor_wraps_the_payload(
+    async def test_a_supplied_encryptor_encrypts_each_value(
         self, fake_async_redis
     ) -> None:
-        """F-15. Encryption wraps serialization; the coder never sees ciphertext."""
+        """F-15. Each attribute value is encrypted.  The field name is not."""
 
         class Rot13:
             def encrypt(self, data: bytes) -> bytes:
@@ -509,14 +583,15 @@ class TestEncryptionSeam:
             fake_async_redis, encryptor=Rot13(), idle_ttl=60, absolute_ttl=600
         )
         sid = store.new_id()
-        await store.create(sid, store.new_record({"user_id": 42}))
+        await store.create(sid, store.new_record({"user_id": "alice"}))
 
-        stored = await fake_async_redis.hget(store.session_key(sid), "d")
-        assert b"user_id" not in stored, "the payload reached Redis in the clear"
+        stored = await fake_async_redis.hget(store.session_key(sid), "a:user_id")
+        assert stored is not None
+        assert b"alice" not in stored, "the value reached Redis in the clear"
 
         loaded = await store.load(sid)
         assert loaded is not None
-        assert loaded.record.data == {"user_id": 42}
+        assert loaded.record.data == {"user_id": "alice"}
 
     @pytest.mark.parametrize("decode_responses", [False, True])
     async def test_ciphertext_with_high_bytes_round_trips(
@@ -699,8 +774,6 @@ class TestRefreshOnLoadFalseThroughTheMiddleware:
     async def test_the_middleware_advances_the_idle_clock(
         self, fake_async_redis, monkeypatch
     ) -> None:
-        from redis_fastapi.session_backend import FIELD_DATA
-
         get_settings.cache_clear()
         monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
         monkeypatch.setenv("REDIS_SESSION_REFRESH_ON_LOAD", "false")
@@ -711,21 +784,15 @@ class TestRefreshOnLoadFalseThroughTheMiddleware:
             client.post("/login")
             sid = client.cookies["session"]
             key = store.session_key(sid)
-            await fake_async_redis.execute_command(
-                "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
-            )
+            await fake_async_redis.expire(key, 5)
             client.get("/me")
-            reply = await fake_async_redis.execute_command(
-                "HTTL", key, "FIELDS", 1, FIELD_DATA
-            )
-        assert int(reply[0]) > 5, "the idle clock never advanced"
+            ttl = await fake_async_redis.ttl(key)
+        assert about(ttl, 60), "the idle clock never advanced"
         get_settings.cache_clear()
 
     async def test_an_untouched_request_does_not_advance_it(
         self, fake_async_redis, monkeypatch
     ) -> None:
-        from redis_fastapi.session_backend import FIELD_DATA
-
         get_settings.cache_clear()
         monkeypatch.setenv("REDIS_SESSION_COOKIE_HTTPS_ONLY", "false")
         monkeypatch.setenv("REDIS_SESSION_REFRESH_ON_LOAD", "false")
@@ -741,14 +808,10 @@ class TestRefreshOnLoadFalseThroughTheMiddleware:
         with TestClient(app) as client:
             client.post("/login")
             key = store.session_key(client.cookies["session"])
-            await fake_async_redis.execute_command(
-                "HEXPIRE", key, 5, "FIELDS", 1, FIELD_DATA
-            )
+            await fake_async_redis.expire(key, 5)
             client.get("/untouched")
-            reply = await fake_async_redis.execute_command(
-                "HTTL", key, "FIELDS", 1, FIELD_DATA
-            )
-        assert int(reply[0]) <= 5, (
+            ttl = await fake_async_redis.ttl(key)
+        assert about(ttl, 5), (
             "a request that never used the session counted as activity"
         )
         get_settings.cache_clear()

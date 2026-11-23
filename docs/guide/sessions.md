@@ -1,7 +1,7 @@
 # Sessions
 
 The SDK also provides server-side sessions for FastAPI. The cookie carries an 
-opaque identifier and nothing else; the record lives in Redis, where the server
+opaque identifier and nothing else; the session lives in Redis, where the server
 enforces both of its deadlines.
 
 ```python
@@ -27,19 +27,64 @@ unchanged.
 
 ### Keys in Redis
 
-A session is one Redis hash, and each signed-in user also has one index hash
-that lists their sessions:
+A session is one Redis hash. The SDK writes no other key for it:
 
-| Stored for (user `42`)      | Key                                                 |
-|-----------------------------|-----------------------------------------------------|
-| One session                 | `rf:s:Qm3xLk9vT2pB7wRzYhN1dAe8Uc5JfG0sXoKi4VnMb6Z`  |
-| The sessions that user owns | `rf:si:42`                                          |
+| Stored for  | Key                                                 |
+|-------------|-----------------------------------------------------|
+| One session | `rf:s:Qm3xLk9vT2pB7wRzYhN1dAe8Uc5JfG0sXoKi4VnMb6Z`  |
 
 The session key ends in the session ID, the same opaque value the cookie
 carries. A default ID is 43 characters: 32 random bytes, URL-safe base64.
-The index key ends in the subject, which defaults to the session's
-`user_id`; an anonymous session has no index entry. Pass `key_prefix=` to
-replace `rf` for sessions alone - see [Replacing the pieces](#replacing-the-pieces).
+Pass `key_prefix=` to replace `rf` for sessions alone - see
+[Replacing the pieces](#replacing-the-pieces).
+
+### Fields in the hash
+
+The hash holds system fields, which start with `s:`, and one `a:` field for
+each value in the session:
+
+| Field       | Holds                                                                        |
+|-------------|------------------------------------------------------------------------------|
+| `s:created` | When the session was created, in Unix seconds. Its TTL is the absolute clock |
+| `s:seen`    | The last access, in Unix seconds                                             |
+| `s:sub`     | The subject, by default the session's `user_id`. Absent for an anonymous session |
+| `s:desc`    | The [descriptor](#the-descriptor). Absent without `descriptor_of`            |
+| `a:<path>`  | One leaf value of the session, such as `42` or `"Sofia"`. Never the whole session |
+
+The store splits a nested value into one field for each leaf. The field name
+is the path to the leaf:
+
+```python
+session["user_id"] = 42
+session["user"] = {"address": {"city": "Sofia"}}
+session["bikes"] = ["road", "gravel"]
+```
+
+```
+a:user_id             42
+a:user.address.city   "Sofia"
+a:bikes[0]            "road"
+a:bikes[1]            "gravel"
+s:sub                 "42"
+s:created             1767225600.0
+s:seen                1767225660.0
+```
+
+- There is no field that holds the entire session.
+- Each field holds one value, written as JSON text: a number as `42`, a
+  string as `"Sofia"` with its quotes, `true`, `false`, or `null`. So `7` and
+  `"7"` are stored differently and each comes back as it went in. A value
+  with no JSON form fails the save with `SessionStoreError`.
+- With an `Encryptor`, each `a:` field holds its value encrypted, not as
+  readable JSON text. See
+  [Encrypting the session at rest](#encrypting-the-session-at-rest).
+- A tuple comes back as a list. A dict key that is not a string comes back as
+  a string, as in JSON.
+- An empty list or an empty dict is one field: `a:tags` holds `[]`.
+- In a dict key, the store writes `%`, `.`, `[` and `]` as `%25`, `%2E`, `%5B`
+  and `%5D`, and reverses this on the load.
+- A save writes only the fields that changed.
+- System fields never appear in `request.session`.
 
 ---
 
@@ -51,7 +96,7 @@ It saves, rotates or deletes the session after the endpoint returns, just before
 it sends the response headers. While your endpoint runs:
 
 - Reads in the same request see your writes.
-- Redis still holds the old record, and `store.session_id(state)` returns the
+- Redis still holds the old session, and `store.session_id(state)` returns the
   old ID, or `None` for a new visitor.
 - A response with status 400 or more that changes the principal saves nothing.
   A sign-in followed by `raise HTTPException(403)` does not sign the user in.
@@ -138,16 +183,26 @@ request and the two results are compared by value - and it must return a
 | `session_idle_ttl`     | 30 min  | Time since the last request carrying the cookie             |
 | `session_absolute_ttl` | 8 h     | Time since the session was created, however active the user |
 
-The idle clock is the [expiration](https://redis.io/docs/latest/commands/hexpire/)
-of the hash field that holds the payload, and the absolute clock is the
-[expiration](https://redis.io/docs/latest/commands/expire/) of the session key
-itself. The library sets each TTL, and **Redis enforces both**: no code in this
-library reads a timestamp to decide whether a session has expired. The key's
-TTL is set once, when the session is created; the field's TTL is reset on
-every request that carries the cookie. At the absolute deadline Redis deletes
-the whole key, however recently the payload was refreshed. Writing the payload
-never touches the key's expiration, so no number of writes can extend the
-absolute deadline.
+The idle clock is the [TTL](https://redis.io/docs/latest/commands/expire/) of
+the session key. Each load restarts it, and so does each write. The absolute
+clock is the [TTL](https://redis.io/docs/latest/commands/hexpire/) of the field
+`s:created`. The store writes that field once, when it creates the session,
+and never again, so no number of writes can extend the absolute deadline.
+
+The library sets each TTL, and **Redis enforces both**: no code in this
+library reads a timestamp to decide whether a session has expired. At the
+absolute deadline Redis removes `s:created`. A hash without `s:created` is not
+a session: the next load returns no session and deletes the key.
+
+A rotation creates a new session key, so it starts a new absolute clock. A
+rotation follows a sign-in or a privilege change, and the deadline runs from
+that moment.
+
+!!! warning "An upgrade signs every user out once"
+    Version 0.10.x of the SDK introduced a breaking change on the way sessions
+    are  stored. Older versions do not store an `s:created` field, so the
+    session does not load: the first request after the upgrade could get an empty
+    session, and the user would need to sign in again.
 
 The absolute clock is the one that matters against a stolen session. An
 [idle timeout](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#idle-timeout)
@@ -172,6 +227,75 @@ session, and the next request with it gets an empty session.
 
 ---
 
+## Attribute TTL
+
+One attribute of a session can expire before the session does. Pass `ttl`, in
+seconds, to `set()`:
+
+```python
+from fastapi import Request
+
+@app.post("/settings")
+async def save_settings(request: Request) -> dict:
+    request.session.set("flash", "Settings saved.", ttl=60)
+    return {"ok": True}
+```
+
+After 60 seconds Redis removes the attribute, and the next request does not
+see it. `SessionDep` is the same object, so `session.set(...)` works too.
+
+```python
+session.set("flash", "Settings saved.", ttl=60)   # TTL of 60 seconds
+session.set("flash", "Profile saved.")            # no TTL
+session["flash"] = "Profile saved."               # no TTL
+session.persist("flash")                          # remove the TTL, keep the value
+```
+
+The rules:
+
+- **The TTL starts at the save**, at the end of the request, not at the call.
+- **The TTL does not slide.** A read does not extend it, and neither does a
+  request.
+- **A changed value loses the TTL.** A write of a different value without
+  `ttl` removes the TTL. The store does not carry it over. To change the value
+  and keep the expiry, pass the time left as `ttl`; the application must keep
+  the deadline itself to know it.
+- **An equal value keeps the TTL.** A write of the value the session already
+  holds changes nothing in Redis, so the TTL stays. A write of an equal value
+  with `ttl` starts the TTL again.
+- **`persist(name)` removes the TTL and keeps the value.** It does nothing for
+  an attribute that is absent or has no TTL.
+- **The last call for a name decides.** `set()` with `ttl` and then
+  `session[name] = ...` in one request leaves no TTL.
+- **A rotation keeps the time left** for an attribute that the request did
+  not change. Redis reports the time left in whole seconds and rounds up, so
+  a rotation can move the expiry later by up to one second. An attribute
+  whose value changed in the same request loses its TTL, as in any save.
+- **`ttl` must be a positive `int`.** Any other value raises `ValueError` at
+  the call.
+- **A searchable attribute cannot have a TTL.** The save raises
+  `SessionConfigurationError` and writes nothing. See
+  [Searchable attributes](#searchable-attributes).
+
+!!! warning "A nested attribute can expire in parts"
+    The TTL is set on each field of the attribute, and a nested attribute has
+    one field for each leaf. A change to one leaf without `ttl` removes the
+    TTL from that field only:
+
+    ```python
+    session.set("draft", {"title": "Hello", "body": "..."}, ttl=600)
+    # a later request
+    session["draft"] = {**session["draft"], "title": "Hi"}
+    ```
+
+    Now `draft.title` has no TTL and `draft.body` expires on time, which
+    leaves `{"title": "Hi"}`. The store does not keep the fields of one
+    attribute in step. The application is responsible for the consistency of
+    an attribute that has a TTL: write it with `ttl` each time, or keep such
+    an attribute flat.
+
+---
+
 ## Signing out
 
 ```python
@@ -183,42 +307,325 @@ async def logout(state: SessionStateDep, store: SessionStoreDep) -> dict:
     return {"ok": True}
 
 @app.post("/logout-everywhere")
-async def logout_all(session: SessionDep, store: SessionStoreDep) -> dict:
-    return {"ended": await store.revoke_all(str(session["user_id"]))}
+async def logout_all(state: SessionStateDep, store: SessionStoreDep) -> dict:
+    if state.subject is None:              # an anonymous session
+        return {"ended": 0}
+    return {"ended": await store.revoke_all(state.subject)}
 
 @app.get("/devices")
-async def devices(
-    session: SessionDep, state: SessionStateDep, store: SessionStoreDep
-) -> list[dict]:
+async def devices(state: SessionStateDep, store: SessionStoreDep) -> list[dict]:
+    if state.subject is None:
+        return []
     current = store.session_id(state)
     return [
         {"id": info.session_id, "this_device": info.session_id == current,
          "last_seen": info.last_access}
-        for info in await store.list_for_subject(str(session["user_id"]))
+        for info in await store.list_for_subject(state.subject)
     ]
 ```
 
 `SessionDep` is the data - a `dict` you read and write. `SessionStateDep` is
-the handle: the identifier, the subject and the timestamps. Operations that
+the handle: the identifier, the subject and the creation time. Operations that
 act on the *session* rather than its contents take the handle.
+
+Take the subject from `state.subject`, not from the session's data. It is
+the value the session is stored under: what `subject_of` returned when the
+session was loaded, or the first principal key by default. A handler that
+builds it by hand, such as `str(session["user_id"])`, asks about the wrong
+subject as soon as the application sets its own `subject_of`.
+`state.subject` is `None` for an anonymous session.
 
 Simply emptying the session signs the user out too, and is often all you need:
 
 ```python
 @app.post("/logout")
 async def logout(session: SessionDep) -> dict:
-    session.clear()          # key deleted, index entry dropped, cookie cleared
+    session.clear()          # key deleted, cookie cleared
     return {"ok": True}
 ```
 
-`revoke_id` requires the subject and refuses an ID that is not indexed under it,
-so a handler taking an ID from a request cannot end a stranger's session.
+`revoke_id` requires the subject and refuses an ID whose session belongs to
+another subject, so a handler taking an ID from a request cannot end a
+stranger's session. It reads the subject from the session's own hash.
 
-A listing is **verified before it is returned**. The index that answers "which
-sessions has this user got?" is an upper bound: entries expire on the absolute
-clock while most sessions die of idleness long before, so an entry routinely
-outlives the session it names. Reporting one would show a user a device they
-are not signed in on and a sign-out button that does nothing.
+`revoke_all` and `list_for_subject` are searches. They need the Redis Query
+Engine - see [Searching sessions](#searching-sessions).
+
+### The descriptor
+
+A device listing needs something to show for each session: an IP address, a
+user agent, a device name. Supply it with `descriptor_of`:
+
+```python
+FastAPIRedis(app).lifespan().sessions(
+    descriptor_of=lambda req, s: {"ip": req.client.host,
+                                  "agent": req.headers.get("user-agent")},
+)
+```
+
+The store keeps the result in the session hash, in the field `s:desc`. It is
+not part of `request.session`. Each list method returns it as
+`SessionInfo.descriptor`. The middleware calls `descriptor_of` at each save,
+and the store writes the field only when the value changed.
+
+The descriptor is stored as plaintext, with or without an `Encryptor`. Do not
+put sensitive data in it.
+
+---
+
+## Searching sessions
+
+The store can find sessions by subject, by last access, and by an attribute
+that you declare. Each search reads an index that the
+[Redis Query Engine](https://redis.io/docs/latest/develop/ai/search-and-query/)
+keeps over the session hashes.
+
+!!! warning "Search needs the Query Engine"
+    The Query Engine is part of Redis 8.0 and later. An earlier server has it
+    only as an added module, as in Redis Stack. On Redis 7.4 without the Query
+    Engine, `list_for_subject`, `count_for_subject` and `revoke_all` do not
+    work, and neither does any other search method: each raises
+    `SessionSearchUnavailableError`.
+
+    The store logs one warning when it finds no Query Engine. Loading,
+    saving, rotating, `revoke` and `revoke_id` work on every supported server.
+
+### Built-in searches
+
+These need no setup. They read an index that holds system fields only, so no
+value your application writes can hide a session from them.
+
+| Method                                         | Returns                                                                          |
+|------------------------------------------------|----------------------------------------------------------------------------------|
+| `list_for_subject(subject)`                    | The sessions of one subject, newest access first. At most 1,000                  |
+| `count_for_subject(subject)`                   | How many sessions one subject has                                                |
+| `revoke_all(subject)`                          | Ends every session of one subject. Returns how many it ended                     |
+| `list_active(within, *, limit=100, offset=0)`  | One page of the sessions used in the last `within` seconds, newest access first  |
+| `revoke_idle(older_than)`                      | Ends every session not used for `older_than` seconds. Returns how many it ended  |
+
+`list_for_subject` returns at most 1,000 sessions. For a subject with more,
+`count_for_subject` gives the full number.
+
+`count_for_subject` is the check for a cap on concurrent sessions:
+
+```python
+from fastapi import HTTPException
+
+MAX_SESSIONS = 5
+
+@app.post("/login")
+async def login(session: SessionDep, store: SessionStoreDep) -> dict:
+    user_id = 42
+    if await store.count_for_subject(str(user_id)) >= MAX_SESSIONS:
+        raise HTTPException(409, "Too many sessions")
+    session["user_id"] = user_id
+    return {"ok": True}
+```
+
+This is the one place that builds the subject by hand. The user is not signed
+in yet, so the session has no subject to read from `state.subject`. The value
+must be the one `subject_of` will return for this user: `str(user_id)` with
+the default, or whatever your own `subject_of` gives.
+
+It never returns a number it could not establish. When the count fails it
+raises, because `0` would let every sign-in through.
+
+The idle timeout already ends an unused session. `revoke_idle` is for a cutoff
+shorter than that:
+
+```python
+ended = await store.revoke_idle(15 * 60)       # not used for 15 minutes
+recent = await store.list_active(5 * 60)       # used in the last 5 minutes
+```
+
+An anonymous session has no subject, so no search by subject finds it.
+`list_active` and `revoke_idle` cover every session.
+
+### Searchable attributes
+
+To search by an attribute of your own, declare it at setup. `searchable` maps
+the path of a leaf to a type:
+
+```python
+FastAPIRedis(app).lifespan().sessions(
+    searchable={
+        "device_id": "tag",
+        "country": "tag",
+        "size": "numeric",
+        "name": "text",
+        "location": "geo",
+    },
+)
+```
+
+A path names a leaf as the [hash](#fields-in-the-hash) does: `cart.total` is
+`session["cart"]["total"]`.
+
+| Type      | The attribute must hold                  | Filter                               | Matches                                         |
+|-----------|------------------------------------------|--------------------------------------|-------------------------------------------------|
+| `tag`     | `str` or `bool`                          | `equals=value`                       | The exact value. Case matters                   |
+| `numeric` | `int` or `float`, not `bool`             | `between=(low, high)`                | Both limits included. `None` leaves a side open |
+| `text`    | `str`                                    | `text="..."`                         | Words, in [Redis query syntax](#text-search)    |
+| `geo`     | `[lon, lat]`, two numbers                | `near=(lon, lat, radius_in_meters)`  | Points within the radius                        |
+
+`store.find` returns one page of sessions, newest access first, and
+`store.count` returns how many match:
+
+```python
+await store.find("device_id", equals="d-91")
+await store.find("size", between=(100_000, None))
+await store.find("name", text="petrova")
+await store.find("location", near=(23.32, 42.69, 5000))   # lon, lat, meters
+await store.count("device_id", equals="d-91")
+```
+
+Each call takes one attribute and one filter. The store has no query over two
+attributes.
+
+The store checks each declared attribute at the save:
+
+- A declared attribute can be absent from a session.
+- A value of another type, `None` included, raises
+  `SessionAttributeTypeError`. The store writes nothing, and the request fails.
+- A declared attribute cannot have a [TTL](#attribute-ttl).
+- `searchable` cannot be combined with an `Encryptor`. Setup raises
+  `SessionConfigurationError`.
+
+A session written before you declared an attribute is not checked until its
+next save. If it holds a value the index cannot read, `find` and `count` miss
+it. The built-in searches still find it.
+
+!!! note "Changing the declaration"
+    The store names the index after the declaration. A changed declaration
+    creates a new index at startup and drops the old one. Redis fills the new
+    index in the background, and until it finishes `find` and `count` see
+    only a part of the sessions. Deploy a changed declaration to every worker
+    at once: workers with different declarations drop each other's index.
+
+#### Recipes
+
+**A device ID.** Find the sessions of one device, and end them:
+
+```python
+session["device_id"] = "d-91"                      # at sign-in
+
+for info in await store.find("device_id", equals="d-91"):
+    await store.delete(info.session_id)
+```
+
+**A session size.** The store does not measure a session. Compute the size in
+the application and store it as a number:
+
+```python
+import json
+
+session["cart"] = cart
+session["size"] = len(json.dumps(session.raw()))   # characters of JSON
+
+large = await store.count("size", between=(100_000, None))
+```
+
+**A country code.** A `tag` matches the exact value, so store one form:
+
+```python
+session["country"] = "BG"
+
+await store.count("country", equals="BG")
+```
+
+**A location.** Store the point as `[lon, lat]`, longitude first:
+
+```python
+session["location"] = [23.32, 42.69]
+
+nearby = await store.find("location", near=(23.32, 42.69, 5000))
+```
+
+**A display name.** A `text` attribute matches words, not the whole value:
+
+```python
+session["name"] = "Ana Petrova"
+
+await store.find("name", text="petrova")
+```
+
+### Text search
+
+**The text of a `text` filter is Redis query syntax.** The store sends it to
+Redis unchanged. It does not escape, split or limit it.
+
+| Text              | Matches                                                     |
+|-------------------|-------------------------------------------------------------|
+| `petrova`         | The word                                                    |
+| `ana petrova`     | Both words                                                  |
+| `pet*`            | A word that starts with `pet`                               |
+| `%petrva%`        | A word within one edit of `petrva`                          |
+| <code>petrova&#124;picard</code> | Either word                                           |
+| `-petrova`        | Every session without the word                              |
+| `jean-luc`        | `jean` and not `luc`. To find "Jean-Luc", send `jean luc`   |
+
+The full syntax is in the
+[Redis query syntax reference](https://redis.io/docs/latest/develop/ai/search-and-query/advanced-concepts/query_syntax/).
+
+!!! warning "Sanitize text that comes from an end user"
+    Text from an end user can change the meaning of the query. An operator
+    such as `-`, `|`, `*` or `%` changes which sessions match. Text that
+    closes the parenthesis can add a condition on another attribute. The
+    application must sanitize the input and limit it to what its use case
+    needs.
+
+This sanitizer keeps letters, digits and spaces, and nothing else:
+
+```python
+def plain_words(text: str, max_length: int = 64) -> str:
+    kept = "".join(ch if ch.isalnum() else " " for ch in text[:max_length])
+    return " ".join(kept.split())
+
+@app.get("/admin/sessions")
+async def by_name(q: str, store: SessionStoreDep) -> list[str]:
+    words = plain_words(q)                 # "Jean-Luc" becomes "Jean Luc"
+    if not words:
+        return []
+    found = await store.find("name", text=words, limit=20)
+    return [info.session_id for info in found]
+```
+
+Text that Redis rejects for its syntax raises `ValueError`. Empty text is one
+such case.
+
+The `equals`, `between` and `near` filters are not query syntax. The store
+builds them from typed values, so they need no sanitizer. `between` and `near`
+accept finite numbers only.
+
+### Pages and counts
+
+| Method                           | Rows                                                             |
+|----------------------------------|------------------------------------------------------------------|
+| `list_for_subject`               | At most 1,000. Does not accept a custom `limit`                  |
+| `list_active`, `find`            | One page: `limit` (default 100) and `offset` (default 0)         |
+| `count_for_subject`, `count`     | None. The query sorts nothing                                    |
+| `revoke_all`, `revoke_idle`      | None. The store ends the matches in batches of 1,000             |
+
+- `offset + limit` can be at most 10,000. A larger page raises `ValueError`,
+  and so does a `limit` below 1 or an `offset` below 0. There is no cursor.
+- **A sorted page costs about as much as sorting all the matches.** A page
+  deep in a large result is expensive.
+- **"How many" is a count.** Call `count_for_subject` or `count`. Do not take
+  the length of a list: a list stops at its limit, and it costs more.
+
+### What a search result proves
+
+A search result does not prove that a session is valid. Use it to list and to
+count. Before you act on one session as if it were live, load it:
+
+```python
+loaded = await store.load(info.session_id, refresh=False)
+if loaded is None:
+    ...   # the session has ended
+```
+
+[Versions and limits](#versions-and-limits) lists the cases where a search and
+a load can differ.
 
 ---
 
@@ -234,7 +641,7 @@ async def checkout(session: SessionDep) -> dict: ...
 
 `valid_session()` rejects a request that did not arrive with a session this
 application created in an earlier response. A value a client makes up finds no
-record in Redis, so it fails, whatever its shape.
+session in Redis, so it fails, whatever its shape.
 
 It checks nothing else. It does not ask who the session belongs to: an
 anonymous session that holds a basket passes. Identity and roles stay with your
@@ -261,7 +668,7 @@ async def basket(session: SessionDep) -> dict: ...
 |-----------------|---------------------------------------------------------------------------------------------------------------------------------------------|
 | `"missing"`     | No usable session: no cookie, a malformed one, or a session that an earlier dependency revoked or emptied                                   |
 | `"expired"`     | A well-formed cookie that names no live session: expired, revoked on another device, evicted or forged. The server cannot tell these apart. |
-| `"unavailable"` | Redis could not be read, or the record could not be decoded, and the request continued without a session. Answer `503`, not a sign-in page. |
+| `"unavailable"` | Redis could not be read, or the session could not be decoded, and the request continued without a session. Answer `503`, not a sign-in page. |
 
 `on_reject` may be sync or async. It **returns** the response instead of
 raising it, so a callback that forgets to return fails with a `500` instead of
@@ -332,8 +739,8 @@ async def confirm(
 last N seconds? A session gets a new ID when it is created, when the principal
 changes - a sign-in, a role change - and when you call `store.rotate()` or
 `store.reauthenticate()`. Reads and writes keep the ID. The age comes from the
-session key's TTL in Redis, so a container with a wrong clock cannot make an old
-session look recent.
+time left on the absolute clock in Redis, so a container with a wrong clock
+cannot make an old session look recent.
 
 This is the building block for a step-up before a sensitive action, as
 [OWASP ASVS V7.5](https://github.com/OWASP/ASVS) asks: your route checks the
@@ -389,17 +796,67 @@ deployment that prefers a
 [503](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503)
 to an anonymous page. Writes raise either way.
 
-A record that cannot be decoded - corrupted, or encrypted with another key - is
-handled like a failed read. The record is kept, so fixing a wrong key brings
+A session that cannot be decoded - corrupted, or encrypted with another key - is
+handled like a failed read. The session is kept, so fixing a wrong key brings
 the sessions back. Signing out still works: `store.revoke()` or emptying the
-session deletes the record and clears the cookie.
+session deletes the key and clears the cookie.
+
+A search does not fail open. Each search method raises - see [Errors](#errors).
 
 !!! warning "With `session_fail_closed=True`, users cannot sign out of an unreadable session"
     The request fails before your handler runs, so a sign-out route fails too.
-    Every request that carries the cookie fails until the record reaches its
-    absolute deadline, or the user deletes the cookie. One corrupted record
+    Every request that carries the cookie fails until the session reaches a
+    deadline, or the user deletes the cookie. One corrupted session
     locks out one user; a wrong encryption key locks out everyone. To recover,
-    fix the key, or delete the affected records in Redis.
+    fix the key, or delete the affected keys in Redis.
+
+---
+
+## Errors
+
+```
+SessionError
+├── SessionConfigurationError
+├── SessionAttributeTypeError            also a TypeError
+└── SessionStoreError
+    └── SessionSearchError
+        ├── SessionSearchUnavailableError
+        └── SessionSearchTimeoutError
+```
+
+| Error                           | Raised when                                                                                                                              |
+|---------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|
+| `SessionConfigurationError`     | A setting is invalid, or `searchable` is combined with an `Encryptor`. Also at the save, when a searchable attribute was given a TTL     |
+| `SessionAttributeTypeError`     | At the save, when a searchable attribute holds a value of another type. The store writes nothing                                         |
+| `SessionStoreError`             | A write failed, or a read failed with `session_fail_closed=True`                                                                         |
+| `SessionSearchUnavailableError` | A search method runs on a server without the Query Engine                                                                                |
+| `SessionSearchTimeoutError`     | The server reported a timeout for a search                                                                                               |
+| `SessionSearchError`            | A search failed for another reason, such as an index that could not be created                                                           |
+| `ValueError`                    | A call is wrong: a `ttl` that is not a positive `int`, a name that is not searchable, a filter of the wrong type, invalid search text, or a page out of range |
+
+`except SessionStoreError` also catches the search errors. `except
+SessionError` catches every row but `ValueError`.
+
+The save runs after your endpoint returns, so an error at the save cannot be
+caught in the endpoint. The client gets a 500.
+
+### Search timeouts
+
+The store raises `SessionSearchTimeoutError` and returns no partial result. A
+bulk revoke that ends a part of the matches and reports success would be a
+security defect. After a timeout in `revoke_all` or `revoke_idle`, the
+sessions found before the timeout are ended; call the method again.
+
+The store can raise only when the server tells it about the timeout. By
+default Redis returns a partial result instead
+([`search-on-timeout return`](https://redis.io/docs/latest/develop/ai/search-and-query/administration/configuration/)),
+and only a RESP3 connection tells the store that the result is partial. The
+store logs one warning at startup when it reads such a policy. Set the policy
+to `fail`:
+
+```
+CONFIG SET search-on-timeout fail
+```
 
 ---
 
@@ -695,7 +1152,7 @@ The session is the natural place to keep the token - this is OWASP's
 
 ```python
 import secrets
-from fastapi import HTTPException
+from fastapi import Form, HTTPException    # Form needs python-multipart
 
 @app.post("/login")
 async def login(session: SessionDep) -> dict:
@@ -727,7 +1184,7 @@ A runnable version is in [`examples/sessions/csrf.py`](https://github.com/redis/
 
 ---
 
-## Encrypting the payload at rest
+## Encrypting the session at rest
 
 Anyone with [`redis-cli`](https://redis.io/docs/latest/develop/tools/cli/)
 access can read a session. That is usually acceptable - the guidance is to keep
@@ -752,10 +1209,35 @@ class AesGcmEncryptor:
         return self._aes.decrypt(data[:12], data[12:], None)
 ```
 
-Encryption **wraps** serialization, never the reverse: the coder turns your
-value into text, and only then does the encryptor see it. A coder is never
-handed ciphertext. The store keeps the ciphertext as base64, so it reads back
-the same whichever way the Redis client decodes responses.
+The store encrypts the value of each attribute on its own. The layout does not
+change: a session is still one hash with one field for each leaf. The store
+keeps each encrypted value as Base64.
+
+What an `Encryptor` hides, and what it does not:
+
+- **It hides each value.**
+- **It does not hide the names of the attributes, their number, or the length
+  of each value.** Field names stay in plaintext.
+- **Do not put sensitive data in an attribute name or in a dict key.** A dict
+  key becomes part of a field name: `session["invites"] = {"ana": True}`
+  writes the field `a:invites.ana`.
+- **The system fields are plaintext**: the subject, the two timestamps and the
+  [descriptor](#the-descriptor). Do not put anything sensitive in what
+  `descriptor_of` returns.
+
+Three more things to know:
+
+- **`searchable` cannot be combined with an `Encryptor`.** Redis cannot search
+  an encrypted value, so setup raises `SessionConfigurationError`. The
+  [built-in searches](#built-in-searches) work, because they read system
+  fields only.
+- **An encrypted session uses more memory.** Encryption makes each value
+  longer. With the AES-GCM class above, a value of more than about 20
+  characters is stored as more than 64 bytes, and one such value moves the
+  session to Redis's larger hash form. See
+  [Versions and limits](#versions-and-limits).
+- **The `coder` option is not used for sessions.** Each value is JSON text,
+  with or without an `Encryptor`. `coder` is still accepted, and has no effect.
 
 A runnable version is in [`examples/sessions/encryption.py`](https://github.com/redis/fastapi-redis-sdk/blob/main/examples/sessions/encryption.py).
 
@@ -766,22 +1248,21 @@ in your codebase is a smaller liability for everyone than a cryptographic
 primitive maintained here - and it means a key rotation is your decision, on
 your schedule.
 
-Two things to know before you turn it on. A record that will not decrypt is
+One thing to know before you turn it on. A session that will not decrypt is
 handled like a failed read and kept, not deleted: rotating a key without a
 re-encryption pass signs everybody out, and restoring the old key brings them
 back. By default that happens quietly, with a warning in the log; set
 `session_fail_closed=True` to make it fail every request instead, sign-outs
-included (see [When Redis is unreachable](#when-redis-is-unreachable)). And the index
-descriptor is **not** encrypted - it holds only what your
-`descriptor_of` returns, so do not put anything sensitive there.
+included (see [When Redis is unreachable](#when-redis-is-unreachable)).
 
 ---
 
 ## Migrating from something else
 
 Sessions do not survive the switch, by decision: existing cookies reference
-records this store cannot read, so every user signs in again once. Deploy
-accordingly.
+sessions this store cannot read, so every user signs in again once. Deploy
+accordingly. The same holds for an upgrade from a release with the earlier
+session layout - see [Session clocks](#session-clocks).
 
 ### From Starlette's `SessionMiddleware`
 
@@ -797,7 +1278,7 @@ FastAPIRedis(app).lifespan().sessions()
 | Their behaviour                        | Here                                           |
 |----------------------------------------|------------------------------------------------|
 | `request.session["user_id"] = 42`      | unchanged - and it now rotates the ID          |
-| `request.session.clear()`              | unchanged - and it now deletes the record too  |
+| `request.session.clear()`              | unchanged - and it now deletes the session too |
 | payload capped at ~4 KB by the cookie  | no cap; the cookie carries an ID               |
 | data signed but readable by the client | never leaves the server                        |
 | `max_age`                              | `session_idle_ttl` plus `session_absolute_ttl` |
@@ -819,7 +1300,7 @@ a `load_session` call. The table maps those to this package.
 | both behaviours at once          | not expressible for them; set both settings here                                                    |
 | `load_session(request)`          | nothing - the load is automatic and eager                                                           |
 | `regenerate_session_id(request)` | delete the call; writing the identity rotates                                                       |
-| `get_session_metadata(request)`  | `created` and `last_access` from `store.list_for_subject()`; `lifetime` is `store.absolute_seconds` |
+| `get_session_metadata(request)`  | `created` from `SessionStateDep`; `last_access` from `store.list_for_subject()`, which needs the Query Engine; `lifetime` is `store.absolute_seconds` |
 | `RedisStore(...)`                | `FastAPIRedis(app).lifespan().sessions()`                                                           |
 
 Their `lifetime` accepts a `timedelta`; so does this store's constructor.
@@ -854,10 +1335,46 @@ signed out mid-task with nothing in any log to explain it. Use `volatile-ttl` or
 
 This is the single most likely production incident with this feature.
 
-A large tenant's index key is a single key that every login and logout writes,
-which makes it a candidate hot spot.
-[`HOTKEYS START METRICS 2 CPU NET SAMPLE 100`](https://redis.io/docs/latest/commands/hotkeys-start/)
-finds it; the `subject_of` seam is what shards it.
+**Set `search-on-timeout fail` if you search sessions.** With the default
+policy a search that times out can return a partial result - see
+[Search timeouts](#search-timeouts).
+
+---
+
+## Versions and limits
+
+| Server                                                | What works                                                                                   |
+|-------------------------------------------------------|----------------------------------------------------------------------------------------------|
+| Redis 7.4, no Query Engine                            | Sessions, both clocks, attribute TTL, `revoke`, `revoke_id`. No search method                |
+| Redis 7.4 with the Query Engine, such as Redis Stack  | The same, plus search. The last access shows the last save                                   |
+| Redis 8.0 and later                                   | Everything                                                                                   |
+
+**Before Redis 8, a search can return a session that has ended.** Each query
+leaves out a session whose `s:created` has expired. Before Redis 8 a query can
+still match an expired field, so a search can return a session past its
+absolute deadline. The index can also hold a session that has expired.
+
+**A search result does not prove that a session is valid**, on any version.
+Load the session before you act on it as live - see
+[What a search result proves](#what-a-search-result-proves).
+
+**On Redis 8.0 to 8.8, each request re-indexes the session.** A load records
+the last access in `s:seen`, and `s:seen` is an indexed field. Redis updates
+the index entries of the session on each request that carries the cookie.
+
+**With the Query Engine but without `HSETEX`, the last access shows the last
+save.** `HSETEX` arrived in Redis 8.0. On an earlier server a load does not
+write `s:seen`; only a save does. `SessionInfo.last_access`, the order of each
+list, `list_active` and `revoke_idle` then go by the last save.
+`revoke_idle` ends a session that was read, but not written, since the cutoff.
+
+**A long value costs memory.** Redis keeps a small hash in a compact form.
+A value or a field name longer than 64 bytes moves the whole hash to the
+larger form
+([`hash-max-listpack-value`](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/memory-optimization/)).
+A long string does this, and so does a deep path, and so does an encrypted
+value of more than about 20 characters. A hash with more than 512 fields
+(`hash-max-listpack-entries`) does it too.
 
 ---
 
@@ -867,10 +1384,14 @@ finds it; the `subject_of` seam is what shards it.
 from redis_fastapi import SyncSessionStoreDep
 
 @app.post("/logout")
-def logout(session: SessionDep, store: SyncSessionStoreDep) -> dict:
-    store.revoke(session)
+def logout(state: SessionStateDep, store: SyncSessionStoreDep) -> dict:
+    store.revoke(state)
     return {"ok": True}
 ```
+
+`SyncSessionStoreDep` has the methods a handler calls: `rotate`,
+`reauthenticate`, `revoke`, `revoke_id`, `revoke_all`, `list_for_subject`,
+`count_for_subject`, `list_active`, `revoke_idle`, `find` and `count`.
 
 ---
 
@@ -880,21 +1401,25 @@ Every seam is a keyword argument to `.sessions()`:
 
 ```python
 FastAPIRedis(app).lifespan().sessions(
-    coder=pydantic_model_coder(MySession),   # serialization
     encryptor=AesGcmEncryptor(key),          # encryption at rest
     id_factory=my_id_factory,                # identifier generation (validated)
     key_prefix="myapp",                      # key namespace
     idle_ttl=timedelta(minutes=15),          # idle clock
     absolute_ttl=timedelta(hours=8),         # absolute clock
-    # what a device listing shows for the session (stored unencrypted)
+    # what a device listing shows for the session (stored as plaintext)
     descriptor_of=lambda req, s: {"ip": req.client.host},
     principal_keys=["user_id", "role"],      # what rotates the ID
-    subject_of=lambda s: s.get("tenant_id"), # what the index is keyed on
+    subject_of=lambda s: s.get("tenant_id"), # the subject a search by subject uses
+    # searchable={"device_id": "tag"},       # attributes store.find() can search;
+    #                                        # not together with an encryptor
     cookie_builder=my_cookie_builder,        # Set-Cookie rendering
     # requests that get no session and make no Redis calls
     skip=lambda req: req.url.path.startswith("/health"),
 )
 ```
+
+`coder` is still accepted, and is not used for sessions: each value is stored
+as JSON text.
 
 To supply the store object yourself - one you built and configured, or a test
 double - pass `store` or `store_factory`:
@@ -909,8 +1434,18 @@ In tests,
 reaches the middleware as well as your handlers, so one override covers the whole request:
 
 ```python
-app.dependency_overrides[get_session_store] = lambda request: fake_store
+from fastapi import Request
+
+def use_fake_store(request: Request) -> SessionStore:
+    return fake_store
+
+app.dependency_overrides[get_session_store] = use_fake_store
 ```
+
+Annotate the parameter as `Request`. FastAPI reads the signature of an
+override, and takes a parameter with no annotation, as in
+`lambda request: fake_store`, for a query parameter. Each handler that uses
+`SessionStoreDep` would then answer `422`.
 
 ---
 
@@ -929,7 +1464,7 @@ Every setting is an environment variable prefixed `REDIS_`, so
 | `session_absolute_ttl`      | `28800`       | `0` disables the absolute clock                                                                                                            |
 | `session_gc_ttl`            | `2592000`     | Backstop so Redis can always collect an abandoned key                                                                                      |
 | `session_refresh_on_load`   | `True`        | `False`: only a request that *used* the session counts as activity                                                                         |
-| `session_fail_closed`       | `False`       | Read behaviour when Redis is down or a record is unreadable                                                                                |
+| `session_fail_closed`       | `False`       | Read behaviour when Redis is down or a session is unreadable                                                                               |
 | `session_always_save`       | `False`       | Escape route for nested mutation. Writes on every request that **read** the session; an empty session is exempt                            |
 | `session_principal_keys`    | `["user_id"]` | What a change to rotates the ID. Comma-separated in the environment: `REDIS_SESSION_PRINCIPAL_KEYS=user_id,role`                           |
 
@@ -955,4 +1490,7 @@ The standards and specifications this design follows:
   - why `maxmemory-policy` decides whether sessions survive
 - [Redis key expiration](https://redis.io/docs/latest/commands/expire/) and
   [hash field expiration](https://redis.io/docs/latest/commands/hexpire/)
-  - the mechanisms the two clocks are built on
+  - the mechanisms the two clocks and the attribute TTL are built on
+- [Redis Query Engine](https://redis.io/docs/latest/develop/ai/search-and-query/)
+  and its [query syntax](https://redis.io/docs/latest/develop/ai/search-and-query/advanced-concepts/query_syntax/)
+  - what the session searches run on

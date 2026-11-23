@@ -81,6 +81,64 @@ def about(actual: int, expected: int) -> bool:
     return expected - 1 <= actual <= expected
 
 
+# How long to wait for a 1 ms TTL to pass.  Long enough for a loaded CI
+# runner, short enough that a hundred calls cost a second.
+_EXPIRY_WAIT = 0.01
+
+
+def _expiry_command(key: str, fields: tuple[str, ...]) -> tuple[object, ...]:
+    if fields:
+        return ("HPEXPIRE", key, 1, "FIELDS", len(fields), *fields)
+    return ("PEXPIRE", key, 1)
+
+
+def expire_now(client: object, key: str, *fields: str) -> None:
+    """End the TTL of *key*, or of *fields* of the hash at *key*, right away.
+
+    A test that needs to see what happens after an expiry asserts the TTL the
+    SDK set, then calls this.  It never sleeps for the TTL itself.
+    """
+    import time
+
+    client.execute_command(*_expiry_command(key, fields))  # type: ignore[attr-defined]
+    time.sleep(_EXPIRY_WAIT)
+
+
+async def aexpire_now(client: object, key: str, *fields: str) -> None:
+    """:func:`expire_now` for an async client."""
+    import asyncio
+
+    await client.execute_command(*_expiry_command(key, fields))  # type: ignore[attr-defined]
+    await asyncio.sleep(_EXPIRY_WAIT)
+
+
+def has_query_engine(client: sync_redis.Redis) -> bool:
+    """Whether the server behind *client* can run ``FT.SEARCH``."""
+    try:
+        reply = client.execute_command("COMMAND", "INFO", "FT.SEARCH")
+    except Exception:
+        return False
+    if isinstance(reply, dict):
+        return any(value is not None for value in reply.values())
+    return bool(reply) and reply[0] is not None
+
+
+def _query_engine_available() -> bool:
+    if not _is_redis_available():
+        return False
+    client = sync_redis.Redis.from_url(REDIS_URL)
+    try:
+        return has_query_engine(client)
+    finally:
+        client.close()
+
+
+requires_query_engine = pytest.mark.skipif(
+    not _query_engine_available(),
+    reason="Redis with the Query Engine not reachable",
+)
+
+
 # ---------------------------------------------------------------------------
 # Real Redis fixtures (integration)
 # ---------------------------------------------------------------------------

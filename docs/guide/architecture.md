@@ -316,11 +316,10 @@ flood your logs.
 ### Binary belongs somewhere else
 
 `cache()` refuses binary **by choice, not by necessity**. An entry is a JSON
-envelope with a text `body`, and base64 could carry arbitrary bytes through it
-— an earlier version of this library did exactly that. So no claim below rests
-on the format being unable to hold the bytes. The reasons are about HTTP
-semantics and about where binary belongs, and they hold whatever your storage
-costs:
+envelope with a text `body`, and base64 could carry arbitrary bytes through it.
+So no claim below rests on the format being unable to hold the bytes. The
+reasons are about HTTP semantics and about where binary belongs, and they hold
+whatever your storage costs:
 
 - **A CDN serves those bytes closer to the user, and serves them correctly.**
   It answers from a node near the caller and implements `Range` and
@@ -595,8 +594,8 @@ sequenceDiagram
     participant R as Redis
 
     C->>M: request with session cookie
-    M->>R: load record, restart idle clock
-    R-->>M: payload
+    M->>R: load session hash, restart idle clock
+    R-->>M: fields
     M->>M: take principal snapshot
     M->>E: call endpoint
 
@@ -612,9 +611,9 @@ sequenceDiagram
     else Principal changed, status 400 or more
         Note over M,R: nothing is saved
     else Data changed only
-        M->>R: save record
+        M->>R: save changed fields
     else Session emptied
-        M->>R: delete key and index entry
+        M->>R: delete key
     end
     M-->>C: headers with Set-Cookie, then body
     Note over C,E: Background tasks run here, after the save

@@ -272,9 +272,9 @@ class TestSigningOutARecordThatDidNotLoad:
     async def _corrupt(app: FastAPI, client: TestClient, fake_async_redis) -> str:
         client.post("/login")
         key = app.state._store.session_key(client.cookies["session"])
-        await fake_async_redis.execute_command(
-            "HSETEX", key, "KEEPTTL", "FIELDS", 1, "d", "{not json"
-        )
+        # One attribute field that is not JSON text makes the whole record
+        # unreadable. The deadline on ``s:created`` is left alone.
+        await fake_async_redis.hset(key, "a:user_id", "{not json")
         return key
 
     async def test_a_read_keeps_the_record_and_the_cookie(

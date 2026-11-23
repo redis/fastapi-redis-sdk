@@ -48,7 +48,8 @@ get OpenTelemetry instrumentation out of the box. Install with
   identifiers, and `X-RateLimit-*` / `Retry-After` headers.
 - [**Sessions**](guide/sessions.md) - server-side sessions stored in Redis:
   automatic ID rotation on sign-in, idle and absolute timeouts enforced by
-  Redis, sign-out everywhere, and `request.session` compatibility.
+  Redis, attribute TTL, session search, sign-out everywhere, and
+  `request.session` compatibility.
 - [**Observability**](guide/observability.md) - OpenTelemetry spans and metrics
   for cache and rate-limit operations, and how to enable each layer.
 - [**Configuration**](guide/configuration.md) - Pydantic-Settings configuration

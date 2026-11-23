@@ -41,6 +41,35 @@ class SessionStoreError(SessionError):
     """
 
 
+class SessionAttributeTypeError(SessionError, TypeError):
+    """A save holds a searchable attribute with a value of another type.
+
+    Raised before anything is written.  The Query Engine removes a whole
+    session from an index when one indexed field has a value it cannot read,
+    and the write that caused it succeeds, so the store refuses the value.
+    """
+
+
+class SessionSearchError(SessionStoreError):
+    """A search over sessions could not give a complete answer."""
+
+
+class SessionSearchUnavailableError(SessionSearchError):
+    """The server has no Query Engine, so no session index exists.
+
+    Loading, saving, rotating and revoking a session by its ID still work.
+    Each method that reads an index raises this.
+    """
+
+
+class SessionSearchTimeoutError(SessionSearchError):
+    """The server reported a timeout for a search.
+
+    Raised in place of a partial result: a bulk revoke that acts on part of
+    the matches and reports success is a security defect.
+    """
+
+
 class SessionRejected(Exception):
     """Carries the rejection response out of ``valid_session()``.
 

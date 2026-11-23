@@ -7,8 +7,12 @@ the record was alive. ``Max-Age`` now follows the absolute clock,
 which never slides, and Redis alone enforces the idle clock.
 
 ``TestClient`` keeps cookies in an ``http.cookiejar`` jar, which drops a cookie
-once its ``Max-Age`` has passed on the real clock - as a browser does. So these
-tests use short TTLs and real sleeps rather than a controlled clock.
+once its ``Max-Age`` has passed on the real clock - as a browser does. So the
+two tests that watch the cookie use a short idle clock and real sleeps. No
+test sleeps for a TTL in Redis: the test of the idle expiry forces it.
+
+The idle clock is the TTL of the session key. The absolute clock is the TTL
+of the field ``s:created``.
 """
 
 import time
@@ -20,9 +24,9 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
-from redis_fastapi.session_backend import FIELD_DATA
+from redis_fastapi.session_layout import FIELD_CREATED
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import about, expire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis]
 
@@ -104,8 +108,9 @@ def test_a_reading_user_stays_signed_in(
             response = client.get("/read")
             assert response.json() == {"user_id": 42}
             assert "set-cookie" not in response.headers
-            # The load reset the idle clock in Redis.
-            assert _httl(real_redis, key, FIELD_DATA) >= IDLE - 1
+            # The load reset the idle clock in Redis, and no other clock.
+            assert about(real_redis.ttl(key), IDLE)
+            assert ABSOLUTE - 10 <= _httl(real_redis, key, FIELD_CREATED) < ABSOLUTE
 
         # Last request was 4 s after sign-in; wait 3 s more. The user has been
         # idle for 3 s, inside the 6 s window, but 7 s have passed since the
@@ -113,8 +118,8 @@ def test_a_reading_user_stays_signed_in(
         time.sleep(3)
 
         # The record is alive in Redis ...
-        assert _httl(real_redis, key, FIELD_DATA) > 0
-        assert real_redis.ttl(key) > 0
+        assert 0 < real_redis.ttl(key) <= IDLE - 2
+        assert _httl(real_redis, key, FIELD_CREATED) > 0
 
         response = client.get("/read")
         sent_cookie = response.request.headers.get("cookie")
@@ -156,21 +161,65 @@ def test_an_idle_user_is_signed_out_although_the_cookie_lives(
 ) -> None:
     """The cookie now outlives the idle clock, so Redis must enforce it.
 
-    After ``IDLE`` seconds with no request the client still holds the cookie
-    and sends it, but the record's idle field has expired - and with it the
-    key, which held nothing else. The session is empty.
+    When the idle TTL of the key ends, the client still holds the cookie and
+    sends it, but the key is gone. The session is empty.
     """
     with TestClient(app) as client:
         session_id = _sign_in(client)
         key = _session_key(real_redis, session_id)
+        assert about(real_redis.ttl(key), IDLE)
 
-        time.sleep(IDLE + 1)
-        assert _httl(real_redis, key, FIELD_DATA) == -2
+        expire_now(real_redis, key)
+        assert real_redis.exists(key) == 0
 
         response = client.get("/read")
         assert response.request.headers.get("cookie") == f"session={session_id}"
         assert response.json() == {"user_id": None}
         assert real_redis.exists(key) == 0
+
+
+def test_a_user_past_the_deadline_is_signed_out_although_the_key_lives(
+    app: FastAPI, real_redis: sync_redis.Redis
+) -> None:
+    """The absolute clock, with the idle clock still running.
+
+    At the deadline only ``s:created`` expires. The key and the cookie are
+    both there, so the load must end the session: an empty session for the
+    request, and no key after it.
+    """
+    with TestClient(app) as client:
+        session_id = _sign_in(client)
+        key = _session_key(real_redis, session_id)
+        assert about(_httl(real_redis, key, FIELD_CREATED), ABSOLUTE)
+
+        expire_now(real_redis, key, FIELD_CREATED)
+        assert real_redis.hget(key, "a:user_id") == "42"
+
+        response = client.get("/read")
+        assert response.request.headers.get("cookie") == f"session={session_id}"
+        assert response.json() == {"user_id": None}
+        assert real_redis.exists(key) == 0
+
+
+def test_a_write_sends_the_time_left_to_the_deadline(
+    app: FastAPI, real_redis: sync_redis.Redis
+) -> None:
+    """``Max-Age`` is the ``HTTL`` of ``s:created``, the server's own number.
+
+    The test moves the deadline in Redis. A ``Max-Age`` that this process
+    computed from the settings would not follow it.
+    """
+    with TestClient(app) as client:
+        session_id = _sign_in(client)
+        key = _session_key(real_redis, session_id)
+        real_redis.hexpire(key, 100, FIELD_CREATED)
+
+        response = client.post("/write")
+
+        assert about(_max_age(response), 100)
+        assert about(_httl(real_redis, key, FIELD_CREATED), 100), (
+            "the write moved the deadline"
+        )
 
 
 def _override_app(monkeypatch, prefix: str, settings: tuple[int, int], **overrides):

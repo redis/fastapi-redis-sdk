@@ -9,7 +9,6 @@ of the gate.
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 
 import pytest
@@ -29,9 +28,11 @@ from redis_fastapi.deps import (
     get_async_redis,
 )
 from redis_fastapi.exceptions import SessionConfigurationError
-from redis_fastapi.session_backend import FIELD_DATA, RedisSessionStore, SessionState
+from redis_fastapi.session_backend import RedisSessionStore, SessionState
+from redis_fastapi.session_layout import FIELD_CREATED
 from redis_fastapi.sessions import add_redis_sessions
 from redis_fastapi.setup import FastAPIRedis
+from tests.conftest import aexpire_now
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +106,9 @@ def _cookie(sid: str) -> dict[str, str]:
 class _FailingStore(RedisSessionStore):
     """A store whose every read fails, as an unreachable server does."""
 
-    async def _read(self, session_id: str, *, refresh_idle: int | None) -> Any:
+    async def _read(
+        self, session_id: str, *, refresh_idle: int | None, seen: float | None
+    ) -> Any:
         raise RedisConnectionError("Redis is down")
 
 
@@ -165,10 +168,9 @@ class TestReasons:
             sid = client.cookies["session"]
             key = store.session_key(sid)
             if ending == "idle":
-                asyncio.run(fake_async_redis.hdel(key, FIELD_DATA))
+                asyncio.run(aexpire_now(fake_async_redis, key))
             elif ending == "absolute":
-                asyncio.run(fake_async_redis.pexpire(key, 1))
-                time.sleep(0.01)
+                asyncio.run(aexpire_now(fake_async_redis, key, FIELD_CREATED))
             else:
                 asyncio.run(store.delete(sid))
             response = client.get("/gated")
@@ -485,9 +487,9 @@ class TestHeaders:
         saved: list[str] = []
         original = store.save
 
-        async def spy(session_id: str, record: Any) -> None:
+        async def spy(session_id: str, record: Any, **kwargs: Any) -> dict[str, str]:
             saved.append(session_id)
-            await original(session_id, record)
+            return await original(session_id, record, **kwargs)
 
         monkeypatch.setattr(store, "save", spy)
         with TestClient(_app(store)) as client:
@@ -703,8 +705,13 @@ def _recent(limit: int = 60) -> Any:
 
 
 async def _age_key(redis: Any, key: str, age: int, absolute: int = 600) -> None:
-    """Make the session look *age* seconds old: that much gone from its TTL."""
-    await redis.expire(key, absolute - age)
+    """Make the session look *age* seconds old.
+
+    The absolute clock is the TTL of ``s:created``, so take that much from it.
+    """
+    await redis.execute_command(
+        "HEXPIRE", key, absolute - age, "FIELDS", 1, FIELD_CREATED
+    )
 
 
 class TestIssuedWithin:

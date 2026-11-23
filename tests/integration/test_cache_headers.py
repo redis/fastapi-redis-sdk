@@ -26,7 +26,7 @@ from starlette.responses import Response
 
 from redis_fastapi.cache import MAX_CACHEABLE_HEADER_SIZE, cache
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import REDIS_URL, requires_redis
 
 LAST_MODIFIED = "Wed, 10 Sep 2026 12:00:00 GMT"
 
@@ -428,7 +428,7 @@ async def test_backend_delete_group_still_clears_decorator_entries(
         assert client.get("/grouped").headers["X-Redis-Cache"] == "HIT"
         assert len(flushed.keys("*")) == 1
 
-        aclient = aioredis.Redis()
+        aclient = aioredis.Redis.from_url(REDIS_URL)
         try:
             removed = await CacheBackend(aclient, eviction_group="items").delete_group()
         finally:

@@ -58,6 +58,7 @@ KEY_SEGMENTS: dict[str, str] = {
     "ratelimit": "r",
     "session": "s",
     "session-index": "si",
+    "session-attr-index": "sa",
 }
 
 

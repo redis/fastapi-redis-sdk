@@ -92,6 +92,35 @@ async def _probe_rate_limit_capabilities(ps: _PoolState) -> None:
         )
 
 
+async def _ensure_session_indexes(app: Any, ps: _PoolState) -> None:
+    """Create the session indexes once, at pool init.
+
+    Best-effort by design, like :func:`_probe_rate_limit_capabilities`.  A
+    Redis that is unreachable at boot must not stop the app from starting, so
+    every failure here is swallowed: the store creates a missing index on the
+    first search instead.
+
+    Runs only when sessions are wired with the built-in store.  A ``store`` or
+    ``store_factory`` supplied by the application owns its own indexes.
+    """
+    from redis_fastapi.session_backend import RedisSessionStore, _StoreCapabilities
+
+    options = getattr(app.state, "_redis_session_options", None)
+    if options is None or options.store is not None or options.store_factory:
+        return
+    if ps.session_capabilities is None:
+        ps.session_capabilities = _StoreCapabilities()
+    try:
+        store = RedisSessionStore(
+            ps.get_async_client(),
+            capabilities=ps.session_capabilities,
+            **options.kwargs,
+        )
+        await store.ensure_indexes()
+    except Exception:
+        logger.debug("Session index setup skipped", exc_info=True)
+
+
 # Only the ``allkeys-*`` policies can reclaim a key that carries no TTL.
 # ``noeviction`` (the Redis OSS default) and the ``volatile-*`` family (the
 # default on ElastiCache, Azure Cache for Redis, and Memorystore) leave such
@@ -212,6 +241,8 @@ async def redis_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if getattr(app.state, "_redis_caching", False):
         await _check_cache_eviction_safety(ps)
+
+    await _ensure_session_indexes(app, ps)
 
     try:
         yield

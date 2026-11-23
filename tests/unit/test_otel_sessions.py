@@ -24,8 +24,17 @@ from opentelemetry.sdk.trace.export import (
 
 import redis_fastapi.telemetry as tel
 from redis_fastapi.config import get_settings
-from redis_fastapi.exceptions import SessionStoreError
-from redis_fastapi.session_backend import RedisSessionStore, SessionState
+from redis_fastapi.exceptions import (
+    SessionSearchTimeoutError,
+    SessionSearchUnavailableError,
+    SessionStoreError,
+)
+from redis_fastapi.session_backend import (
+    RedisSessionStore,
+    SessionState,
+    _StoreCapabilities,
+)
+from tests.unit.session_stubs import StubQueryEngine, install_query_engine
 
 # Every operation the store instruments, and how. Kept here as data because
 # the point of these tests is the set, not any one member of it.
@@ -44,8 +53,8 @@ COUNTED = {
 # ``touch`` is one command: a counter confirms the setting does something,
 # and a span would cost more than it tells anyone.
 TIMED = COUNTED - {"touch"}
-# Always part of another operation. Instrumenting them double-counts it.
-NEVER = {"delete", "index"}
+# Always part of another operation. Instrumenting it double-counts that one.
+NEVER = {"delete"}
 
 
 class _Recorder:
@@ -110,38 +119,53 @@ def spans() -> _Exporter:
 
 
 @pytest.fixture()
-def store(fake_async_redis) -> RedisSessionStore:
+def engine(fake_async_redis) -> StubQueryEngine:
+    """``fakeredis`` has no Query Engine, so the searches run on a stub."""
+    return install_query_engine(fake_async_redis)
+
+
+@pytest.fixture()
+def store(fake_async_redis, engine: StubQueryEngine) -> RedisSessionStore:
     get_settings.cache_clear()
-    return RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+    return RedisSessionStore(
+        fake_async_redis,
+        capabilities=_StoreCapabilities(supports_search=True, supports_hsetex=True),
+        idle_ttl=60,
+        absolute_ttl=600,
+        searchable={"device": "tag"},
+    )
 
 
 async def _exercise_every_operation(store: RedisSessionStore) -> None:
-    """Call each of the ten instrumented operations exactly once."""
-    record = store.new_record({"user_id": "42"})
+    """Call each instrumented operation, the two kinds of search included."""
+    record = store.new_record({"user_id": "42", "device": "d-91"})
 
     first = store.new_id()
-    await store.create(first, record)
+    fields = await store.create(first, record, subject="42")
     await store.load(first)
-    await store.save(first, record)
+    await store.save(first, record, baseline=fields, subject="42")
     await store.touch(first)
-    await store.index("42", first, record, absolute_remaining=600)
 
     await store.list_for_subject("42")
     await store.count_for_subject("42")
+    await store.list_active(60)
+    await store.find("device", equals="d-91")
+    await store.count("device", equals="d-91")
 
-    rotated = SessionState(data={"user_id": "42"}, session_id=first, subject="42")
+    rotated = SessionState(
+        data=dict(record.data), session_id=first, subject="42", fields=fields
+    )
     await store.rotate(rotated, subject="42")
     await store.revoke_id(rotated.session_id or "", subject="42")
 
     second = store.new_id()
-    await store.create(second, record)
-    await store.index("42", second, record, absolute_remaining=600)
+    await store.create(second, record, subject="42")
     await store.revoke(SessionState(data={}, session_id=second, subject="42"))
 
     third = store.new_id()
-    await store.create(third, record)
-    await store.index("42", third, record, absolute_remaining=600)
+    await store.create(third, record, subject="42")
     await store.revoke_all("42")
+    await store.revoke_idle(60)
 
 
 @pytest.mark.unit
@@ -159,9 +183,9 @@ class TestEveryOperationIsCounted:
         for operation in COUNTED:
             assert f"``{operation}``" in documented, f"{operation} is undocumented"
         for operation in NEVER:
-            assert f"``{operation}`` and" in documented or (
-                f"and ``{operation}``" in documented
-            ), f"{operation} should be documented as deliberately absent"
+            assert f"``{operation}`` is deliberately absent" in documented, (
+                f"{operation} should be documented as deliberately absent"
+            )
 
     async def test_latency_covers_every_operation_but_touch(
         self, store: RedisSessionStore, metrics
@@ -257,11 +281,98 @@ class TestOutcomeLabels:
         async def _fail(*args, **kwargs):
             raise ConnectionError("down")
 
-        monkeypatch.setattr(store, "_write", _fail)
+        monkeypatch.setattr(store, "_create", _fail)
         with pytest.raises(SessionStoreError):
             await store.rotate(SessionState(data={"user_id": "42"}))
         assert operations.results("create") == ["error"]
         assert operations.results("rotate") == ["error"]
+
+    async def test_each_search_reports_under_the_label_of_its_kind(
+        self, store: RedisSessionStore, metrics
+    ) -> None:
+        """A page of sessions is a ``list``, a number is a ``count``, and a
+        bulk revoke is a ``revoke_all``, whatever the filter."""
+        operations, latency = metrics
+        await store.create(
+            store.new_id(),
+            store.new_record({"user_id": "42", "device": "d-91"}),
+            subject="42",
+        )
+        operations.labels.clear()
+        latency.labels.clear()
+
+        await store.list_active(60)
+        await store.find("device", equals="d-91")
+        await store.find("device", equals="none")
+        await store.count("device", equals="none")
+        await store.revoke_idle(600)
+        await store.revoke_idle(-60)
+
+        assert operations.results("list") == ["hit", "hit", "miss"]
+        assert operations.results("count") == ["hit"], "zero is an answer"
+        assert operations.results("revoke_all") == ["miss", "hit"]
+        assert operations.operations() == {"list", "count", "revoke_all"}
+        assert latency.operations() == {"list", "count", "revoke_all"}
+
+    @pytest.mark.parametrize(
+        ("search", "operation"),
+        [
+            (lambda store: store.list_for_subject("42"), "list"),
+            (lambda store: store.list_active(60), "list"),
+            (lambda store: store.find("device", equals="d-91"), "list"),
+            (lambda store: store.count_for_subject("42"), "count"),
+            (lambda store: store.count("device", equals="d-91"), "count"),
+            (lambda store: store.revoke_all("42"), "revoke_all"),
+            (lambda store: store.revoke_idle(60), "revoke_all"),
+        ],
+    )
+    async def test_a_search_that_timed_out_is_an_error(
+        self,
+        store: RedisSessionStore,
+        engine: StubQueryEngine,
+        metrics,
+        search,
+        operation: str,
+    ) -> None:
+        from redis.exceptions import ResponseError
+
+        operations, _ = metrics
+        engine.errors["FT.SEARCH"] = [ResponseError("Timeout limit was reached")]
+        with pytest.raises(SessionSearchTimeoutError):
+            await search(store)
+        assert operations.results(operation) == ["error"]
+
+    async def test_a_search_with_no_query_engine_is_an_error(
+        self, fake_async_redis, metrics
+    ) -> None:
+        operations, _ = metrics
+        store = RedisSessionStore(
+            fake_async_redis,
+            capabilities=_StoreCapabilities(supports_search=False),
+        )
+        with pytest.raises(SessionSearchUnavailableError):
+            await store.list_for_subject("42")
+        with pytest.raises(SessionSearchUnavailableError):
+            await store.count_for_subject("42")
+        with pytest.raises(SessionSearchUnavailableError):
+            await store.revoke_all("42")
+        assert operations.results("list") == ["error"]
+        assert operations.results("count") == ["error"]
+        assert operations.results("revoke_all") == ["error"]
+
+    async def test_a_refused_call_counts_nothing(
+        self, store: RedisSessionStore, metrics
+    ) -> None:
+        """A ``ValueError`` is a defect in the caller, not a store operation."""
+        operations, latency = metrics
+        with pytest.raises(ValueError):
+            await store.find("device", between=(1, 2))
+        with pytest.raises(ValueError):
+            await store.list_active(60, limit=0)
+        with pytest.raises(ValueError):
+            await store.count("absent", equals="x")
+        assert operations.labels == []
+        assert latency.labels == []
 
 
 @pytest.mark.unit
@@ -288,7 +399,7 @@ class TestSpans:
     async def test_a_rotation_nests_its_create(
         self, store: RedisSessionStore, spans: _Exporter
     ) -> None:
-        """The rotate span measures all four round trips, the create span one."""
+        """The rotate span measures both round trips, the create span one."""
         sid = store.new_id()
         await store.create(sid, store.new_record({"user_id": "42"}))
         await store.rotate(SessionState(data={"user_id": "42"}, session_id=sid))
@@ -306,10 +417,11 @@ class TestSpans:
 
 @pytest.mark.unit
 class TestUninstrumentedOnPurpose:
-    async def test_delete_and_index_emit_nothing_of_their_own(
+    async def test_delete_and_the_index_setup_emit_nothing_of_their_own(
         self, store: RedisSessionStore, metrics, spans: _Exporter
     ) -> None:
-        """Both are always part of another operation, already inside its span."""
+        """A delete is always part of another operation, already inside its
+        span.  The index setup runs at startup, not for a request."""
         operations, latency = metrics
         sid = store.new_id()
         record = store.new_record({"user_id": "42"})
@@ -318,7 +430,7 @@ class TestUninstrumentedOnPurpose:
         latency.labels.clear()
         spans.spans.clear()
 
-        await store.index("42", sid, record, absolute_remaining=600)
+        await store.ensure_indexes()
         await store.delete(sid)
 
         assert operations.operations() == set()
@@ -331,7 +443,10 @@ class TestUninstrumentedOnPurpose:
         operations, latency = metrics
         record = store.new_record({"user_id": "42"})
         store.is_valid_id(store.new_id())
-        store.decode(store.encode(record))
+        store.session_key(store.new_id())
         store.session_id(SessionState(data={}))
+        store.session_age(
+            SessionState(data=record.data, session_id="a" * 30, absolute_remaining=5)
+        )
         assert operations.labels == []
         assert latency.labels == []
