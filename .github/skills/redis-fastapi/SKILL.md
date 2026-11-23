@@ -223,8 +223,10 @@ Each key carries its fixed parts, so each byte in them is paid once per key.
 - The default prefix is `rf`. Do NOT make it longer.
 - One segment follows the prefix and names the kind of key. All segments
   live in `KEY_SEGMENTS` in `config.py`: `c` cache, `r` rate limit,
-  `s` session, `si` session index. Build keys from that table, through
-  `settings.pattern_prefix(name)`; NEVER write a segment as a literal.
+  `s` session, `si` the name of the built-in session index, `sa` the prefix
+  of the name of the custom session index. Build keys and index names from
+  that table, through `settings.pattern_prefix(name)` or `KEY_SEGMENTS`;
+  NEVER write a segment as a literal.
 - A new kind of key gets a new entry of one or two characters. It must
   differ from every other entry as a whole segment.
 - A fixed marker inside a key is one character, like the `u` in

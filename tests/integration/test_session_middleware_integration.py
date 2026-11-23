@@ -2,10 +2,8 @@
 
 Two defects that only show as keys in the server: a sign-out after idle expiry
 that minted a new empty session, and a rotation to an anonymous session that
-indexed the new ID under the old user.
+kept the subject of the user who left.
 """
-
-import time
 
 import pytest
 import redis as sync_redis
@@ -14,12 +12,13 @@ from fastapi.testclient import TestClient
 
 from redis_fastapi.config import get_settings
 from redis_fastapi.deps import SessionDep
+from redis_fastapi.session_layout import FIELD_SUBJECT
 from redis_fastapi.setup import FastAPIRedis
-from tests.conftest import requires_redis
+from tests.conftest import about, expire_now, requires_redis
 
 pytestmark = [pytest.mark.integration, requires_redis]
 
-IDLE = 1
+IDLE = 60
 ABSOLUTE = 600
 
 
@@ -75,7 +74,9 @@ class TestSigningOutWithNoStoredSession:
         with TestClient(app) as client:
             client.post("/login")
             assert client.cookies.get("session")
-            time.sleep(IDLE + 1)
+            (key,) = _session_keys(real_redis, test_prefix)
+            assert about(real_redis.ttl(key), IDLE)
+            expire_now(real_redis, key)
 
             response = client.post("/logout")
             assert response.request.headers.get("cookie") is not None
@@ -85,20 +86,28 @@ class TestSigningOutWithNoStoredSession:
 
 
 class TestRotatingToAnAnonymousSession:
-    def test_the_new_id_is_not_indexed_under_the_old_subject(
+    def test_the_new_session_does_not_name_the_old_subject(
         self, app: FastAPI, real_redis: sync_redis.Redis, test_prefix: str
     ) -> None:
+        """The subject is the field ``s:sub`` of the session's own hash.
+
+        A search by subject reads that field, so an anonymous session that
+        kept it would be listed, and ended, as a session of the user who
+        left.
+        """
         with TestClient(app) as client:
             client.post("/login")
             signed_in = client.cookies.get("session")
+            (key,) = _session_keys(real_redis, test_prefix)
+            assert real_redis.hget(key, FIELD_SUBJECT) == '"u1"'
+
             client.post("/anonymous")
             anonymous = client.cookies.get("session")
 
         assert anonymous and anonymous != signed_in, "the ID did not rotate"
         keys = _session_keys(real_redis, test_prefix)
         assert len(keys) == 1 and keys[0].endswith(anonymous), keys
-        index = real_redis.scan_iter(match=f"{test_prefix}*:si:u1")
-        entries = [field for key in index for field in real_redis.hkeys(key)]
-        assert anonymous not in entries, (
-            "the anonymous session was indexed under the user who left it"
+        assert real_redis.hexists(keys[0], FIELD_SUBJECT) is False, (
+            "the anonymous session kept the subject of the user who left it"
         )
+        assert real_redis.hget(keys[0], "a:user_id") == "null"

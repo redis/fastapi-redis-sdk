@@ -45,6 +45,7 @@ from redis_fastapi.session_backend import (
     _seconds,
     issued_ago,
 )
+from redis_fastapi.session_layout import check_searchable
 from redis_fastapi.telemetry import record_session_operation
 from redis_fastapi.types import (
     Challenge,
@@ -84,7 +85,7 @@ class Session(dict):  # type: ignore[type-arg]
     top-level key, call ``save()``, or set ``session_always_save=True``.
     """
 
-    __slots__ = ("accessed", "modified")
+    __slots__ = ("_ttls", "accessed", "modified")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -92,6 +93,57 @@ class Session(dict):  # type: ignore[type-arg]
         # application touching anything, so both flags start clean.
         self.accessed = False
         self.modified = False
+        # What the application asked for the TTL of an attribute in this
+        # request: a number of seconds, or ``None`` to remove the TTL. The
+        # store reads it at the save. It is not part of the session's data.
+        self._ttls: dict[Any, int | None] = {}
+
+    # -- attribute TTL --------------------------------------------------------
+
+    def set(self, name: Any, value: Any, *, ttl: int | None = None) -> None:
+        """Write a top-level attribute, with a TTL in seconds if *ttl* is given.
+
+        The TTL covers each stored field of the attribute and starts when the
+        session is saved, at the end of the request.  It does not slide.
+
+        A later write of the attribute with a different value and no *ttl*
+        removes the TTL.  To change the value and keep the expiry, pass the
+        time left as *ttl*.  To remove the TTL and keep the value, call
+        :meth:`persist`.
+
+        Raises:
+            ValueError: If *ttl* is not a positive integer.
+        """
+        if ttl is not None and (
+            isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1
+        ):
+            raise ValueError(f"ttl must be a positive integer of seconds, got {ttl!r}")
+        self[name] = value
+        if ttl is not None:
+            self._ttls[name] = ttl
+
+    def persist(self, name: Any) -> None:
+        """Remove the TTL of a top-level attribute and keep its value.
+
+        The application does not need the value to call this.  It does
+        nothing for an attribute that is absent or has no TTL.
+        """
+        self.accessed = True
+        if name not in dict.keys(self):
+            return
+        self.modified = True
+        self._ttls[name] = None
+
+    def pending_ttls(self) -> dict[Any, int | None]:
+        """What this request asked for, without marking the session.
+
+        For the store.  A number is a TTL to set; ``None`` is a TTL to remove.
+        """
+        return dict(self._ttls)
+
+    def clear_pending_ttls(self) -> None:
+        """Forget what this request asked for, once the store has written it."""
+        self._ttls.clear()
 
     # -- flags ---------------------------------------------------------------
 
@@ -159,10 +211,12 @@ class Session(dict):  # type: ignore[type-arg]
 
     def __setitem__(self, key: Any, value: Any) -> None:
         self.mark_modified()
+        self._ttls.pop(key, None)
         super().__setitem__(key, value)
 
     def __delitem__(self, key: Any) -> None:
         self.mark_modified()
+        self._ttls.pop(key, None)
         super().__delitem__(key)
 
     def __or__(self, other: Mapping[Any, Any]) -> Session:
@@ -181,18 +235,29 @@ class Session(dict):  # type: ignore[type-arg]
         this the merge would set no flag and the write would be dropped.
         """
         self.mark_modified()
-        super().update(other)
+        # Read once: *other* may be an iterator, and a second pass over it
+        # would find nothing.
+        pairs = dict(other)
+        for key in pairs:
+            self._ttls.pop(key, None)
+        super().update(pairs)
         return self
 
     def clear(self) -> None:
         self.mark_modified()
+        self._ttls.clear()
         super().clear()
 
     def update(  # type: ignore[override]
         self, *args: Mapping[Any, Any] | Iterable[tuple[Any, Any]], **kwargs: Any
     ) -> None:
         self.mark_modified()
-        super().update(*args, **kwargs)
+        # Read once: an argument may be an iterator, and a second pass over
+        # it would find nothing.
+        pairs = dict(*args, **kwargs)
+        for key in pairs:
+            self._ttls.pop(key, None)
+        super().update(pairs)
 
     def setdefault(self, key: Any, default: Any = None) -> Any:
         """Insert *key* with *default* when absent, and flag only then.
@@ -204,6 +269,7 @@ class Session(dict):  # type: ignore[type-arg]
             self.accessed = True
             return super().__getitem__(key)
         self.mark_modified()
+        self._ttls.pop(key, None)
         return super().setdefault(key, default)
 
     def pop(self, key: Any, default: Any = _MISSING) -> Any:
@@ -215,11 +281,13 @@ class Session(dict):  # type: ignore[type-arg]
         if default is _MISSING:
             value = super().pop(key)
             self.mark_modified()
+            self._ttls.pop(key, None)
             return value
         had_key = key in dict.keys(self)
         value = super().pop(key, default)
         if had_key:
             self.mark_modified()
+            self._ttls.pop(key, None)
         else:
             self.accessed = True
         return value
@@ -228,6 +296,7 @@ class Session(dict):  # type: ignore[type-arg]
         """Remove and return the last pair.  Upstream sets no flag at all."""
         item = super().popitem()
         self.mark_modified()
+        self._ttls.pop(item[0], None)
         return item
 
 
@@ -589,6 +658,7 @@ class SessionMiddleware:
                     subject=self._subject_of_quietly(session),
                     created=loaded.record.metadata.created,
                     absolute_remaining=loaded.absolute_remaining,
+                    fields=getattr(loaded, "fields", None),
                 )
             else:
                 load = _Load.FAILED if failed else _Load.NOT_FOUND
@@ -698,7 +768,9 @@ class SessionMiddleware:
                 store_state,
                 subject=self._subject_of_quietly(session) or None,
                 descriptor=self._descriptor(state),
+                ttls=session.pending_ttls(),
             )
+            session.clear_pending_ttls()
             return self._with_cookie(headers, settings, store_state)
 
         if outcome is Outcome.WRITE:
@@ -814,38 +886,42 @@ class SessionMiddleware:
             logger.warning("Could not delete a session on sign-out: %s", exc)
 
     async def _write(self, store: SessionStore, state: _RequestState) -> None:
-        """Persist the payload, and re-assert the index entry beside it.
+        """Persist what changed, with the subject and the descriptor beside it.
 
         Creates the session when it has no identifier yet, and saves it
-        otherwise.
+        otherwise.  A save sends only the difference from the fields the last
+        load or write left on the state.
         """
         session = state.session
         store_state = state.store_state
-        create = store_state.session_id is None
-        if store_state.session_id is None:
-            store_state.session_id = store.new_id()
-            store_state.absolute_remaining = store.absolute_seconds
+        subject = self._subject_of_quietly(session)
         record = store.new_record(session.raw(), created=store_state.created)
-        if create:
-            await store.create(store_state.session_id, record)
+        ttls = session.pending_ttls()
+        if store_state.session_id is None:
+            session_id = store.new_id()
+            store_state.fields = await store.create(
+                session_id,
+                record,
+                subject=subject,
+                descriptor=self._descriptor(state),
+                ttls=ttls,
+            )
+            # Only once the write succeeded: a refused write must not leave
+            # an identifier that names nothing.
+            store_state.session_id = session_id
+            store_state.absolute_remaining = store.absolute_seconds
             store_state.created = record.metadata.created
         else:
-            await store.save(store_state.session_id, record)
-
-        subject = self._subject_of_quietly(session)
-        store_state.subject = subject
-        if subject:
-            # Re-asserted on every write, not only at login: it costs nothing
-            # extra here, and it repairs an entry that a partial failure lost.
-            # The remaining absolute time, never a fresh lifetime.
-            await store.index(
-                subject,
+            store_state.fields = await store.save(
                 store_state.session_id,
                 record,
-                absolute_remaining=store_state.absolute_remaining
-                or store.absolute_seconds,
-                extra=self._descriptor(state),
+                baseline=store_state.fields,
+                subject=subject,
+                descriptor=self._descriptor(state),
+                ttls=ttls,
             )
+        store_state.subject = subject
+        session.clear_pending_ttls()
 
     def _spec(self, settings: Any, value: str, absolute: int | None) -> CookieSpec:
         """Build the cookie spec, sizing ``max-age`` from the absolute clock.
@@ -929,6 +1005,7 @@ def add_redis_sessions(
     idle_ttl: int | timedelta | None = None,
     absolute_ttl: int | timedelta | None = None,
     gc_ttl: int | timedelta | None = None,
+    searchable: Mapping[str, str] | None = None,
 ) -> None:
     """Register :class:`SessionMiddleware` on *app*.
 
@@ -968,9 +1045,13 @@ def add_redis_sessions(
             for a backend that is not Redis, and for a test double.
         store_factory: Called per request to build one, when a single instance
             will not do.  May be sync or async.
-        coder: Serializer for the envelope.  Defaults to ``JsonCoder``.
-        encryptor: Encrypts the serialized envelope at rest.  Encryption wraps
-            serialization, so the coder never sees ciphertext.
+        coder: Accepted for callers written against the earlier store, and
+            not used.  Each attribute is stored in a field of its own as JSON
+            text.
+        encryptor: Encrypts the value of each attribute at rest.  The names
+            of the attributes, their number and the length of each value stay
+            readable in Redis, so do not put sensitive data in an attribute
+            name or a dict key.
         id_factory: Generates session IDs.  Its output is validated on every
             call, because a seam supplying a security-critical value has to be
             checked rather than trusted.
@@ -979,6 +1060,11 @@ def add_redis_sessions(
             ``timedelta``.
         absolute_ttl: Absolute clock, overriding ``session_absolute_ttl``.
         gc_ttl: Backstop TTL, overriding ``session_gc_ttl``.
+        searchable: The attributes ``store.find()`` can search, as
+            ``{path: type}`` with the type one of ``"tag"``, ``"numeric"``,
+            ``"text"`` or ``"geo"``.  A path names a leaf, such as
+            ``"cart.total"``.  Needs the Query Engine, and cannot be combined
+            with *encryptor*.
 
     The last seven exist because the store constructor has always accepted
     them and nothing reachable from here passed them on: the only way to change
@@ -1019,9 +1105,19 @@ def add_redis_sessions(
             ("idle_ttl", idle_ttl),
             ("absolute_ttl", absolute_ttl),
             ("gc_ttl", gc_ttl),
+            ("searchable", searchable),
         )
         if value is not None
     }
+    if searchable:
+        # At setup, not at the first request: the store is built per request,
+        # and a declaration that cannot work should stop the application.
+        check_searchable(searchable)
+        if encryptor is not None:
+            raise SessionConfigurationError(
+                "searchable cannot be combined with an encryptor: the Query "
+                "Engine cannot search an encrypted value."
+            )
     if store is not None and store_factory is not None:
         raise SessionConfigurationError("Pass either store or store_factory, not both.")
     if isinstance(challenge, (str, SecurityBase)):

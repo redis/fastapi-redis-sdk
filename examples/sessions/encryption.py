@@ -1,8 +1,9 @@
-"""Encrypt the session payload at rest with AES-GCM.
+"""Encrypt the session at rest with AES-GCM.
 
 Anyone with ``redis-cli`` access can read a plain session.  With an
-``Encryptor`` the coder turns the session into text first, and the encryptor
-then turns that into ciphertext - so Redis only ever holds the latter.
+``Encryptor`` the store encrypts the value of each attribute, so Redis holds
+ciphertext for every value.  The names of the attributes stay readable, so
+do not put sensitive data in a name.
 
 The package ships the seam, not the cipher: the ten-line class below is yours
 to audit, and a key rotation is your decision.  A record that will not decrypt
@@ -18,7 +19,7 @@ Run it (plain HTTP, so the cookie must not be ``Secure``)::
     curl -c jar -b jar -X POST localhost:8000/login
     curl -b jar localhost:8000/me                 # {"user_id":"alice","tax_id":"..."}
     SID=$(awk '$6 == "session" {print $7}' jar)
-    redis-cli HGET rf:s:$SID d   # ciphertext, no "tax_id"
+    redis-cli HGET rf:s:$SID a:tax_id   # ciphertext, not the tax ID
 """
 
 from __future__ import annotations

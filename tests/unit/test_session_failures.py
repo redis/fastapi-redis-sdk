@@ -8,6 +8,9 @@ and the asymmetry is a security control rather than a convenience:
 * a failed **write** always raises, because losing a login or a rotation is
   the worst outcome in this design and must never be silent.
 
+A search is a read that does not fail open.  An empty list, a count of zero
+and "nothing to revoke" are each an answer, so a failed search raises.
+
 Every ``except (RedisError, OSError)`` arm in the store is exercised here.
 Before this file existed the whole policy was unexecuted code.
 """
@@ -18,15 +21,35 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from redis_fastapi.config import get_settings
-from redis_fastapi.exceptions import SessionStoreError
-from redis_fastapi.session_backend import RedisSessionStore, SessionState
+from redis_fastapi.exceptions import SessionSearchError, SessionStoreError
+from redis_fastapi.session_backend import (
+    RedisSessionStore,
+    SessionState,
+    _StoreCapabilities,
+)
 
 
 class _BrokenPipeline:
-    def execute_command(self, *args: object, **kwargs: object) -> None:
-        return None
+    """Queues any command, and fails when it is sent."""
+
+    def __init__(self, error: BaseException | None = None) -> None:
+        self._error = error or RedisConnectionError("Redis is down")
+
+    def __getattr__(self, name: str) -> object:
+        return lambda *args, **kwargs: None
 
     async def execute(self) -> object:
+        raise self._error
+
+
+class _BrokenIndex:
+    async def create_index(self, *args: object, **kwargs: object) -> object:
+        raise RedisConnectionError("Redis is down")
+
+    async def dropindex(self, *args: object, **kwargs: object) -> object:
+        raise RedisConnectionError("Redis is down")
+
+    async def search(self, *args: object, **kwargs: object) -> object:
         raise RedisConnectionError("Redis is down")
 
 
@@ -36,22 +59,19 @@ class _BrokenRedis:
     def pipeline(self, transaction: bool = True) -> _BrokenPipeline:
         return _BrokenPipeline()
 
+    def ft(self, name: str) -> _BrokenIndex:
+        return _BrokenIndex()
+
     async def execute_command(self, *args: object, **kwargs: object) -> object:
         raise RedisConnectionError("Redis is down")
 
     async def delete(self, *keys: str) -> int:
         raise RedisConnectionError("Redis is down")
 
-    async def hdel(self, key: str, *fields: str) -> int:
+    async def hget(self, key: str, field: str) -> bytes:
         raise RedisConnectionError("Redis is down")
 
-    async def hgetall(self, key: str) -> dict:
-        raise RedisConnectionError("Redis is down")
-
-    async def hlen(self, key: str) -> int:
-        raise RedisConnectionError("Redis is down")
-
-    async def info(self, section: str) -> dict:
+    async def config_get(self, pattern: str) -> dict:
         raise RedisConnectionError("Redis is down")
 
 
@@ -59,6 +79,20 @@ class _BrokenRedis:
 def broken() -> RedisSessionStore:
     get_settings.cache_clear()
     return RedisSessionStore(_BrokenRedis(), idle_ttl=60, absolute_ttl=600)
+
+
+@pytest.fixture()
+def broken_search() -> RedisSessionStore:
+    """A server that had the Query Engine when the pool asked, and is down
+    now."""
+    get_settings.cache_clear()
+    return RedisSessionStore(
+        _BrokenRedis(),
+        capabilities=_StoreCapabilities(supports_search=True, supports_hsetex=True),
+        idle_ttl=60,
+        absolute_ttl=600,
+        searchable={"device": "tag"},
+    )
 
 
 @pytest.fixture()
@@ -89,10 +123,76 @@ class TestReadsFailOpen:
             await broken.load(broken.new_id())
         assert "Session load failed" in caplog.text
 
-    async def test_a_failed_listing_returns_empty(
+    async def test_a_load_with_no_capability_answer_still_fails_open(
         self, broken: RedisSessionStore
     ) -> None:
-        assert await broken.list_for_subject("42") == []
+        """The capability check fails too.  It must not turn the failed read
+        into an error of its own."""
+        assert broken._caps.supports_search is None
+        assert await broken.load_with_status(broken.new_id()) == (None, True)
+        assert broken._caps.supports_search is None, "no answer was cached as one"
+
+
+SEARCHES = {
+    "list_for_subject": lambda store: store.list_for_subject("42"),
+    "count_for_subject": lambda store: store.count_for_subject("42"),
+    "revoke_all": lambda store: store.revoke_all("42"),
+    "list_active": lambda store: store.list_active(60),
+    "revoke_idle": lambda store: store.revoke_idle(60),
+    "find": lambda store: store.find("device", equals="d-91"),
+    "count": lambda store: store.count("device", equals="d-91"),
+}
+
+
+class TestSearchesDoNotFailOpen:
+    """An empty answer from a failed search is the permissive one.
+
+    A count of zero lets each sign-in past a cap on concurrent sessions, and
+    "nothing to revoke" reports a sign-out everywhere that did not happen.
+    """
+
+    @pytest.mark.parametrize("method", list(SEARCHES))
+    async def test_a_failed_search_raises(
+        self, broken_search: RedisSessionStore, method: str
+    ) -> None:
+        with pytest.raises(SessionSearchError):
+            await SEARCHES[method](broken_search)
+
+    @pytest.mark.parametrize("method", list(SEARCHES))
+    async def test_a_failed_query_on_a_ready_index_raises(
+        self, broken_search: RedisSessionStore, method: str
+    ) -> None:
+        """The same, when the indexes were ensured before the outage."""
+        broken_search._caps.ready_indexes.update(
+            {broken_search._builtin_index, broken_search._custom_index}
+        )
+        with pytest.raises(SessionSearchError, match="Could not search sessions"):
+            await SEARCHES[method](broken_search)
+
+    @pytest.mark.parametrize("method", list(SEARCHES))
+    async def test_a_search_with_no_capability_answer_raises(self, method: str) -> None:
+        """The server is down before the pool learned what it can do."""
+        get_settings.cache_clear()
+        store = RedisSessionStore(_BrokenRedis(), searchable={"device": "tag"})
+        with pytest.raises(SessionStoreError):
+            await SEARCHES[method](store)
+
+    async def test_a_search_raises_with_reads_failing_open_or_closed(
+        self, broken_search: RedisSessionStore, monkeypatch
+    ) -> None:
+        assert get_settings().session_fail_closed is False
+        with pytest.raises(SessionSearchError):
+            await broken_search.list_for_subject("42")
+        monkeypatch.setenv("REDIS_SESSION_FAIL_CLOSED", "true")
+        get_settings.cache_clear()
+        with pytest.raises(SessionSearchError):
+            await broken_search.list_for_subject("42")
+
+    async def test_the_index_setup_raises(
+        self, broken_search: RedisSessionStore
+    ) -> None:
+        with pytest.raises(SessionSearchError, match="Could not create"):
+            await broken_search.ensure_indexes()
 
 
 class TestFailClosedFlipsReadsOnly:
@@ -127,14 +227,14 @@ class TestWritesAlwaysRaise:
         with pytest.raises(SessionStoreError, match="Could not delete session"):
             await broken.delete(broken.new_id())
 
-    async def test_indexing_raises(self, broken: RedisSessionStore) -> None:
+    async def test_create_raises(self, broken: RedisSessionStore) -> None:
         record = broken.new_record({"user_id": "42"})
-        with pytest.raises(SessionStoreError, match="Could not index"):
-            await broken.index("42", broken.new_id(), record, absolute_remaining=600)
+        with pytest.raises(SessionStoreError, match="Could not save session"):
+            await broken.create(broken.new_id(), record, subject="42")
 
-    async def test_revoke_all_raises(self, broken: RedisSessionStore) -> None:
-        with pytest.raises(SessionStoreError, match="Could not revoke"):
-            await broken.revoke_all("42")
+    async def test_revoke_all_raises(self, broken_search: RedisSessionStore) -> None:
+        with pytest.raises(SessionStoreError):
+            await broken_search.revoke_all("42")
 
     async def test_revoke_id_raises_rather_than_reporting_success(
         self, broken: RedisSessionStore
@@ -144,7 +244,7 @@ class TestWritesAlwaysRaise:
         The caller cannot distinguish that from a genuine refusal, so a store
         failure has to surface as one.
         """
-        with pytest.raises(SessionStoreError, match="Could not read the session index"):
+        with pytest.raises(SessionStoreError, match="Could not read the session"):
             await broken.revoke_id(broken.new_id(), subject="42")
 
     async def test_a_write_still_raises_under_fail_closed(
@@ -169,16 +269,23 @@ class TestTidyUpNeverFailsARequest:
             await broken._safe_delete(broken.new_id())
         assert "Could not remove a dead session key" in caplog.text
 
-    async def test_a_failed_liveness_check_answers_unknown_not_empty(
-        self, broken: RedisSessionStore
+    async def test_a_dead_hash_that_cannot_be_deleted_is_still_no_session(
+        self, fake_async_redis, caplog
     ) -> None:
-        """``None`` and the empty set must stay distinguishable.
+        """The load found a hash with no ``s:created``, and the delete failed."""
 
-        Conflating them let one transient pipeline error prune every index
-        entry for a subject, leaving live sessions that ``revoke_all`` could
-        no longer reach.
-        """
-        assert await broken._verify(["a" * 30]) is None
+        class _DeleteFails(RedisSessionStore):
+            async def _delete(self, session_id: str) -> None:
+                raise RedisConnectionError("Redis is down")
+
+        get_settings.cache_clear()
+        store = _DeleteFails(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        sid = store.new_id()
+        await fake_async_redis.hset(store.session_key(sid), "a:user_id", "42")
+
+        with caplog.at_level("WARNING"):
+            assert await store.load_with_status(sid) == (None, False)
+        assert "Could not remove a dead session key" in caplog.text
 
 
 class TestUnexpectedStates:
@@ -188,9 +295,9 @@ class TestUnexpectedStates:
         store = RedisSessionStore(redis, idle_ttl=60, absolute_ttl=600)
         sid = store.new_id()
         await store.create(sid, store.new_record({"user_id": 42}))
-        await redis.execute_command(
-            "HSETEX", store.session_key(sid), "KEEPTTL", "FIELDS", 1, "d", "{not json"
-        )
+        # One attribute field that is not JSON text. A plain ``HSET`` of that
+        # field leaves the deadline on ``s:created`` alone.
+        await redis.hset(store.session_key(sid), "a:user_id", "{not json")
         return store, sid
 
     async def test_a_corrupt_record_reads_as_a_failed_load_and_is_kept(
@@ -209,10 +316,28 @@ class TestUnexpectedStates:
         monkeypatch.setenv("REDIS_SESSION_FAIL_CLOSED", "true")
         store, sid = await self._corrupt_session(fake_async_redis)
         try:
-            with pytest.raises(SessionStoreError, match="Unreadable session record"):
+            with pytest.raises(SessionStoreError, match="Unreadable session field"):
                 await store.load(sid)
         finally:
             get_settings.cache_clear()
+
+    async def test_a_creation_time_that_is_not_a_number_is_a_failed_load(
+        self, fake_async_redis
+    ) -> None:
+        """A system field can be corrupt too.  The deadline is its TTL, not
+        its value, so the hash is still a session and it is kept."""
+        get_settings.cache_clear()
+        store = RedisSessionStore(fake_async_redis, idle_ttl=60, absolute_ttl=600)
+        sid = store.new_id()
+        key = store.session_key(sid)
+        await store.create(sid, store.new_record({"user_id": 42}))
+        await fake_async_redis.hset(key, "s:created", "yesterday")
+        await fake_async_redis.execute_command(
+            "HEXPIRE", key, 600, "FIELDS", 1, "s:created"
+        )
+
+        assert await store.load_with_status(sid) == (None, True)
+        assert await fake_async_redis.exists(key) == 1
 
 
 class TestOsErrorsCountToo:
@@ -220,15 +345,8 @@ class TestOsErrorsCountToo:
         """A dropped socket surfaces as OSError, not RedisError."""
 
         class _SocketDied(_BrokenRedis):
-            def pipeline(self, transaction: bool = True) -> object:
-                class _P:
-                    def execute_command(self, *a: object, **k: object) -> None:
-                        return None
-
-                    async def execute(self) -> object:
-                        raise OSError("connection reset by peer")
-
-                return _P()
+            def pipeline(self, transaction: bool = True) -> _BrokenPipeline:
+                return _BrokenPipeline(OSError("connection reset by peer"))
 
         get_settings.cache_clear()
         store = RedisSessionStore(_SocketDied(), idle_ttl=60, absolute_ttl=600)

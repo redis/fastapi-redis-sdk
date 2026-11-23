@@ -112,7 +112,9 @@ async def me(session: SessionDep):
 
 Redis enforces an idle timeout and an absolute timeout. `valid_session()` returns `401` when a request has no live session, and `request.session` works as it does with Starlette's `SessionMiddleware`.
 
-See the [Sessions Guide](docs/guide/sessions.md) for timeouts, sign-out everywhere, CSRF, encryption and migration.
+Listing, counting and revoking sessions by user, and searching them by an attribute, need the Redis Query Engine (Redis 8.0 or later).
+
+See the [Sessions Guide](docs/guide/sessions.md) for timeouts, attribute TTL, session search, sign-out everywhere, CSRF, encryption and migration.
 
 ## Configuration
 

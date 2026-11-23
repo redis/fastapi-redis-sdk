@@ -286,7 +286,12 @@ A short segment after the prefix names the kind of key:
 | `c`     | Cache entry                          |
 | `r`     | Rate-limit counter                   |
 | `s`     | Session                              |
-| `si`    | Index of the sessions a subject owns |
+| `si`    | Built-in session index               |
+| `sa`    | Custom session index                 |
+
+`si` and `sa` name search indexes, not keys: `rf:si`, and `rf:sa:` followed by
+a hash of the `searchable` declaration. See
+[Searching sessions](sessions.md#searching-sessions).
 
 Every key carries the prefix and the segment, so both are short by design.
 Putting a build identifier here gives every deploy a cold cache — see [Upgrading across a stored-shape change](caching.md#upgrading-across-a-stored-shape-change).

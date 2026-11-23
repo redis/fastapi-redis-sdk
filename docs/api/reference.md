@@ -118,15 +118,15 @@ On a **cache hit** the endpoint is skipped (response served from Redis). On a **
 
 An entry stores the response's own header fields and replays them on a hit, so `Link`, `Content-Disposition`, `Content-Language` and your own headers survive. Only text representations are stored, and `Date` and `Set-Cookie` are deliberately withheld — see [Cache scope](../guide/architecture.md#cache-scope) and [Headers a hit carries](../guide/architecture.md#headers-a-hit-carries).
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `ttl` | `int \| None` | `settings.default_ttl` | Cache TTL in seconds (`0` = no expiry) |
-| `eviction_group` | `str` | `""` | Namespace segment in the cache key |
-| `cache_prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
-| `key_builder` | `KeyBuilder \| None` | `default_key_builder` | Custom key builder |
-| `private` | `bool` | `False` | Emit `Cache-Control: private`. Added automatically when `valid_session()` gated the request |
-| `vary_on_session` | `bool \| None` | `None` | `True`: one entry per user, `private` and `Vary: Cookie` on the miss and the hit. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
-| `no_store` | `bool` | `False` | Emit `Cache-Control: no-store` on the miss and every hit; the entry is still kept in Redis. Added automatically under `valid_session(issued_within=...)` |
+| Parameter         | Type                 | Default                            | Description                                                                                                                                                                                       |
+|-------------------|----------------------|------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ttl`             | `int \| None`        | `settings.default_ttl`             | Cache TTL in seconds (`0` = no expiry)                                                                                                                                                            |
+| `eviction_group`  | `str`                | `""`                               | Namespace segment in the cache key                                                                                                                                                                |
+| `cache_prefix`    | `str \| None`        | `settings.pattern_prefix("cache")` | Key prefix override                                                                                                                                                                               |
+| `key_builder`     | `KeyBuilder \| None` | `default_key_builder`              | Custom key builder                                                                                                                                                                                |
+| `private`         | `bool`               | `False`                            | Emit `Cache-Control: private`. Added automatically when `valid_session()` gated the request                                                                                                       |
+| `vary_on_session` | `bool \| None`       | `None`                             | `True`: one entry per user, `private` and `Vary: Cookie` on the miss and the hit. `False`: one shared entry, no `Vary: Cookie`. `None`: a response that read the session is served but not stored |
+| `no_store`        | `bool`               | `False`                            | Emit `Cache-Control: no-store` on the miss and every hit; the entry is still kept in Redis. Added automatically under `valid_session(issued_within=...)`                                          |
 
 ### `cache_evict()`
 
@@ -140,11 +140,11 @@ async def delete_item(item_id: int):
 
 Eviction runs **after** the endpoint succeeds. With a `key_builder`, deletes the matching key. Without one, clears the **entire eviction group**.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `eviction_group` | `str` | `""` | Namespace to evict from |
-| `key_builder` | `KeyBuilder \| None` | `None` | Specific key; omit to clear eviction group |
-| `prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
+| Parameter        | Type                 | Default                            | Description                                |
+|------------------|----------------------|------------------------------------|--------------------------------------------|
+| `eviction_group` | `str`                | `""`                               | Namespace to evict from                    |
+| `key_builder`    | `KeyBuilder \| None` | `None`                             | Specific key; omit to clear eviction group |
+| `prefix`         | `str \| None`        | `settings.pattern_prefix("cache")` | Key prefix override                        |
 
 ### `cache_put()`
 
@@ -158,13 +158,13 @@ async def update_item(item_id: int, body: Item):
 
 Write-through: endpoint always executes, response is stored so the next `cache()` read is a HIT.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `ttl` | `int \| None` | `settings.default_ttl` | Cache TTL in seconds |
-| `eviction_group` | `str` | `""` | Namespace to write into |
-| `key_builder` | `KeyBuilder \| None` | `default_key_builder` | Custom key builder |
-| `prefix` | `str \| None` | `settings.pattern_prefix("cache")` | Key prefix override |
-| `private` | `bool` | `False` | Emit `Cache-Control: private` |
+| Parameter        | Type                 | Default                            | Description                   |
+|------------------|----------------------|------------------------------------|-------------------------------|
+| `ttl`            | `int \| None`        | `settings.default_ttl`             | Cache TTL in seconds          |
+| `eviction_group` | `str`                | `""`                               | Namespace to write into       |
+| `key_builder`    | `KeyBuilder \| None` | `default_key_builder`              | Custom key builder            |
+| `prefix`         | `str \| None`        | `settings.pattern_prefix("cache")` | Key prefix override           |
+| `private`        | `bool`               | `False`                            | Emit `Cache-Control: private` |
 
 ---
 
@@ -352,7 +352,7 @@ async def login(session: SessionDep):
     session["user_id"] = 42          # writing the identity rotates the ID
 ```
 
-`Annotated[Session, Depends(get_session)]` - the session payload as a `dict`
+`Annotated[Session, Depends(get_session)]` - the session data as a `dict`
 subclass. Loaded before the application runs, so this performs no I/O.
 `request.session` returns the same object.
 
@@ -368,8 +368,9 @@ async def logout(state: SessionStateDep, store: SessionStoreDep):
 
 `Annotated[SessionState, Depends(get_session_state)]` - everything about the
 session that is not its data: `session_id`, `subject`, `created`,
-`absolute_remaining`, and the `revoked` / `rotated` flags. Operations that act
-on the session rather than its contents take this rather than the payload.
+`absolute_remaining`, `fields`, and the `revoked` / `rotated` flags. Operations
+that act on the session rather than its contents take this rather than the
+data.
 
 ### `SessionStoreDep` / `SyncSessionStoreDep`
 
@@ -418,17 +419,17 @@ name a record that was live in Redis when the request arrived, and nothing
 earlier in the request may have ended it. It does not ask who the session
 belongs to.
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `issued_within` | `int \| timedelta \| None` | `None` | Also require the session ID to have been issued at most this long ago. Adds the reason `"stale"` and makes the response `Cache-Control: no-store`. Not an authentication check |
-| `on_reject` | `OnReject[SessionRejection]`, or `OnReject[RecencyRejection]` with `issued_within` | `None` | Receives the request and the reason, returns the response (sync or async). Default: `401` |
+| Parameter       | Type                                                                               | Default | Description                                                                                                                                                                    |
+|-----------------|------------------------------------------------------------------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `issued_within` | `int \| timedelta \| None`                                                         | `None`  | Also require the session ID to have been issued at most this long ago. Adds the reason `"stale"` and makes the response `Cache-Control: no-store`. Not an authentication check |
+| `on_reject`     | `OnReject[SessionRejection]`, or `OnReject[RecencyRejection]` with `issued_within` | `None`  | Receives the request and the reason, returns the response (sync or async). Default: `401`                                                                                      |
 
-| Reason | Meaning |
-|---|---|
-| `"missing"` | No usable session: no cookie, a malformed one, or one an earlier dependency revoked or emptied |
-| `"expired"` | A well-formed cookie naming no live session |
-| `"unavailable"` | The read failed and the request continued without a session |
-| `"stale"` | Only with `issued_within`: the session ID was issued longer ago than that |
+| Reason          | Meaning                                                                                        |
+|-----------------|------------------------------------------------------------------------------------------------|
+| `"missing"`     | No usable session: no cookie, a malformed one, or one an earlier dependency revoked or emptied |
+| `"expired"`     | A well-formed cookie naming no live session                                                    |
+| `"unavailable"` | The read failed and the request continued without a session                                    |
+| `"stale"`       | Only with `issued_within`: the session ID was issued longer ago than that                      |
 
 The default rejection is `HTTPException(401, "No valid session")`, with a
 `WWW-Authenticate` header only when the `challenge` setting is configured. For
@@ -441,13 +442,13 @@ The gate marks the session as read. When it passes, a following
 raises that error on a route excluded by `skip`, and raises `TypeError` when
 `on_reject` returns something other than a `Response`.
 
-| Type | Values |
-|---|---|
-| `SessionRejection` | `Literal["missing", "expired", "unavailable"]` |
-| `RecencyRejection` | `SessionRejection` plus `"stale"` |
-| `OnReject[R]` | `Callable[[Request, R], Response \| Awaitable[Response]]` |
-| `Challenge` | `str \| SecurityBase \| Callable[[Request, str], str \| None]` |
-| `SessionRejected` | The exception that carries a rejection response out of the dependency. Control flow, not a `SessionError` |
+| Type               | Values                                                                                                    |
+|--------------------|-----------------------------------------------------------------------------------------------------------|
+| `SessionRejection` | `Literal["missing", "expired", "unavailable"]`                                                            |
+| `RecencyRejection` | `SessionRejection` plus `"stale"`                                                                         |
+| `OnReject[R]`      | `Callable[[Request, R], Response \| Awaitable[Response]]`                                                 |
+| `Challenge`        | `str \| SecurityBase \| Callable[[Request, str], str \| None]`                                            |
+| `SessionRejected`  | The exception that carries a rejection response out of the dependency. Control flow, not a `SessionError` |
 
 ---
 
@@ -464,21 +465,24 @@ FastAPIRedis(app).lifespan().sessions(
     skip=lambda req: req.url.path.startswith("/health"),
     challenge=None,
     store=None, store_factory=None,
-    coder=JsonCoder, encryptor=None, id_factory=None, key_prefix=None,
+    encryptor=None, id_factory=None, key_prefix=None,
     idle_ttl=None, absolute_ttl=None, gc_ttl=None,
+    searchable={"device_id": "tag", "cart.total": "numeric"},
 )
 ```
 
-| Argument | Purpose |
-|---|---|
-| `principal_of` / `principal_keys` | What a change to triggers a rotation. Must be pure and return a verified identity. |
-| `subject_of` | What the reverse index is keyed on. `None` leaves the session out of it. |
-| `descriptor_of` | What a device listing shows. Stored beside the session, never inside it. |
-| `cookie_builder` | Renders `Set-Cookie`, for setting **and** clearing. |
-| `skip` | Requests needing no session, at zero Redis cost. |
-| `challenge` | The `WWW-Authenticate` header on a `valid_session()` rejection: a FastAPI security scheme, a string, or a callable of the request and the reason. Omitted by default; `Basic` is refused. |
-| `store` / `store_factory` | Supply a whole store. Mutually exclusive. |
-| `coder`, `encryptor`, `id_factory`, `key_prefix`, `idle_ttl`, `absolute_ttl`, `gc_ttl` | Passed to the store constructor. TTLs accept `int` seconds or `timedelta`. |
+| Argument                                                                      | Purpose                                                                                                                                                                                                                                                                               |
+|-------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `principal_of` / `principal_keys`                                             | What a change to triggers a rotation. Must be pure and return a verified identity.                                                                                                                                                                                                    |
+| `subject_of`                                                                  | The subject of a session, stored in the field `s:sub`. The searches by subject use it. `None` makes the session anonymous: no search by subject finds it.                                                                                                                             |
+| `descriptor_of`                                                               | What a device listing shows. Stored in the session hash as the field `s:desc`, in plaintext, and never part of `request.session`. The list methods return it.                                                                                                                         |
+| `cookie_builder`                                                              | Renders `Set-Cookie`, for setting **and** clearing.                                                                                                                                                                                                                                   |
+| `skip`                                                                        | Requests needing no session, at zero Redis cost.                                                                                                                                                                                                                                      |
+| `challenge`                                                                   | The `WWW-Authenticate` header on a `valid_session()` rejection: a FastAPI security scheme, a string, or a callable of the request and the reason. Omitted by default; `Basic` is refused.                                                                                             |
+| `store` / `store_factory`                                                     | Supply a whole store. Mutually exclusive.                                                                                                                                                                                                                                             |
+| `encryptor`, `id_factory`, `key_prefix`, `idle_ttl`, `absolute_ttl`, `gc_ttl` | Passed to the store constructor. TTLs accept `int` seconds or `timedelta`.                                                                                                                                                                                                            |
+| `searchable`                                                                  | The attributes `find()` and `count()` can search: `{path: type}`, with the type one of `"tag"`, `"numeric"`, `"text"` or `"geo"`. A path names a leaf, such as `"cart.total"`. Needs the Query Engine. Cannot be combined with `encryptor`: setup raises `SessionConfigurationError`. |
+| `coder`                                                                       | Accepted, and not used for sessions. Each value is stored as JSON text.                                                                                                                                                                                                               |
 
 ---
 
@@ -488,42 +492,101 @@ Abstract base owning the lifecycle. `RedisSessionStore` is the shipped
 implementation; `SessionStoreProtocol` is the structural type for substituting
 one without inheritance.
 
-| Method | Purpose |
-|---|---|
-| `load(session_id, *, refresh=True)` | Read a session and restart its idle clock. `None` for every way it can be absent. |
-| `load_with_status(session_id, *, refresh=True)` | `load()`, plus whether the read itself failed. |
-| `session_age(state)` | Seconds since the session ID was issued, from the key's TTL. `None` without a stored session, or for one created under a longer `session_absolute_ttl`. |
-| `create(session_id, record)` | Write a session that does not exist yet. The only method that writes the absolute deadline. |
-| `save(session_id, record)` | Update the payload, and only the payload. |
-| `touch(session_id)` | Restart the idle clock alone. |
-| `delete(session_id)` | Remove the session. |
-| `rotate(state, *, subject=None, descriptor=None)` | New identifier, old key deleted first. Returns the new ID. |
-| `reauthenticate(state)` | Ask the middleware to rotate on the way out. |
-| `revoke(state, *, subject=None)` | End this session and drop its index entry. |
-| `revoke_id(session_id, *, subject)` | End one session, refusing an ID not indexed under that subject. |
-| `revoke_all(subject)` | End every session of a subject. Returns keys removed. |
-| `list_for_subject(subject)` | Live sessions, verified before being reported. |
-| `count_for_subject(subject, *, limit=None)` | Upper-bound count; exact only at or above `limit`. Raises rather than failing open. |
-| `index(subject, session_id, record, *, absolute_remaining, extra=None)` | Record a session under its subject. |
-| `new_id()` / `is_valid_id(value)` | Generate and validate identifiers. |
-| `new_record(data, *, created=None)` | Build an envelope, carrying `created` forward. |
-| `session_id(state)` | The current identifier, or `None`. |
+A session is one Redis hash: system fields `s:created`, `s:seen`, `s:sub` and
+`s:desc`, and one `a:<path>` field for each leaf of the session. See
+[Fields in the hash](../guide/sessions.md#fields-in-the-hash).
+
+### Lifecycle
+
+| Method                                                                                 | Purpose                                                                                                                                                                       |
+|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `load(session_id, *, refresh=True)`                                                    | Read a session and restart its idle clock. `None` for every way it can be absent. A hash without `s:created` is not a session.                                                |
+| `load_with_status(session_id, *, refresh=True)`                                        | `load()`, plus whether the read itself failed.                                                                                                                                |
+| `session_age(state)`                                                                   | Seconds since the session ID was issued, from the time left on the absolute clock. `None` without a stored session, or for one created under a longer `session_absolute_ttl`. |
+| `create(session_id, record, *, subject=None, descriptor=None, ttls=None)`              | Write a session that does not exist yet. The only method that writes `s:created`, and so the absolute deadline. Returns the stored fields.                                    |
+| `save(session_id, record, *, baseline=None, subject=None, descriptor=None, ttls=None)` | Write the fields that differ from `baseline`, the fields the last load or write returned. Never writes `s:created`. Returns the stored fields.                                |
+| `touch(session_id)`                                                                    | Restart the idle clock alone.                                                                                                                                                 |
+| `delete(session_id)`                                                                   | Remove the session.                                                                                                                                                           |
+| `rotate(state, *, subject=..., descriptor=None, ttls=None)`                            | New identifier, old key deleted first. Starts a new absolute clock and keeps the time left on each attribute TTL. Omit `subject` to keep the current one. Returns the new ID. |
+| `reauthenticate(state)`                                                                | Ask the middleware to rotate on the way out.                                                                                                                                  |
+| `revoke(state, *, subject=None)`                                                       | End this session. `subject` is accepted and not used.                                                                                                                         |
+| `revoke_id(session_id, *, subject)`                                                    | End one session, refusing an ID whose session has another subject. Runs no search.                                                                                            |
+| `new_id()` / `is_valid_id(value)`                                                      | Generate and validate identifiers.                                                                                                                                            |
+| `new_record(data, *, created=None)`                                                    | Build a `SessionRecord`, carrying `created` forward.                                                                                                                          |
+| `session_id(state)`                                                                    | The current identifier, or `None`.                                                                                                                                            |
+
+`ttls` maps the name of a top-level attribute to a TTL in seconds, or to
+`None` to remove the TTL. The middleware fills it from `Session.set(...,
+ttl=)` and `Session.persist()`.
+
+### Search
+
+Each method in this table needs the Redis Query Engine and raises
+`SessionSearchUnavailableError` without it. Each raises
+`SessionSearchTimeoutError` when the server reports a timeout. None fails
+open.
+
+| Method                                         | Purpose                                                                                             |
+|------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `list_for_subject(subject)`                    | The sessions of a subject, newest access first. At most 1,000.                                      |
+| `count_for_subject(subject, *, limit=None)`    | How many sessions a subject has. The count is exact; `limit` is accepted and not used.              |
+| `revoke_all(subject)`                          | End every session of a subject. Returns keys removed.                                               |
+| `list_active(within, *, limit=100, offset=0)`  | One page of the sessions used in the last `within` seconds, newest access first.                    |
+| `revoke_idle(older_than)`                      | End every session not used for `older_than` seconds. Returns keys removed.                          |
+| `find(name, *, <filter>, limit=100, offset=0)` | One page of the sessions whose searchable attribute `name` matches the filter, newest access first. |
+| `count(name, *, <filter>)`                     | How many sessions `find()` would match.                                                             |
+
+`<filter>` is exactly one of the four keyword arguments below, and it must fit
+the declared type of `name`:
+
+| Declared type | Filter                    | Value                                     |
+|---------------|---------------------------|-------------------------------------------|
+| `tag`         | `equals=`                 | `str` or `bool`                           |
+| `numeric`     | `between=(low, high)`     | Finite numbers; either may be `None`      |
+| `text`        | `text=`                   | `str`, Redis query syntax, sent unchanged |
+| `geo`         | `near=(lon, lat, meters)` | Finite numbers                            |
+
+`limit` must be at least 1, `offset` at least 0, and `offset + limit` at most
+10,000. A call that breaks one of these rules raises `ValueError`, and so does
+a name that is not in `searchable` and text that Redis rejects for its syntax.
+
+`RedisSessionStore.ensure_indexes()` creates the indexes: the built-in one,
+`<prefix>:si`, and, with `searchable`, the custom one, `<prefix>:sa:<hash>`.
+The lifespan calls it at startup, and a search calls it when an index is
+missing.
 
 ---
 
 ## Session data types
 
-| Type | Contents |
-|---|---|
-| `Session` | `dict` subclass with `accessed` / `modified` flags and `raw()`. Nothing else. |
-| `SessionState` | `data`, `session_id`, `subject`, `created`, `absolute_remaining`, `revoked`, `rotated`. |
-| `SessionRecord` | `data` plus `SessionMetadata`. |
-| `SessionMetadata` | `created`, `last_access`. |
-| `SessionInfo` | One listing row: `session_id`, `created`, `last_access`, `descriptor`. |
-| `LoadedSession` | `record` plus `absolute_remaining`, returned by `load()`. |
-| `CookieSpec` | Cookie attributes; `cleared()` returns the deletion form. |
-| `Outcome` | What a response owes the session. Eight members. |
-| `Deadline` | `ABSENT` / `UNBOUNDED` — a deadline that is not a number. |
+| Type              | Contents                                                                                                          |
+|-------------------|-------------------------------------------------------------------------------------------------------------------|
+| `Session`         | `dict` subclass with `accessed` / `modified` flags, `raw()`, `set(name, value, *, ttl=None)` and `persist(name)`. |
+| `SessionState`    | `data`, `session_id`, `subject`, `created`, `absolute_remaining`, `fields`, `revoked`, `rotated`.                 |
+| `SessionRecord`   | `data` plus `SessionMetadata`.                                                                                    |
+| `SessionMetadata` | `created`, `last_access`.                                                                                         |
+| `SessionInfo`     | One row of a list or a search: `session_id`, `created`, `last_access`, `descriptor`.                              |
+| `LoadedSession`   | `record`, `absolute_remaining` and `fields`, returned by `load()`.                                                |
+| `CookieSpec`      | Cookie attributes; `cleared()` returns the deletion form.                                                         |
+| `Outcome`         | What a response owes the session. Eight members.                                                                  |
+| `Deadline`        | `ABSENT` / `UNBOUNDED` — a deadline that is not a number.                                                         |
+
+### `Session.set()` / `Session.persist()`
+
+```python
+session.set("flash", "Settings saved.", ttl=60)   # expires 60 seconds after the save
+session.persist("flash")                          # remove the TTL, keep the value
+```
+
+| Method                          | Purpose                                                                                                                                              |
+|---------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `set(name, value, *, ttl=None)` | Write a top-level attribute. `ttl` is a positive `int` of seconds; any other value raises `ValueError`. Without `ttl` it is `session[name] = value`. |
+| `persist(name)`                 | Remove the TTL of a top-level attribute and keep its value. Does nothing for an attribute that is absent or has no TTL.                              |
+
+The TTL starts at the save and does not slide. A write of a different value
+without `ttl` removes it; a write of an equal value keeps it. A TTL on a
+searchable attribute raises `SessionConfigurationError` at the save. See
+[Attribute TTL](../guide/sessions.md#attribute-ttl).
 
 ---
 
@@ -531,14 +594,25 @@ one without inheritance.
 
 ```
 SessionError
-├── SessionConfigurationError    a missing or invalid setting
-└── SessionStoreError            the store failed; wraps the driver error
+├── SessionConfigurationError            a missing or invalid setting
+├── SessionAttributeTypeError            a searchable attribute holds a value of another type; also a TypeError
+└── SessionStoreError                    the store failed; wraps the driver error
+    └── SessionSearchError               a search could not give a complete answer
+        ├── SessionSearchUnavailableError    the server has no Query Engine
+        └── SessionSearchTimeoutError        the server reported a timeout
 ```
+
+`SessionAttributeTypeError` is raised at the save, before anything is
+written. `SessionConfigurationError` is also raised at the save when a
+searchable attribute was given a TTL. A wrong call - an invalid `ttl`, a name
+that is not searchable, a filter of the wrong type, a page out of range -
+raises `ValueError`, which is not a `SessionError`.
 
 `SessionRejected` is not a `SessionError`: it carries a `valid_session()`
 rejection out of the dependency, and the handler that `.sessions()` registers
 returns its response.
 
 A failed **read** yields an empty session unless `session_fail_closed` is set.
-A failed **write** always raises. `count_for_subject` always raises, because
-there the store is the authorization answer.
+A failed **write** always raises. A failed search always raises, because
+there the store is the answer: a `count_for_subject` that returned `0` would
+let every sign-in past a cap on concurrent sessions.
