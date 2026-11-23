@@ -1793,11 +1793,10 @@ library logs the reason once per route:</p>
 flood your logs.</p>
 <h3 id="binary-belongs-somewhere-else">Binary belongs somewhere else<a class="headerlink" href="#binary-belongs-somewhere-else" title="Permanent link">&para;</a></h3>
 <p><code>cache()</code> refuses binary <strong>by choice, not by necessity</strong>. An entry is a JSON
-envelope with a text <code>body</code>, and base64 could carry arbitrary bytes through it
-— an earlier version of this library did exactly that. So no claim below rests
-on the format being unable to hold the bytes. The reasons are about HTTP
-semantics and about where binary belongs, and they hold whatever your storage
-costs:</p>
+envelope with a text <code>body</code>, and base64 could carry arbitrary bytes through it.
+So no claim below rests on the format being unable to hold the bytes. The
+reasons are about HTTP semantics and about where binary belongs, and they hold
+whatever your storage costs:</p>
 <ul>
 <li><strong>A CDN serves those bytes closer to the user, and serves them correctly.</strong>
   It answers from a node near the caller and implements <code>Range</code> and
@@ -2071,8 +2070,8 @@ not sign anyone in.</p>
     participant R as Redis
 
     C-&gt;&gt;M: request with session cookie
-    M-&gt;&gt;R: load record, restart idle clock
-    R--&gt;&gt;M: payload
+    M-&gt;&gt;R: load session hash, restart idle clock
+    R--&gt;&gt;M: fields
     M-&gt;&gt;M: take principal snapshot
     M-&gt;&gt;E: call endpoint
 
@@ -2088,9 +2087,9 @@ not sign anyone in.</p>
     else Principal changed, status 400 or more
         Note over M,R: nothing is saved
     else Data changed only
-        M-&gt;&gt;R: save record
+        M-&gt;&gt;R: save changed fields
     else Session emptied
-        M-&gt;&gt;R: delete key and index entry
+        M-&gt;&gt;R: delete key
     end
     M--&gt;&gt;C: headers with Set-Cookie, then body
     Note over C,E: Background tasks run here, after the save</code></pre>
@@ -2147,7 +2146,7 @@ tier.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 6, 2026 13:13:05 UTC">November 6, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="November 23, 2026 11:17:54 UTC">November 23, 2026</span>
   </span>
 
     
