@@ -290,7 +290,9 @@ class CacheBackend:
         Attempts a server-side Lua script (``SCAN`` + ``UNLINK`` in a
         single ``EVAL`` round trip).  Falls back to Python-side
         ``scan_iter`` + ``delete`` when ``EVAL`` is unavailable (e.g.
-        fakeredis in unit tests).
+        fakeredis in unit tests).  On Redis Cluster the script is routed to
+        the node that owns the group's slot; without a group, keys span all
+        primaries, so the Python-side scan is used instead.
 
         .. warning::
 
@@ -320,26 +322,35 @@ class CacheBackend:
             attributes={"cache.eviction_group": grp},
         ) as span:
             with timed_operation("evict", eviction_group=grp):
-                try:
-                    count = await self._eval_delete(pattern, scan_count)
-                except (RedisError, OSError):
-                    # EVAL not supported (fakeredis, ACL restrictions, etc.)
-                    # - fall back to Python-side scan + delete.
+                if not grp and isinstance(self._redis, AsyncRedisCluster):
+                    # A script only sees the node it runs on; scan_iter
+                    # visits every primary.
                     count = await self._scan_delete(pattern, eviction_group)
+                else:
+                    try:
+                        count = await self._eval_delete(pattern, grp, scan_count)
+                    except (RedisError, OSError):
+                        # EVAL not supported (fakeredis, ACL restrictions, etc.)
+                        # - fall back to Python-side scan + delete.
+                        count = await self._scan_delete(pattern, eviction_group)
                 if span is not None:
                     span.set_attribute("cache.keys_deleted", count)
                 return count
 
-    async def _eval_delete(self, pattern: str, scan_count: int) -> int:
+    async def _eval_delete(self, pattern: str, grp: str, scan_count: int) -> int:
         """Server-side SCAN + UNLINK via a Lua script (single round trip).
 
         Args:
             pattern: Glob pattern matching the keys to delete.
+            grp: Eviction group, or ``""``.  A Cluster client routes the
+                script by the key declared for it.
             scan_count: Hint for ``SCAN``'s ``COUNT`` option.
         """
+        keys = [self._build_key("", grp)] if grp else []
         result = await self._redis.eval(
             _DELETE_BY_PATTERN_SCRIPT,
-            0,  # numkeys - pattern is passed as ARGV
+            len(keys),  # the script reads no KEYS; they only select the node
+            *keys,
             pattern,
             str(scan_count),
         )
